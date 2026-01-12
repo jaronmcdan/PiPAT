@@ -119,11 +119,29 @@ def build_dashboard(hardware, *,
     meas_meter.add_row("Current", f"[yellow]{meter_current_mA/1000:.3f} A[/]")
 
     # GPIO Status
-    # Note: accessing hardware.relay (from GPIOZero) directly
-    badge_text = Text.from_markup(_badge(hardware.relay.is_lit, "CLOSED", "OPEN"))
+    # Note: gpiozero LED.is_lit reflects the *coil* state (energized/de-energized).
+    # We also compute a best-effort DUT power state using the configured wiring.
+    coil_on = bool(hardware.relay.is_lit)
+    try:
+        dut_on = bool(hardware.get_dut_power())
+    except Exception:
+        dut_on = False
+
+    coil_badge = Text.from_markup(_badge(coil_on, "ENERGIZED", "IDLE"))
+    dut_badge = Text.from_markup(_badge(dut_on, "ON", "OFF"))
+
     gpio_panel = Panel(
-        Align.center(Text.assemble(("K1 Relay\n", "bold"), badge_text), vertical="middle"),
-        border_style="yellow", box=box.ROUNDED, title="[bold]GPIO[/]",
+        Align.center(
+            Text.assemble(
+                ("K1 Relay\n", "bold"),
+                ("DUT: ", "bold"), dut_badge, ("\n", ""),
+                ("Coil: ", "bold"), coil_badge,
+            ),
+            vertical="middle",
+        ),
+        border_style="yellow",
+        box=box.ROUNDED,
+        title="[bold]GPIO[/]",
     )
 
     mid = Table.grid(expand=True)

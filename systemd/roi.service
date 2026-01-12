@@ -11,6 +11,7 @@ EnvironmentFile=-/etc/roi/roi.env
 Environment=PYTHONUNBUFFERED=1
 # Avoid Rich trying to do fancy terminal control in journald
 Environment=TERM=dumb
+Environment=ROI_HEADLESS=1
 ExecStart=/opt/roi/.venv/bin/python /opt/roi/main.py
 Restart=on-failure
 RestartSec=2

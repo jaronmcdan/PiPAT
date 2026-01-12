@@ -1,13 +1,16 @@
-\
 #!/usr/bin/env bash
 set -euo pipefail
 
 PREFIX="/opt/roi"
 ENABLE_SERVICE="0"
+INSTALL_OS_DEPS="0"
 
 usage() {
   cat <<EOF
 Usage: sudo $0 [--prefix /opt/roi] [--enable-service]
+
+Optional:
+  --install-os-deps   Install recommended apt packages (python3-venv, can-utils, libusb)
 
 Installs this project onto a Raspberry Pi:
 - Copies files into PREFIX
@@ -23,6 +26,8 @@ while [[ $# -gt 0 ]]; do
       PREFIX="$2"; shift 2;;
     --enable-service)
       ENABLE_SERVICE="1"; shift;;
+    --install-os-deps)
+      INSTALL_OS_DEPS="1"; shift;;
     -h|--help)
       usage; exit 0;;
     *)
@@ -37,6 +42,19 @@ if [[ "$(id -u)" != "0" ]]; then
 fi
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [[ "$INSTALL_OS_DEPS" == "1" ]]; then
+  echo "[ROI] Installing OS dependencies via apt"
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update
+    apt-get install -y \
+      python3 python3-venv python3-pip python3-dev \
+      can-utils \
+      libusb-1.0-0
+  else
+    echo "[ROI] WARNING: apt-get not found; skipping OS deps." >&2
+  fi
+fi
 
 echo "[ROI] Installing to: $PREFIX"
 mkdir -p "$PREFIX"
@@ -87,5 +105,5 @@ fi
 
 echo
 echo "[ROI] Done."
-echo "Edit config.py (or /etc/roi/roi.env if you later adopt env-based config)."
+echo "Edit /etc/roi/roi.env for per-Pi overrides (config.py provides defaults)."
 echo "Logs: sudo journalctl -u roi -f"
