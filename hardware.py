@@ -47,35 +47,15 @@ class HardwareManager:
         self.afg_lock = threading.Lock()
 
         # GPIO Relay
-        # We treat `self.relay` as the *relay coil control* (energized / de-energized).
-        # The DUT power state may be inverted depending on whether you're wired through NO or NC.
         self.relay = LED(
             config.K1_PIN_BCM,
-            # active_high=True means: .on() drives GPIO HIGH.
-            # For active-low relay inputs we invert this so .on() energizes the coil.
+            # active_high is the *electrical* polarity of the relay input.
+            # If RELAY_ACTIVE_LOW=True, then LED.on() drives the pin LOW.
             active_high=not config.RELAY_ACTIVE_LOW,
-            # initial_value is the *logical* state of the LED device, i.e. whether the coil
-            # should start energized.
-            initial_value=self._coil_should_be_energized(config.RELAY_START_POWER_ON),
+            # Start with coil DE-ENERGIZED (safe default). For NC wiring, this means DUT powered.
+            initial_value=False,
         )
-
-        # Track the intended DUT power state so the UI can show something meaningful.
-        self.dut_power_on: bool = bool(config.RELAY_START_POWER_ON)
-
-    def _coil_should_be_energized(self, dut_power_on: bool) -> bool:
-        """Translate desired DUT power state to coil energized/de-energized."""
-        # If wired through NO: energize coil to power DUT.
-        # If wired through NC: de-energize coil to power DUT.
-        return dut_power_on if config.RELAY_POWER_ON_WHEN_COIL_ENERGIZED else (not dut_power_on)
-
-    def set_dut_power(self, dut_power_on: bool) -> None:
-        """Set DUT power consistently across relay hats/wiring."""
-        coil_energize = self._coil_should_be_energized(dut_power_on)
-        if coil_energize:
-            self.relay.on()
-        else:
-            self.relay.off()
-        self.dut_power_on = bool(dut_power_on)
+# Start at 0V (Relay Closed/ON)
 
     def initialize_devices(self) -> None:
         """Initializes the multi-meter, e-load, and AFG."""

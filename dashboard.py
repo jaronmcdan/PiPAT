@@ -36,7 +36,8 @@ def build_dashboard(hardware, *,
                     afg_shape_read: str,
                     can_channel: str,
                     can_bitrate: int,
-                    status_poll_period: float):
+                    status_poll_period: float,
+                    watchdog=None):
     
     if not HAVE_RICH:
         return f"E-Load V: {load_volts_mV}mV | AFG Freq: {afg_freq_read} | Meter I: {meter_current_mA}mA"
@@ -118,21 +119,11 @@ def build_dashboard(hardware, *,
     meas_meter.add_row("Current", f"[yellow]{meter_current_mA/1000:.3f} A[/]")
 
     # GPIO Status
-    # `hardware.relay.is_lit` reflects the *logical* coil state (energized / de-energized).
-    # `hardware.dut_power_on` reflects the intended DUT power state after applying wiring semantics (NO/NC).
-    coil_badge = Text.from_markup(_badge(hardware.relay.is_lit, "ENERGIZED", "DE-ENERGIZED"))
-    power_badge = Text.from_markup(_badge(getattr(hardware, "dut_power_on", False), "POWER ON", "POWER OFF"))
-
+    # Note: accessing hardware.relay (from GPIOZero) directly
+    badge_text = Text.from_markup(_badge(hardware.relay.is_lit, "CLOSED", "OPEN"))
     gpio_panel = Panel(
-        Align.center(
-            Text.assemble(
-                ("K1 Relay Coil\n", "bold"), coil_badge, "\n\n", ("DUT\n", "bold"), power_badge
-            ),
-            vertical="middle",
-        ),
-        border_style="yellow",
-        box=box.ROUNDED,
-        title="[bold]GPIO[/]",
+        Align.center(Text.assemble(("K1 Relay\n", "bold"), badge_text), vertical="middle"),
+        border_style="yellow", box=box.ROUNDED, title="[bold]GPIO[/]",
     )
 
     mid = Table.grid(expand=True)
@@ -146,7 +137,28 @@ def build_dashboard(hardware, *,
     status = Text.assemble(
         (" CAN: ", "bold"), (f"{can_channel}@{can_bitrate//1000}k ", "cyan"),
         (" Poll: ", "bold"), (f"{status_poll_period:.2f}s ", "cyan"),
-        (" AFG: ", "bold"), (f"{'Connected' if hardware.afg else 'Missing'}", "green" if hardware.afg else "red")
+        (" AFG: ", "bold"), (f"{'Connected' if hardware.afg else 'Missing'}", "green" if hardware.afg else "red"),
     )
+
+    # Watchdog / control freshness (optional)
+    if watchdog and isinstance(watchdog, dict):
+        ages = watchdog.get("ages", {}) or {}
+        timed_out = watchdog.get("timed_out", {}) or {}
+
+        def _seg(key: str, label: str):
+            age = ages.get(key)
+            to = bool(timed_out.get(key, False))
+            if age is None:
+                return (f" {label}:-- ", "dim")
+            if to:
+                return (f" {label}:TO({age:.1f}s) ", "red")
+            return (f" {label}:{age:.1f}s ", "green")
+
+        status.append(" WD:", style="bold")
+        status.append(*_seg("relay", "K1"))
+        status.append(*_seg("eload", "Load"))
+        status.append(*_seg("afg", "AFG"))
+        status.append(*_seg("mmeter", "DMM"))
+
     layout["bottom"].update(Panel(status, box=box.SQUARE, border_style="blue"))
     return layout

@@ -38,17 +38,27 @@ def receive_can_messages(cbus, hardware: HardwareManager, stop_event: threading.
 
         # Relay control
         if message.arbitration_id == config.RLY_CTRL_ID:
-            bit0 = (message.data[0] & 0x01)
-            # Protocol semantics can vary: some send 1=ON, others send 0=ON.
-            dut_power_on = (bit0 == 0x01) if config.RELAY_CAN_ON_IS_1 else (bit0 == 0x00)
-            hardware.set_dut_power(dut_power_on)
+            # CAN bit0 (K1): interpret as a *DUT power request* (not a raw GPIO level).
+            # Desired behavior (your request):
+            #   K1=0 => DUT powered (NC contact closed)
+            #   K1=1 => DUT unpowered (relay opens, cutting power)
+            k1_is_1 = (message.data[0] & 0x01) == 0x01
 
-            # OPTION 2: Force Reset (Use this if '1' should always reboot the device)
-            # if should_be_on:
-            #     hardware.relay.off()
-            #     time.sleep(1.0) # Wait 1 second for power to drain
-            #     hardware.relay.on()
-            
+            # If RELAY_CAN_BIT1_IS_POWER_OFF=True, then K1=1 means 'power off'.
+            dut_power = (not k1_is_1) if getattr(config, 'RELAY_CAN_BIT1_IS_POWER_OFF', True) else k1_is_1
+
+            # Translate DUT power request to coil energized/de-energized based on wiring:
+            # - NC wiring: coil energized => DUT off
+            # - NO wiring: coil energized => DUT on
+            wiring_nc = getattr(config, 'RELAY_WIRING_NC', True)
+            coil_energized = (not dut_power) if wiring_nc else dut_power
+
+            # Drive relay coil (gpiozero handles active-low vs active-high via active_high setting).
+            if coil_energized:
+                hardware.relay.on()
+            else:
+                hardware.relay.off()
+
             continue
 
         # AFG Control (Primary)
