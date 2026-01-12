@@ -1,0 +1,7 @@
+python-can>=4.3
+pyserial>=3.5
+pyvisa>=1.14
+pyvisa-py>=0.7
+pyusb>=1.2
+gpiozero>=1.6
+rich>=13.7

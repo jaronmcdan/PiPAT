@@ -1,9 +1,12 @@
 # config.py
 
+from __future__ import annotations
+
 import os
 
+
 def _env_bool(name: str, default: bool) -> bool:
-    """Read a boolean from environment variables.
+    """Parse a boolean env var.
 
     Accepts: 1/0, true/false, yes/no, on/off (case-insensitive).
     """
@@ -12,23 +15,37 @@ def _env_bool(name: str, default: bool) -> bool:
         return default
     return val.strip().lower() in {"1", "true", "yes", "y", "on"}
 
+
 # --- Hardware Identifiers ---
 MULTI_METER_PATH = os.getenv("MULTI_METER_PATH", "/dev/ttyUSB0")
 MULTI_METER_BAUD = int(os.getenv("MULTI_METER_BAUD", "38400"))
 
 # VISA Resource IDs
 ELOAD_VISA_ID = os.getenv("ELOAD_VISA_ID", "USB0::11975::34816::*::0::INSTR")
-AFG_VISA_ID   = os.getenv("AFG_VISA_ID",   "ASRL/dev/ttyACM0::INSTR")
+AFG_VISA_ID   = os.getenv("AFG_VISA_ID", "ASRL/dev/ttyACM0::INSTR")
 
 # --- GPIO Configuration ---
 K1_PIN_BCM = int(os.getenv("K1_PIN_BCM", "26"))
 
-# If True, the relay board is active-low (GPIO LOW energizes the relay).
+# Electrical polarity of the relay input:
+# - True:  GPIO LOW energizes the relay coil (active-low input)
+# - False: GPIO HIGH energizes the relay coil (active-high input)
 RELAY_ACTIVE_LOW = _env_bool("RELAY_ACTIVE_LOW", False)
 
-# Logical relay state to apply on startup (True = relay energized / "CLOSED").
-# Override per-Pi with env var RELAY_INITIAL_ON=0/1 if you swap between hats.
-RELAY_INITIAL_ON = _env_bool("RELAY_INITIAL_ON", True)
+# Wiring semantics:
+# - True  => coil energized powers the DUT (wired through NO)
+# - False => coil energized cuts power to the DUT (wired through NC)
+RELAY_POWER_ON_WHEN_COIL_ENERGIZED = _env_bool("RELAY_POWER_ON_WHEN_COIL_ENERGIZED", True)
+
+# CAN protocol semantics:
+# - True  => CAN bit 0 value 1 means "DUT POWER ON"
+# - False => CAN bit 0 value 0 means "DUT POWER ON"
+RELAY_CAN_ON_IS_1 = _env_bool("RELAY_CAN_ON_IS_1", True)
+
+# Desired DUT power state when the script starts.
+# Set this so starting the script doesn't unexpectedly kill power.
+RELAY_START_POWER_ON = _env_bool("RELAY_START_POWER_ON", True)
+
 
 # --- CAN Bus Configuration ---
 CAN_CHANNEL = os.getenv("CAN_CHANNEL", "can1")
