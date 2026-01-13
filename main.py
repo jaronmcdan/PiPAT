@@ -89,7 +89,7 @@ class ControlWatchdog:
         self._lock = threading.Lock()
         self._last_seen: Dict[str, float] = {}
         self._timed_out: Dict[str, bool] = {
-            "relay": True,
+            "k1": True,
             "eload": True,
             "afg": True,
             "mmeter": True,

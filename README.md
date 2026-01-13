@@ -176,17 +176,3 @@ Double-check:
 
 This code can control power to external equipment.
 Verify relay wiring (NC/NO), polarity, and idle defaults before running unattended.
-
-
-## K1 relay reporting and control (simple mode)
-
-By default, PiPAT runs in **simple K1 mode** (no DUT inference):
-
-- The TUI shows **K1 Drive (ON/OFF)** and the raw **GPIO level (HIGH/LOW)**.
-- Incoming CAN relay control (RLY_CTRL_ID, bit0) drives K1 directly.
-- On control timeout, K1 returns to `K1_IDLE_DRIVE`.
-
-Environment variables:
-- `K1_CAN_INVERT=0` (invert CAN bit0 if needed)
-- `K1_IDLE_DRIVE=0` (default idle drive state)
-

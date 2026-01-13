@@ -179,7 +179,7 @@ def build_dashboard(hardware, *,
             return (f" {label}:{age:.1f}s ", "green")
 
         status.append(" WD:", style="bold")
-        status.append(*_seg("relay", "K1"))
+        status.append(*_seg("k1", "K1"))
         status.append(*_seg("eload", "Load"))
         status.append(*_seg("afg", "AFG"))
         status.append(*_seg("mmeter", "DMM"))
