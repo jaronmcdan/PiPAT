@@ -47,8 +47,8 @@ The most common settings:
 
 - `CAN_CHANNEL`, `CAN_BITRATE`, `CAN_SETUP`
 - `CAN_TX_ENABLE`, `CAN_TX_PERIOD_MS` (regulate outgoing readback frames; default 50ms)
-- `K1_PIN_BCM`, `RELAY_ACTIVE_LOW`, `RELAY_WIRING_NC`
-- `RELAY_CAN_BIT1_IS_POWER_OFF`, `RELAY_IDLE_DUT_POWER`
+- `K1_PIN_BCM`, `K1_ACTIVE_LOW`, `K1_CAN_INVERT`, `K1_IDLE_DRIVE`
+- `K1_TIMEOUT_SEC` (watchdog timeout for K1)
 - `CONTROL_TIMEOUT_SEC` (or per-device timeouts)
 - `MULTI_METER_PATH`, `MULTI_METER_BAUD`
 - `ELOAD_VISA_ID`, `AFG_VISA_ID`
@@ -80,36 +80,20 @@ ip -details link show can1
 
 ---
 
-## Relay polarity, NC/NO wiring, and DUT power semantics
+## K1 relay semantics (no inference)
 
-Relay behavior can look “inverted” for three independent reasons:
+PiPAT treats the relay as a **direct K1 drive output** controlled by CAN bit0 in `RLY_CTRL_ID`.
+The UI reports only what the software is commanding and what the GPIO pin is doing.
 
-1) **Relay input polarity** (active-low vs active-high)
-2) **Wiring** (NC vs NO contact)
-3) **Protocol meaning** (whether a CAN bit means “power on” or “power off”)
+- There is **no NC/NO “DUT power” inference**.
+- If you need actual DUT power status, measure it (e.g., voltage sense, current sense, an auxiliary input).
 
-This code treats the CAN relay bit as a **DUT power request**, and then translates that into a **coil state** based on your wiring.
+Relevant settings:
+- `K1_ACTIVE_LOW` — electrical polarity of the relay input (module dependent)
+- `K1_CAN_INVERT` — invert CAN bit0 before driving K1 (optional)
+- `K1_IDLE_DRIVE` — drive state to apply on watchdog timeout and (optionally) on startup
+- `K1_TIMEOUT_SEC` — watchdog timeout for K1 controls
 
-### Configure the relay
-
-In `config.py` (or env overrides):
-
-- `RELAY_ACTIVE_LOW`
-  - `True` if your relay board energizes when the GPIO pin is **LOW**
-- `RELAY_WIRING_NC`
-  - `True` if your DUT is wired through **NC** (coil energized **cuts** power)
-  - `False` if your DUT is wired through **NO** (coil energized **applies** power)
-- `RELAY_CAN_BIT1_IS_POWER_OFF`
-  - `True` (default): CAN bit0==1 means “**DUT OFF**”
-  - `False`: CAN bit0==1 means “**DUT ON**”
-- `RELAY_IDLE_DUT_POWER`
-  - The DUT power state to return to when control messages time out (and at startup if enabled)
-
-> If your DUT powers up even when the Pi has no power, your path is likely wired through **NC**:
-> - coil de-energized => NC closed => DUT powered
-> - coil energized   => NC open   => DUT unpowered
-
----
 
 ## Control watchdog / timeouts (auto-idle)
 
@@ -117,12 +101,11 @@ If a control message stops arriving, this app will drive that device back to an 
 
 Defaults:
 - Timeout: `CONTROL_TIMEOUT_SEC=2.0`
-- Relay idle: `RELAY_IDLE_DUT_POWER=0` (DUT OFF)
 - E-load idle: input OFF
 - AFG idle: output OFF
 
 You can override per device:
-- `RELAY_TIMEOUT_SEC`
+- `K1_TIMEOUT_SEC`
 - `ELOAD_TIMEOUT_SEC`
 - `AFG_TIMEOUT_SEC`
 - `MMETER_TIMEOUT_SEC`
@@ -185,10 +168,7 @@ If you still see issues, confirm:
 ### Relay does “the opposite”
 
 Double-check:
-- `RELAY_ACTIVE_LOW`
-- `RELAY_WIRING_NC`
-- `RELAY_CAN_BIT1_IS_POWER_OFF`
-- `RELAY_IDLE_DUT_POWER`
+- `K1_ACTIVE_LOW`
 
 ---
 
@@ -196,3 +176,17 @@ Double-check:
 
 This code can control power to external equipment.
 Verify relay wiring (NC/NO), polarity, and idle defaults before running unattended.
+
+
+## K1 relay reporting and control (simple mode)
+
+By default, PiPAT runs in **simple K1 mode** (no DUT inference):
+
+- The TUI shows **K1 Drive (ON/OFF)** and the raw **GPIO level (HIGH/LOW)**.
+- Incoming CAN relay control (RLY_CTRL_ID, bit0) drives K1 directly.
+- On control timeout, K1 returns to `K1_IDLE_DRIVE`.
+
+Environment variables:
+- `K1_CAN_INVERT=0` (invert CAN bit0 if needed)
+- `K1_IDLE_DRIVE=0` (default idle drive state)
+

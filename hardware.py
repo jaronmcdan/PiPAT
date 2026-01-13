@@ -59,44 +59,54 @@ class HardwareManager:
         self.mmeter_lock = threading.Lock()
         self.afg_lock = threading.Lock()
 
-        # --- GPIO Relay ---
-        # Compute the *coil* idle state from the desired DUT idle state.
-        idle_coil = self._coil_for_dut_power(bool(config.RELAY_IDLE_DUT_POWER))
+        # --- GPIO Relay (K1) ---
+        # K1 is treated as a direct drive output. We intentionally do not infer "DUT power"
+        # from contact wiring (NC/NO). If you need true DUT power status, measure it.
+        initial_drive = bool(getattr(config, "K1_IDLE_DRIVE", False))
+
         self.relay = LED(
             config.K1_PIN_BCM,
             # active_high is the *electrical* polarity of the relay input.
-            # If RELAY_ACTIVE_LOW=True, then LED.on() drives the pin LOW.
-            active_high=not bool(config.RELAY_ACTIVE_LOW),
-            # initial_value is whether LED is "on" (coil energized)
-            initial_value=bool(idle_coil),
+            # If K1_ACTIVE_LOW=True, then LED.on() drives the pin LOW.
+            active_high=not bool(getattr(config, "K1_ACTIVE_LOW", False)),
+            # initial_value is whether LED is "on" (drive asserted).
+            initial_value=bool(initial_drive),
         )
 
     # --- Relay helpers ---
-    def _coil_for_dut_power(self, dut_power_on: bool) -> bool:
-        """Translate desired DUT power to whether the relay coil should be energized."""
-        wiring_nc = bool(getattr(config, "RELAY_WIRING_NC", True))
-        # NC wiring: coil energized => DUT off
-        # NO wiring: coil energized => DUT on
-        return (not dut_power_on) if wiring_nc else dut_power_on
+    def get_k1_drive(self) -> bool:
+        "Return the logical drive state we are commanding via gpiozero (ON/OFF)."
+        return bool(self.relay.is_lit)
 
-    def get_dut_power(self) -> bool:
-        """Best-effort computed DUT power state from coil + wiring config."""
-        coil = bool(self.relay.is_lit)
-        wiring_nc = bool(getattr(config, "RELAY_WIRING_NC", True))
-        return (not coil) if wiring_nc else coil
+    def get_k1_pin_level(self):
+        "Return the raw GPIO level (True=HIGH, False=LOW) if available."
+        try:
+            pin = getattr(self.relay, 'pin', None)
+            if pin is None:
+                return None
+            if hasattr(pin, 'state'):
+                return bool(pin.state)
+            if hasattr(pin, 'value'):
+                return bool(pin.value)
+        except Exception:
+            return None
+        return None
 
-    def set_dut_power(self, dut_power_on: bool) -> None:
-        """Set DUT power by driving the relay coil according to wiring config."""
-        coil = self._coil_for_dut_power(bool(dut_power_on))
-        if coil:
+    def set_k1_drive(self, drive_on: bool) -> None:
+        "Set K1 drive directly (no DUT inference)."
+        if drive_on:
             self.relay.on()
         else:
             self.relay.off()
 
-    def set_relay_idle(self) -> None:
-        self.set_dut_power(bool(config.RELAY_IDLE_DUT_POWER))
+    def set_k1_idle(self) -> None:
+        "Apply K1 idle drive state."
+        self.set_k1_drive(bool(getattr(config, 'K1_IDLE_DRIVE', False)))
 
-    # --- Initialization ---
+
+
+
+
     def initialize_devices(self) -> None:
         """Initializes the multi-meter, e-load, and AFG."""
         self._initialize_multimeter()
@@ -207,7 +217,7 @@ class HardwareManager:
     def apply_idle_all(self) -> None:
         # Relay is always present
         try:
-            self.set_relay_idle()
+            self.set_k1_idle()
         except Exception:
             pass
         self.apply_idle_eload()

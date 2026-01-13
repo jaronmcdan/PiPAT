@@ -118,30 +118,36 @@ def build_dashboard(hardware, *,
     meas_meter.add_column("Value", justify="right")
     meas_meter.add_row("Current", f"[yellow]{meter_current_mA/1000:.3f} A[/]")
 
-    # GPIO Status
-    # Note: gpiozero LED.is_lit reflects the *coil* state (energized/de-energized).
-    # We also compute a best-effort DUT power state using the configured wiring.
-    coil_on = bool(hardware.relay.is_lit)
+    # GPIO Status (K1 + GPIO level)
+    # We show only: (1) the logical drive state (ON/OFF) and (2) the raw GPIO level (HIGH/LOW).
     try:
-        dut_on = bool(hardware.get_dut_power())
+        drive_on = bool(hardware.get_k1_drive())
     except Exception:
-        dut_on = False
+        drive_on = bool(getattr(hardware.relay, 'is_lit', False))
 
-    coil_badge = Text.from_markup(_badge(coil_on, "ENERGIZED", "IDLE"))
-    dut_badge = Text.from_markup(_badge(dut_on, "ON", "OFF"))
+    try:
+        pin_level = hardware.get_k1_pin_level()
+    except Exception:
+        pin_level = None
+
+    drive_badge = Text.from_markup(_badge(drive_on, 'ON', 'OFF'))
+    if pin_level is None:
+        level_badge = Text.from_markup('[bold dim]--[/]')
+    else:
+        level_badge = Text.from_markup(_badge(bool(pin_level), 'HIGH', 'LOW'))
 
     gpio_panel = Panel(
         Align.center(
             Text.assemble(
                 ("K1 Relay\n", "bold"),
-                ("DUT: ", "bold"), dut_badge, ("\n", ""),
-                ("Coil: ", "bold"), coil_badge,
+                ("Drive: ", "bold"), drive_badge, ("\n", ""),
+                ("GPIO:  ", "bold"), level_badge,
             ),
-            vertical="middle",
+            vertical='middle',
         ),
-        border_style="yellow",
+        border_style='yellow',
         box=box.ROUNDED,
-        title="[bold]GPIO[/]",
+        title='[bold]GPIO[/]',
     )
 
     mid = Table.grid(expand=True)

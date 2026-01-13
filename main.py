@@ -96,7 +96,7 @@ class ControlWatchdog:
         }
 
         self._timeouts: Dict[str, float] = {
-            "relay": float(config.RELAY_TIMEOUT_SEC),
+            "k1": float(config.K1_TIMEOUT_SEC),
             "eload": float(config.ELOAD_TIMEOUT_SEC),
             "afg": float(config.AFG_TIMEOUT_SEC),
             "mmeter": float(config.MMETER_TIMEOUT_SEC),
@@ -138,8 +138,8 @@ class ControlWatchdog:
                     if not self._timed_out.get(key, False):
                         # Transition into timeout => apply idle once
                         self._timed_out[key] = True
-                        if key == "relay":
-                            hardware.set_relay_idle()
+                        if key == "k1":
+                            hardware.set_k1_idle()
                         elif key == "eload":
                             hardware.apply_idle_eload()
                         elif key == "afg":
@@ -293,26 +293,22 @@ def receive_can_messages(cbus: can.BusABC, hardware: HardwareManager, stop_event
         arb = int(message.arbitration_id)
         data = bytes(message.data or b"")
 
-        # Relay control
+        # Relay control (K1 direct drive)
         if arb == int(config.RLY_CTRL_ID):
-            watchdog.mark("relay")
+            watchdog.mark("k1")
             if len(data) < 1:
                 continue
 
             # CAN bit0 (K1)
             k1_is_1 = (data[0] & 0x01) == 0x01
 
-            # Interpret the incoming bit as a *DUT power request*.
-            # If RELAY_CAN_BIT1_IS_POWER_OFF=True, then K1=1 means "power off".
-            if bool(getattr(config, "RELAY_CAN_BIT1_IS_POWER_OFF", True)):
-                dut_power = not k1_is_1
-            else:
-                dut_power = k1_is_1
+            # Direct drive only (no DUT inference). Optional invert via K1_CAN_INVERT.
+            drive = (not k1_is_1) if bool(getattr(config, "K1_CAN_INVERT", False)) else k1_is_1
+            hardware.set_k1_drive(bool(drive))
 
-            hardware.set_dut_power(bool(dut_power))
             continue
 
-        # AFG Control (Primary)
+# AFG Control (Primary)
         if arb == int(config.AFG_CTRL_ID):
             watchdog.mark("afg")
             if not hardware.afg or len(data) < 8:
@@ -576,8 +572,22 @@ def main() -> int:
                 if now >= next_log:
                     next_log = now + 5.0
                     wd = watchdog.snapshot()
+
+                    k1_drive = False
+                    try:
+                        k1_drive = bool(hardware.get_k1_drive())
+                    except Exception:
+                        k1_drive = bool(getattr(hardware.relay, "is_lit", False))
+
+                    try:
+                        k1_level = hardware.get_k1_pin_level()
+                    except Exception:
+                        k1_level = None
+
+                    gpio_str = "--" if k1_level is None else ("H" if bool(k1_level) else "L")
+
                     _log(
-                        f"DUT={'ON' if hardware.get_dut_power() else 'OFF'} "
+                        f"K1={'ON' if k1_drive else 'OFF'} GPIO={gpio_str} "
                         f"Load={load_volts_mV/1000:.3f}V {load_current_mA/1000:.3f}A "
                         f"Meter={meter_current_mA/1000:.3f}A "
                         f"WD={wd.get('timed_out')}"

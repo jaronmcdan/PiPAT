@@ -63,28 +63,20 @@ MULTI_METER_BAUD = _env_int("MULTI_METER_BAUD", 38400)
 ELOAD_VISA_ID = _env_str("ELOAD_VISA_ID", "USB0::11975::34816::*::0::INSTR")
 AFG_VISA_ID = _env_str("AFG_VISA_ID", "ASRL/dev/ttyACM0::INSTR")
 
-# --- GPIO / Relay ---
+# --- GPIO / K1 relay drive ---
 K1_PIN_BCM = _env_int("K1_PIN_BCM", 26)
 
 # Relay input polarity:
 # - True  => relay input is active-low (GPIO LOW energizes coil)
 # - False => relay input is active-high
-RELAY_ACTIVE_LOW = _env_bool("RELAY_ACTIVE_LOW", False)
+K1_ACTIVE_LOW = _env_bool("K1_ACTIVE_LOW", False)
 
-# Relay contact wiring:
-# - True  => DUT is wired through NC (Normally Closed): coil energized CUTS power
-# - False => DUT is wired through NO (Normally Open):  coil energized APPLIES power
-RELAY_WIRING_NC = _env_bool("RELAY_WIRING_NC", True)
+# If True, invert the incoming CAN bit0 before driving K1.
+K1_CAN_INVERT = _env_bool("K1_CAN_INVERT", False)
 
-# CAN relay semantics:
-# - True  => CAN bit0==1 requests DUT POWER OFF (kill)
-# - False => CAN bit0==1 requests DUT POWER ON
-RELAY_CAN_BIT1_IS_POWER_OFF = _env_bool("RELAY_CAN_BIT1_IS_POWER_OFF", True)
-
-# Desired idle/default DUT power state when control is missing (watchdog timeout)
+# Idle/default drive state for K1 when control is missing (watchdog timeout)
 # and (optionally) on program startup.
-RELAY_IDLE_DUT_POWER = _env_bool("RELAY_IDLE_DUT_POWER", False)
-
+K1_IDLE_DRIVE = _env_bool("K1_IDLE_DRIVE", False)
 
 # --- CAN Bus ---
 CAN_CHANNEL = _env_str("CAN_CHANNEL", "can1")
@@ -97,7 +89,7 @@ CAN_SETUP = _env_bool("CAN_SETUP", True)
 # If a given device doesn't receive its control message within the timeout,
 # we drive that device back to its configured idle state.
 CONTROL_TIMEOUT_SEC = _env_float("CONTROL_TIMEOUT_SEC", 2.0)
-RELAY_TIMEOUT_SEC = _env_float("RELAY_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
+K1_TIMEOUT_SEC = _env_float("K1_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
 ELOAD_TIMEOUT_SEC = _env_float("ELOAD_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
 AFG_TIMEOUT_SEC = _env_float("AFG_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
 MMETER_TIMEOUT_SEC = _env_float("MMETER_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
