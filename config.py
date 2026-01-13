@@ -129,3 +129,9 @@ ELOAD_READ_ID = 0x0CFF0003
 MMETER_READ_ID = 0x0CFF0004
 AFG_READ_ID = 0x0CFF0005  # Status: Enable, Freq, Ampl
 AFG_READ_EXT_ID = 0x0CFF0006  # Status: Offset, Duty Cycle
+
+
+# --- CAN transmit behavior ---
+# Regulate outgoing readback frames (ELOAD/MMETER/AFG status) to a fixed rate.
+CAN_TX_ENABLE = _env_bool("CAN_TX_ENABLE", True)
+CAN_TX_PERIOD_MS = _env_int("CAN_TX_PERIOD_MS", 50)

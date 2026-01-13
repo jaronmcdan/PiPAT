@@ -46,6 +46,7 @@ You can configure in **either** of these ways:
 The most common settings:
 
 - `CAN_CHANNEL`, `CAN_BITRATE`, `CAN_SETUP`
+- `CAN_TX_ENABLE`, `CAN_TX_PERIOD_MS` (regulate outgoing readback frames; default 50ms)
 - `K1_PIN_BCM`, `RELAY_ACTIVE_LOW`, `RELAY_WIRING_NC`
 - `RELAY_CAN_BIT1_IS_POWER_OFF`, `RELAY_IDLE_DUT_POWER`
 - `CONTROL_TIMEOUT_SEC` (or per-device timeouts)

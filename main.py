@@ -151,6 +151,130 @@ class ControlWatchdog:
                     self._timed_out[key] = False
 
 
+
+
+class OutgoingTxState:
+    """Thread-safe container for outgoing CAN readback values.
+
+    The main thread updates this state whenever it successfully polls an instrument.
+    A dedicated TX thread publishes the latest values on CAN at a fixed rate.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._meter_current_mA: Optional[int] = None
+        self._load_volts_mV: Optional[int] = None
+        self._load_current_mA: Optional[int] = None
+        self._afg_offset_mV: Optional[int] = None
+        self._afg_duty_pct: Optional[int] = None
+
+    def update_meter_current(self, meter_current_mA: int) -> None:
+        with self._lock:
+            self._meter_current_mA = int(meter_current_mA)
+
+    def update_eload(self, load_volts_mV: int, load_current_mA: int) -> None:
+        with self._lock:
+            self._load_volts_mV = int(load_volts_mV)
+            self._load_current_mA = int(load_current_mA)
+
+    def update_afg_ext(self, offset_mV: int, duty_pct: int) -> None:
+        with self._lock:
+            self._afg_offset_mV = int(offset_mV)
+            self._afg_duty_pct = int(duty_pct)
+
+    def snapshot(self) -> tuple[Optional[int], Optional[int], Optional[int], Optional[int], Optional[int]]:
+        with self._lock:
+            return (
+                self._meter_current_mA,
+                self._load_volts_mV,
+                self._load_current_mA,
+                self._afg_offset_mV,
+                self._afg_duty_pct,
+            )
+
+
+def can_tx_loop(
+    cbus: can.BusABC,
+    tx_state: OutgoingTxState,
+    stop_event: threading.Event,
+    period_s: float,
+) -> None:
+    """Publish outgoing readback frames at a fixed period (e.g., 50 ms)."""
+
+    try:
+        period_s = float(period_s)
+    except Exception:
+        period_s = 0.05
+
+    if period_s <= 0:
+        _log("TX thread disabled (period <= 0).")
+        return
+
+    _log(f"TX thread started (period={period_s*1000:.0f} ms).")
+
+    next_t = time.monotonic()
+    err_count = 0
+
+    while not stop_event.is_set():
+        now = time.monotonic()
+        delay = next_t - now
+        if delay > 0:
+            stop_event.wait(timeout=delay)
+            continue
+
+        # Advance the schedule first; this avoids drift if send() takes time.
+        next_t += period_s
+        if next_t < now - (10.0 * period_s):
+            next_t = now + period_s
+
+        meter_current_mA, load_volts_mV, load_current_mA, afg_offset_mV, afg_duty_pct = tx_state.snapshot()
+
+        # Send each frame independently; one failure should not block others.
+        if meter_current_mA is not None:
+            try:
+                u16 = _u16_clamp(meter_current_mA)
+                msg = can.Message(
+                    arbitration_id=int(config.MMETER_READ_ID),
+                    data=list(int(u16).to_bytes(2, "little")) + [0] * 6,
+                    is_extended_id=True,
+                )
+                cbus.send(msg)
+            except Exception as e:
+                err_count += 1
+                if err_count in (1, 10, 100):
+                    _log(f"TX MMETER send error (count={err_count}): {e}")
+
+        if (load_volts_mV is not None) and (load_current_mA is not None):
+            try:
+                v_u16 = _u16_clamp(load_volts_mV)
+                i_u16 = _u16_clamp(load_current_mA)
+                data = (
+                    list(int(v_u16).to_bytes(2, "little"))
+                    + list(int(i_u16).to_bytes(2, "little"))
+                    + [0] * 4
+                )
+                msg = can.Message(arbitration_id=int(config.ELOAD_READ_ID), data=data, is_extended_id=True)
+                cbus.send(msg)
+            except Exception as e:
+                err_count += 1
+                if err_count in (1, 10, 100):
+                    _log(f"TX ELOAD send error (count={err_count}): {e}")
+
+        if (afg_offset_mV is not None) and (afg_duty_pct is not None):
+            try:
+                off_mv = _i16_clamp(afg_offset_mV)
+                duty_pct = max(0, min(100, int(afg_duty_pct)))
+                payload = bytearray(struct.pack("<h", off_mv))
+                payload.append(duty_pct & 0xFF)
+                payload.extend([0] * 5)
+                msg = can.Message(arbitration_id=int(config.AFG_READ_EXT_ID), data=payload, is_extended_id=True)
+                cbus.send(msg)
+            except Exception as e:
+                err_count += 1
+                if err_count in (1, 10, 100):
+                    _log(f"TX AFG_EXT send error (count={err_count}): {e}")
+
+
 def receive_can_messages(cbus: can.BusABC, hardware: HardwareManager, stop_event: threading.Event, watchdog: ControlWatchdog) -> None:
     """Background thread to process incoming CAN commands."""
 
@@ -329,6 +453,9 @@ def main() -> int:
     load_volts_mV = 0
     load_current_mA = 0
 
+    # outgoing CAN readback publisher state (sent by TX thread)
+    tx_state = OutgoingTxState()
+
     # status vars
     load_stat_func, load_stat_curr, load_stat_imp, load_stat_res, load_stat_short = "", "", "", "", ""
     afg_freq_str, afg_ampl_str, afg_out_str, afg_shape_str = "", "", "", ""
@@ -361,6 +488,22 @@ def main() -> int:
         )
         receiver_thread.start()
 
+        tx_thread = None
+        if bool(getattr(config, 'CAN_TX_ENABLE', True)):
+            try:
+                period_ms = float(getattr(config, 'CAN_TX_PERIOD_MS', 50))
+            except Exception:
+                period_ms = 50.0
+            if period_ms > 0:
+                tx_thread = threading.Thread(
+                    target=can_tx_loop,
+                    args=(cbus, tx_state, stop_event, period_ms / 1000.0),
+                    daemon=True,
+                )
+                tx_thread.start()
+            else:
+                _log('CAN_TX_PERIOD_MS <= 0; TX rate regulation disabled.')
+
         # Headless loop (no rich Live)
         if headless:
             _log("Running headless (no Rich TUI).")
@@ -381,13 +524,7 @@ def main() -> int:
                         if resp:
                             val = float(resp)
                             meter_current_mA = int(round(val * 1000))
-                            u16 = _u16_clamp(meter_current_mA)
-                            msg = can.Message(
-                                arbitration_id=int(config.MMETER_READ_ID),
-                                data=list(int(u16).to_bytes(2, "little")) + [0] * 6,
-                                is_extended_id=True,
-                            )
-                            cbus.send(msg)
+                            tx_state.update_meter_current(meter_current_mA)
                     except Exception:
                         pass
 
@@ -400,11 +537,7 @@ def main() -> int:
                         if v_str and i_str:
                             load_volts_mV = int(float(v_str) * 1000)
                             load_current_mA = int(float(i_str) * 1000)
-                            v_u16 = _u16_clamp(load_volts_mV)
-                            i_u16 = _u16_clamp(load_current_mA)
-                            data = list(int(v_u16).to_bytes(2, "little")) + list(int(i_u16).to_bytes(2, "little")) + [0] * 4
-                            msg = can.Message(arbitration_id=int(config.ELOAD_READ_ID), data=data, is_extended_id=True)
-                            cbus.send(msg)
+                            tx_state.update_eload(load_volts_mV, load_current_mA)
                     except Exception:
                         pass
 
@@ -435,11 +568,7 @@ def main() -> int:
                                 if afg_offset_str and afg_duty_str:
                                     off_mv = _i16_clamp(int(float(afg_offset_str) * 1000))
                                     duty_pct = max(0, min(100, int(float(afg_duty_str))))
-                                    payload = bytearray(struct.pack("<h", off_mv))
-                                    payload.append(duty_pct & 0xFF)
-                                    payload.extend([0] * 5)
-                                    msg = can.Message(arbitration_id=int(config.AFG_READ_EXT_ID), data=payload, is_extended_id=True)
-                                    cbus.send(msg)
+                                    tx_state.update_afg_ext(off_mv, duty_pct)
                         except Exception:
                             pass
 
@@ -474,13 +603,7 @@ def main() -> int:
                             if resp:
                                 val = float(resp)
                                 meter_current_mA = int(round(val * 1000))
-                                u16 = _u16_clamp(meter_current_mA)
-                                msg = can.Message(
-                                    arbitration_id=int(config.MMETER_READ_ID),
-                                    data=list(int(u16).to_bytes(2, "little")) + [0] * 6,
-                                    is_extended_id=True,
-                                )
-                                cbus.send(msg)
+                                tx_state.update_meter_current(meter_current_mA)
                         except Exception:
                             pass
 
@@ -493,11 +616,7 @@ def main() -> int:
                             if v_str and i_str:
                                 load_volts_mV = int(float(v_str) * 1000)
                                 load_current_mA = int(float(i_str) * 1000)
-                                v_u16 = _u16_clamp(load_volts_mV)
-                                i_u16 = _u16_clamp(load_current_mA)
-                                data = list(int(v_u16).to_bytes(2, "little")) + list(int(i_u16).to_bytes(2, "little")) + [0] * 4
-                                msg = can.Message(arbitration_id=int(config.ELOAD_READ_ID), data=data, is_extended_id=True)
-                                cbus.send(msg)
+                                tx_state.update_eload(load_volts_mV, load_current_mA)
                         except Exception:
                             pass
 
@@ -533,11 +652,7 @@ def main() -> int:
                                     if afg_offset_str and afg_duty_str:
                                         off_mv = _i16_clamp(int(float(afg_offset_str) * 1000))
                                         duty_pct = max(0, min(100, int(float(afg_duty_str))))
-                                        payload = bytearray(struct.pack("<h", off_mv))
-                                        payload.append(duty_pct & 0xFF)
-                                        payload.extend([0] * 5)
-                                        msg = can.Message(arbitration_id=int(config.AFG_READ_EXT_ID), data=payload, is_extended_id=True)
-                                        cbus.send(msg)
+                                        tx_state.update_afg_ext(off_mv, duty_pct)
                             except Exception:
                                 pass
 
@@ -573,6 +688,8 @@ def main() -> int:
         try:
             if "receiver_thread" in locals():
                 receiver_thread.join(timeout=2.0)
+                if 'tx_thread' in locals() and tx_thread:
+                    tx_thread.join(timeout=2.0)
         except Exception:
             pass
 
