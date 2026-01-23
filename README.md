@@ -229,3 +229,22 @@ Double-check:
 
 This code can control power to external equipment.
 Verify relay wiring (NC/NO), polarity, and idle defaults before running unattended.
+
+
+## CAN bus load (dashboard)
+
+PiPAT shows an estimated CAN **bus load %** on the dashboard status line.
+
+Notes:
+
+- This is an **estimator**, not a physical-layer measurement.
+- It uses the configured `CAN_BITRATE` and observed frame sizes to approximate on-wire bits.
+- TX frames sent by PiPAT are counted in software; RX frames are counted from SocketCAN.
+
+Tuning (optional):
+
+- `CAN_BUS_LOAD_ENABLE=0` to hide/disable load calculation
+- `CAN_BUS_LOAD_WINDOW_SEC=1.0` sliding window (seconds)
+- `CAN_BUS_LOAD_STUFFING_FACTOR=1.2` heuristic stuffing multiplier
+- `CAN_BUS_LOAD_OVERHEAD_BITS=48` approximate overhead bits per classic CAN frame
+

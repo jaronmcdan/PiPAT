@@ -137,6 +137,20 @@ AFG_READ_ID = 0x0CFF0005  # Status: Enable, Freq, Ampl
 AFG_READ_EXT_ID = 0x0CFF0006  # Status: Offset, Duty Cycle
 
 
+# --- CAN bus load estimator (dashboard) ---
+# Enabled by default; set to 0 to hide/disable bus load calculation.
+CAN_BUS_LOAD_ENABLE = _env_bool("CAN_BUS_LOAD_ENABLE", True)
+
+# Sliding window for the estimator (seconds).
+CAN_BUS_LOAD_WINDOW_SEC = _env_float("CAN_BUS_LOAD_WINDOW_SEC", 1.0)
+
+# Physical-layer bit stuffing increases actual bits on-wire; 1.2 is a reasonable heuristic.
+CAN_BUS_LOAD_STUFFING_FACTOR = _env_float("CAN_BUS_LOAD_STUFFING_FACTOR", 1.2)
+
+# Approximate overhead bits per classic CAN frame excluding data (SOF..IFS). This is an estimate.
+CAN_BUS_LOAD_OVERHEAD_BITS = _env_int("CAN_BUS_LOAD_OVERHEAD_BITS", 48)
+
+
 # --- CAN transmit behavior ---
 # Regulate outgoing readback frames (ELOAD/MMETER/AFG status) to a fixed rate.
 CAN_TX_ENABLE = _env_bool("CAN_TX_ENABLE", True)

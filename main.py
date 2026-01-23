@@ -14,6 +14,7 @@ from typing import Dict, Optional
 import can
 
 import config
+from can_metrics import BusLoadMeter
 from dashboard import HAVE_RICH, build_dashboard, console
 from hardware import HardwareManager
 
@@ -198,6 +199,7 @@ def can_tx_loop(
     tx_state: OutgoingTxState,
     stop_event: threading.Event,
     period_s: float,
+    busload: BusLoadMeter | None = None,
 ) -> None:
     """Publish outgoing readback frames at a fixed period (e.g., 50 ms)."""
 
@@ -239,6 +241,11 @@ def can_tx_loop(
                     is_extended_id=True,
                 )
                 cbus.send(msg)
+                if busload:
+                    try:
+                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
+                    except Exception:
+                        pass
             except Exception as e:
                 err_count += 1
                 if err_count in (1, 10, 100):
@@ -255,6 +262,11 @@ def can_tx_loop(
                 )
                 msg = can.Message(arbitration_id=int(config.ELOAD_READ_ID), data=data, is_extended_id=True)
                 cbus.send(msg)
+                if busload:
+                    try:
+                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
+                    except Exception:
+                        pass
             except Exception as e:
                 err_count += 1
                 if err_count in (1, 10, 100):
@@ -269,6 +281,11 @@ def can_tx_loop(
                 payload.extend([0] * 5)
                 msg = can.Message(arbitration_id=int(config.AFG_READ_EXT_ID), data=payload, is_extended_id=True)
                 cbus.send(msg)
+                if busload:
+                    try:
+                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
+                    except Exception:
+                        pass
             except Exception as e:
                 err_count += 1
                 if err_count in (1, 10, 100):
@@ -534,7 +551,7 @@ def instrument_poll_loop(
         stop_event.wait(timeout=0.01)
 
 
-def receive_can_messages(cbus: can.BusABC, hardware: HardwareManager, stop_event: threading.Event, watchdog: ControlWatchdog) -> None:
+def receive_can_messages(cbus: can.BusABC, hardware: HardwareManager, stop_event: threading.Event, watchdog: ControlWatchdog, busload: BusLoadMeter | None = None) -> None:
     """Background thread to process incoming CAN commands."""
 
     _log("Receiver thread started.")
@@ -551,6 +568,12 @@ def receive_can_messages(cbus: can.BusABC, hardware: HardwareManager, stop_event
 
         arb = int(message.arbitration_id)
         data = bytes(message.data or b"")
+
+        if busload:
+            try:
+                busload.record_rx(len(data))
+            except Exception:
+                pass
 
         # Relay control (K1 direct drive)
         if arb == int(config.RLY_CTRL_ID):
@@ -703,6 +726,15 @@ def main() -> int:
     stop_event = threading.Event()
     watchdog = ControlWatchdog()
 
+    # CAN bus load estimator (dashboard)
+    busload = BusLoadMeter(
+        bitrate=int(config.CAN_BITRATE),
+        window_s=float(getattr(config, 'CAN_BUS_LOAD_WINDOW_SEC', 1.0)),
+        stuffing_factor=float(getattr(config, 'CAN_BUS_LOAD_STUFFING_FACTOR', 1.2)),
+        overhead_bits=int(getattr(config, 'CAN_BUS_LOAD_OVERHEAD_BITS', 48)),
+        enabled=bool(getattr(config, 'CAN_BUS_LOAD_ENABLE', True)),
+    )
+
     # measurement vars
     meter_current_mA = 0
     load_volts_mV = 0
@@ -734,7 +766,7 @@ def main() -> int:
 
         receiver_thread = threading.Thread(
             target=receive_can_messages,
-            args=(cbus, hardware, stop_event, watchdog),
+            args=(cbus, hardware, stop_event, watchdog, busload),
             daemon=True,
         )
         receiver_thread.start()
@@ -748,7 +780,7 @@ def main() -> int:
             if period_ms > 0:
                 tx_thread = threading.Thread(
                     target=can_tx_loop,
-                    args=(cbus, tx_state, stop_event, period_ms / 1000.0),
+                    args=(cbus, tx_state, stop_event, period_ms / 1000.0, busload),
                     daemon=True,
                 )
                 tx_thread.start()
@@ -809,8 +841,11 @@ def main() -> int:
         
                     gpio_str = "--" if k1_level is None else ("H" if bool(k1_level) else "L")
         
+                    load_pct, rx_fps, tx_fps = busload.snapshot() if busload else (None, None, None)
+                    bus_str = '--' if load_pct is None else f"{load_pct:.1f}%"
+
                     _log(
-                        f"K1={'ON' if k1_drive else 'OFF'} GPIO={gpio_str} "
+                        f"K1={'ON' if k1_drive else 'OFF'} GPIO={gpio_str} Bus={bus_str} "
                         f"Load={int(snap.get('load_volts_mV', 0))/1000:.3f}V {int(snap.get('load_current_mA', 0))/1000:.3f}A "
                         f"Meter={int(snap.get('meter_current_mA', 0))/1000:.3f}A "
                         f"WD={wd.get('timed_out')}"
@@ -826,6 +861,7 @@ def main() -> int:
                     watchdog.enforce(hardware)
                     snap = telemetry.snapshot()
         
+                    bus_load_pct, bus_rx_fps, bus_tx_fps = busload.snapshot() if busload else (None, None, None)
                     renderable = build_dashboard(
                         hardware,
                         meter_current_mA=int(snap.get("meter_current_mA", 0)),
@@ -845,6 +881,9 @@ def main() -> int:
                         can_channel=config.CAN_CHANNEL,
                         can_bitrate=int(config.CAN_BITRATE),
                         status_poll_period=status_period,
+                        bus_load_pct=bus_load_pct,
+                        bus_rx_fps=bus_rx_fps,
+                        bus_tx_fps=bus_tx_fps,
                         watchdog=watchdog.snapshot(),
                     )
                     live.update(renderable, refresh=True)
