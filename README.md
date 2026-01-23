@@ -57,7 +57,6 @@ The most common settings:
 
 - `CAN_CHANNEL`, `CAN_BITRATE`, `CAN_SETUP`
 - `CAN_TX_ENABLE`, `CAN_TX_PERIOD_MS` (regulate outgoing readback frames; default 50ms)
-- `CAN_RX_FILTERS_ENABLE`, `CAN_TXQUEUELEN`, `CAN_RESTART_MS`, `CAN_SEND_TIMEOUT_S` (performance / robustness)
 - `K1_PIN_BCM`, `K1_ACTIVE_LOW`, `K1_CAN_INVERT`, `K1_IDLE_DRIVE`
 - `K1_TIMEOUT_SEC` (watchdog timeout for K1)
 - `CONTROL_TIMEOUT_SEC` (or per-device timeouts)
@@ -77,10 +76,7 @@ python3 main.py
 By default (`CAN_SETUP=1`), `main.py` attempts to bring the CAN interface up using:
 
 ```bash
-ip link set <channel> down
-ip link set <channel> type can bitrate <bitrate> restart-ms <restart_ms>
-ip link set <channel> txqueuelen <txqueuelen>
-ip link set <channel> up
+ip link set <channel> up type can bitrate <bitrate>
 ```
 
 If you prefer to configure CAN at boot, set `CAN_SETUP=0` (in `config.py` or `/etc/roi/roi.env`).
@@ -93,49 +89,6 @@ ip -details link show can1
 ```
 
 ---
-
-
-## CAN performance & troubleshooting
-
-If CAN controls feel "sluggish" or bursty, the most common causes are:
-
-1) **CAN RX thread blocked by slow instrument I/O** (USB-serial/VISA latency, adapter jitter, etc.)
-2) **SocketCAN buffer pressure** (busy bus + small buffers => drops/retries)
-3) **CAN error states / bus-off** (wiring, termination, bitrate mismatch)
-
-### What PiPAT does to minimize latency
-
-- **Coalesced control apply:** incoming control frames update a "desired state" and are applied asynchronously in a worker thread. This keeps the CAN receive loop fast and prevents instrument I/O from stalling CAN processing.
-- **Optional SocketCAN RX filters (`CAN_RX_FILTERS_ENABLE=1`):** only the control IDs PiPAT cares about are delivered to the process.
-- **Non-blocking-ish TX:** outgoing readback publishing uses a small `CAN_SEND_TIMEOUT_S` to avoid long stalls if the TX buffer is temporarily full.
-
-### System-level checks
-
-Show link state, bitrate, and error counters:
-
-```bash
-ip -details -statistics link show can1
-```
-
-Watch live traffic (timestamps help spot gaps):
-
-```bash
-candump -tz can1
-```
-
-If you see TX stalls or drops, try increasing the queue length:
-
-```bash
-sudo ip link set can1 txqueuelen 1024
-```
-
-If you see bus-off events, make sure `restart-ms` is set (PiPAT defaults `CAN_RESTART_MS=100` when `CAN_SETUP=1`).
-
-### If it still feels slow
-
-- Temporarily set `CAN_RX_FILTERS_ENABLE=0` and compare behavior (in case your python-can version does not support filters).
-- Reduce instrument polling rate (`STATUS_POLL_PERIOD`) if the Pi is CPU constrained.
-- Verify the USB instrument adapters aren't intermittently stalling (check dmesg, use a powered hub, avoid marginal cables).
 
 ## K1 relay semantics (no inference)
 
@@ -274,3 +227,22 @@ Double-check:
 
 This code can control power to external equipment.
 Verify relay wiring (NC/NO), polarity, and idle defaults before running unattended.
+
+
+## CAN bus load (dashboard)
+
+PiPAT shows an estimated CAN **bus load %** on the dashboard status line.
+
+Notes:
+
+- This is an **estimator**, not a physical-layer measurement.
+- It uses the configured `CAN_BITRATE` and observed frame sizes to approximate on-wire bits.
+- TX frames sent by PiPAT are counted in software; RX frames are counted from SocketCAN.
+
+Tuning (optional):
+
+- `CAN_BUS_LOAD_ENABLE=0` to hide/disable load calculation
+- `CAN_BUS_LOAD_WINDOW_SEC=1.0` sliding window (seconds)
+- `CAN_BUS_LOAD_STUFFING_FACTOR=1.2` heuristic stuffing multiplier
+- `CAN_BUS_LOAD_OVERHEAD_BITS=48` approximate overhead bits per classic CAN frame
+
