@@ -86,6 +86,24 @@ CAN_BITRATE = _env_int("CAN_BITRATE", 250000)
 # If True, main.py will try to bring the SocketCAN interface up.
 CAN_SETUP = _env_bool("CAN_SETUP", True)
 
+
+# --- CAN performance tuning ---
+# Apply SocketCAN filters so we only receive the control IDs we care about.
+# This reduces CPU overhead and minimizes jitter on busy buses.
+CAN_RX_FILTERS_ENABLE = _env_bool("CAN_RX_FILTERS_ENABLE", True)
+
+# SocketCAN transmit queue length (ip link txqueuelen). Larger values can reduce TX stalls.
+# Only applied when CAN_SETUP=True.
+CAN_TXQUEUELEN = _env_int("CAN_TXQUEUELEN", 512)
+
+# Auto-restart (ms) after bus-off. Helps recovery from transient CAN errors.
+# Only applied when CAN_SETUP=True.
+CAN_RESTART_MS = _env_int("CAN_RESTART_MS", 100)
+
+# TX send timeout for python-can bus.send(). Small values avoid long stalls
+# if the socket TX buffer is temporarily full.
+CAN_SEND_TIMEOUT_S = _env_float("CAN_SEND_TIMEOUT_S", 0.01)
+
 # --- Control watchdog ---
 # If a given device doesn't receive its control message within the timeout,
 # we drive that device back to its configured idle state.
