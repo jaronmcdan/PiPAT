@@ -64,6 +64,7 @@ ELOAD_VISA_ID = _env_str("ELOAD_VISA_ID", "USB0::11975::34816::*::0::INSTR")
 AFG_VISA_ID = _env_str("AFG_VISA_ID", "ASRL/dev/ttyACM0::INSTR")
 
 # --- GPIO / K1 relay drive ---
+K1_ENABLE = _env_bool("K1_ENABLE", True)
 K1_PIN_BCM = _env_int("K1_PIN_BCM", 26)
 
 # Relay input polarity:

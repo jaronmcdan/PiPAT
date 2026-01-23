@@ -14,6 +14,32 @@ from gpiozero import LED
 import config
 
 
+class _NullRelay:
+    """Fallback relay implementation used when GPIO is unavailable.
+
+    Provides a minimal gpiozero-like interface (on/off/is_lit/pin) so the rest
+    of the application can run in dev environments, containers, or hosts that
+    lack Raspberry Pi GPIO support.
+    """
+
+    def __init__(self, initial_drive: bool = False):
+        self._is_lit = bool(initial_drive)
+
+    @property
+    def is_lit(self) -> bool:
+        return bool(self._is_lit)
+
+    def on(self) -> None:
+        self._is_lit = True
+
+    def off(self) -> None:
+        self._is_lit = False
+
+    @property
+    def pin(self):
+        return None
+
+
 def _clamp_i16(x: int) -> int:
     if x < -32768:
         return -32768
@@ -64,14 +90,27 @@ class HardwareManager:
         # from contact wiring (NC/NO). If you need true DUT power status, measure it.
         initial_drive = bool(getattr(config, "K1_IDLE_DRIVE", False))
 
-        self.relay = LED(
-            config.K1_PIN_BCM,
-            # active_high is the *electrical* polarity of the relay input.
-            # If K1_ACTIVE_LOW=True, then LED.on() drives the pin LOW.
-            active_high=not bool(getattr(config, "K1_ACTIVE_LOW", False)),
-            # initial_value is whether LED is "on" (drive asserted).
-            initial_value=bool(initial_drive),
-        )
+        self.relay_backend: str = "disabled"
+        if bool(getattr(config, "K1_ENABLE", True)):
+            try:
+                self.relay = LED(
+                    config.K1_PIN_BCM,
+                    # active_high is the *electrical* polarity of the relay input.
+                    # If K1_ACTIVE_LOW=True, then LED.on() drives the pin LOW.
+                    active_high=not bool(getattr(config, "K1_ACTIVE_LOW", False)),
+                    # initial_value is whether LED is "on" (drive asserted).
+                    initial_value=bool(initial_drive),
+                )
+                self.relay_backend = "gpio"
+            except Exception as e:
+                # Typical causes: running off-Pi, missing pin factory backends
+                # (lgpio/RPi.GPIO/pigpio), or insufficient permissions for GPIO.
+                print(f"WARNING: K1 GPIO unavailable; running with a mock relay. ({e})")
+                self.relay = _NullRelay(initial_drive)
+                self.relay_backend = "mock"
+        else:
+            self.relay = _NullRelay(initial_drive)
+            self.relay_backend = "disabled"
 
     # --- Relay helpers ---
     def get_k1_drive(self) -> bool:
