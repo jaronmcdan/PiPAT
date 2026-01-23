@@ -57,6 +57,8 @@ The most common settings:
 
 - `CAN_CHANNEL`, `CAN_BITRATE`, `CAN_SETUP`
 - `CAN_TX_ENABLE`, `CAN_TX_PERIOD_MS` (regulate outgoing readback frames; default 50ms)
+- `DASH_FPS` (Rich TUI render rate; default 15)
+- `MEAS_POLL_PERIOD`, `STATUS_POLL_PERIOD` (instrument poll cadence; defaults 0.2s/1.0s)
 - `K1_PIN_BCM`, `K1_ACTIVE_LOW`, `K1_CAN_INVERT`, `K1_IDLE_DRIVE`
 - `K1_TIMEOUT_SEC` (watchdog timeout for K1)
 - `CONTROL_TIMEOUT_SEC` (or per-device timeouts)
@@ -227,22 +229,3 @@ Double-check:
 
 This code can control power to external equipment.
 Verify relay wiring (NC/NO), polarity, and idle defaults before running unattended.
-
-
-## CAN bus load (dashboard)
-
-PiPAT shows an estimated CAN **bus load %** on the dashboard status line.
-
-Notes:
-
-- This is an **estimator**, not a physical-layer measurement.
-- It uses the configured `CAN_BITRATE` and observed frame sizes to approximate on-wire bits.
-- TX frames sent by PiPAT are counted in software; RX frames are counted from SocketCAN.
-
-Tuning (optional):
-
-- `CAN_BUS_LOAD_ENABLE=0` to hide/disable load calculation
-- `CAN_BUS_LOAD_WINDOW_SEC=1.0` sliding window (seconds)
-- `CAN_BUS_LOAD_STUFFING_FACTOR=1.2` heuristic stuffing multiplier
-- `CAN_BUS_LOAD_OVERHEAD_BITS=48` approximate overhead bits per classic CAN frame
-

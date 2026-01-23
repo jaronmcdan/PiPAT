@@ -58,6 +58,8 @@ def _env_bool(name: str, default: bool) -> bool:
 # --- Hardware Identifiers ---
 MULTI_METER_PATH = _env_str("MULTI_METER_PATH", "/dev/ttyUSB0")
 MULTI_METER_BAUD = _env_int("MULTI_METER_BAUD", 38400)
+MULTI_METER_TIMEOUT = _env_float("MULTI_METER_TIMEOUT", 1.0)
+MULTI_METER_WRITE_TIMEOUT = _env_float("MULTI_METER_WRITE_TIMEOUT", 1.0)
 
 # VISA Resource IDs (PyVISA)
 ELOAD_VISA_ID = _env_str("ELOAD_VISA_ID", "USB0::11975::34816::*::0::INSTR")
@@ -101,6 +103,17 @@ APPLY_IDLE_ON_STARTUP = _env_bool("APPLY_IDLE_ON_STARTUP", True)
 # Headless mode disables the Rich TUI (useful for systemd/journald).
 ROI_HEADLESS = _env_bool("ROI_HEADLESS", False)
 
+
+# --- Dashboard / polling ---
+# DASH_FPS controls only the Rich TUI render rate (it does NOT affect CAN).
+DASH_FPS = _env_int("DASH_FPS", 15)
+
+# Instrument polling cadence (seconds). These govern how often values update on the dashboard
+# and how frequently outgoing readback frames can change.
+MEAS_POLL_PERIOD = _env_float("MEAS_POLL_PERIOD", 0.2)      # fast measurements (V/I, meter)
+STATUS_POLL_PERIOD = _env_float("STATUS_POLL_PERIOD", 1.0)  # slow status (setpoints/mode)
+
+
 # --- Optional idle behavior for instruments ---
 # E-load: idle means input off and short off.
 ELOAD_IDLE_INPUT_ON = _env_bool("ELOAD_IDLE_INPUT_ON", False)
@@ -123,19 +136,6 @@ MMETER_READ_ID = 0x0CFF0004
 AFG_READ_ID = 0x0CFF0005  # Status: Enable, Freq, Ampl
 AFG_READ_EXT_ID = 0x0CFF0006  # Status: Offset, Duty Cycle
 
-
-# --- CAN bus load estimator (dashboard) ---
-# Enabled by default; set to 0 to hide/disable bus load calculation.
-CAN_BUS_LOAD_ENABLE = _env_bool("CAN_BUS_LOAD_ENABLE", True)
-
-# Sliding window for the estimator (seconds).
-CAN_BUS_LOAD_WINDOW_SEC = _env_float("CAN_BUS_LOAD_WINDOW_SEC", 1.0)
-
-# Physical-layer bit stuffing increases actual bits on-wire; 1.2 is a reasonable heuristic.
-CAN_BUS_LOAD_STUFFING_FACTOR = _env_float("CAN_BUS_LOAD_STUFFING_FACTOR", 1.2)
-
-# Approximate overhead bits per classic CAN frame excluding data (SOF..IFS). This is an estimate.
-CAN_BUS_LOAD_OVERHEAD_BITS = _env_int("CAN_BUS_LOAD_OVERHEAD_BITS", 48)
 
 # --- CAN transmit behavior ---
 # Regulate outgoing readback frames (ELOAD/MMETER/AFG status) to a fixed rate.

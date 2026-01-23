@@ -37,9 +37,6 @@ def build_dashboard(hardware, *,
                     can_channel: str,
                     can_bitrate: int,
                     status_poll_period: float,
-                    bus_load_pct=None,
-                    bus_rx_fps=None,
-                    bus_tx_fps=None,
                     watchdog=None):
     
     if not HAVE_RICH:
@@ -163,8 +160,6 @@ def build_dashboard(hardware, *,
     # --- BOTTOM: Status Bar ---
     status = Text.assemble(
         (" CAN: ", "bold"), (f"{can_channel}@{can_bitrate//1000}k ", "cyan"),
-        (" Load: ", "bold"),
-        ((f"{bus_load_pct:.1f}% " if isinstance(bus_load_pct, (int, float)) else "-- "), "yellow"),
         (" Poll: ", "bold"), (f"{status_poll_period:.2f}s ", "cyan"),
         (" AFG: ", "bold"), (f"{'Connected' if hardware.afg else 'Missing'}", "green" if hardware.afg else "red"),
     )

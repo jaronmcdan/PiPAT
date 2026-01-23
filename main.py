@@ -14,7 +14,6 @@ from typing import Dict, Optional
 import can
 
 import config
-from can_metrics import BusLoadMeter
 from dashboard import HAVE_RICH, build_dashboard, console
 from hardware import HardwareManager
 
@@ -199,7 +198,6 @@ def can_tx_loop(
     tx_state: OutgoingTxState,
     stop_event: threading.Event,
     period_s: float,
-    busload: BusLoadMeter | None = None,
 ) -> None:
     """Publish outgoing readback frames at a fixed period (e.g., 50 ms)."""
 
@@ -241,11 +239,6 @@ def can_tx_loop(
                     is_extended_id=True,
                 )
                 cbus.send(msg)
-                if busload:
-                    try:
-                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
-                    except Exception:
-                        pass
             except Exception as e:
                 err_count += 1
                 if err_count in (1, 10, 100):
@@ -262,11 +255,6 @@ def can_tx_loop(
                 )
                 msg = can.Message(arbitration_id=int(config.ELOAD_READ_ID), data=data, is_extended_id=True)
                 cbus.send(msg)
-                if busload:
-                    try:
-                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
-                    except Exception:
-                        pass
             except Exception as e:
                 err_count += 1
                 if err_count in (1, 10, 100):
@@ -281,18 +269,272 @@ def can_tx_loop(
                 payload.extend([0] * 5)
                 msg = can.Message(arbitration_id=int(config.AFG_READ_EXT_ID), data=payload, is_extended_id=True)
                 cbus.send(msg)
-                if busload:
-                    try:
-                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
-                    except Exception:
-                        pass
             except Exception as e:
                 err_count += 1
                 if err_count in (1, 10, 100):
                     _log(f"TX AFG_EXT send error (count={err_count}): {e}")
 
 
-def receive_can_messages(cbus: can.BusABC, hardware: HardwareManager, stop_event: threading.Event, watchdog: ControlWatchdog, busload: BusLoadMeter | None = None) -> None:
+
+class TelemetryState:
+    """Thread-safe snapshot of instrument telemetry for the dashboard and logs.
+
+    The key goal is to keep the Rich TUI responsive by ensuring *no* slow
+    instrument I/O happens on the render loop.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+
+        # Fast measurements (updated at MEAS_POLL_PERIOD)
+        self.meter_current_mA: int = 0
+        self.load_volts_mV: int = 0
+        self.load_current_mA: int = 0
+
+        # Slow status (updated at STATUS_POLL_PERIOD)
+        self.load_stat_func: str = ""
+        self.load_stat_curr: str = ""
+        self.load_stat_res: str = ""
+        self.load_stat_imp: str = ""
+        self.load_stat_short: str = ""
+
+        self.afg_freq_str: str = ""
+        self.afg_ampl_str: str = ""
+        self.afg_offset_str: str = "0"
+        self.afg_duty_str: str = "50"
+        self.afg_out_str: str = ""
+        self.afg_shape_str: str = ""
+
+        # Timestamps (monotonic seconds)
+        self.last_meas_ts: float = 0.0
+        self.last_status_ts: float = 0.0
+
+    def update_meas(self, *, meter_current_mA: int | None = None,
+                    load_volts_mV: int | None = None,
+                    load_current_mA: int | None = None,
+                    ts: float | None = None) -> None:
+        with self._lock:
+            if meter_current_mA is not None:
+                self.meter_current_mA = int(meter_current_mA)
+            if load_volts_mV is not None:
+                self.load_volts_mV = int(load_volts_mV)
+            if load_current_mA is not None:
+                self.load_current_mA = int(load_current_mA)
+            self.last_meas_ts = float(ts if ts is not None else time.monotonic())
+
+    def update_status(self, *, load_stat_func: str | None = None,
+                      load_stat_curr: str | None = None,
+                      load_stat_res: str | None = None,
+                      load_stat_imp: str | None = None,
+                      load_stat_short: str | None = None,
+                      afg_freq_str: str | None = None,
+                      afg_ampl_str: str | None = None,
+                      afg_offset_str: str | None = None,
+                      afg_duty_str: str | None = None,
+                      afg_out_str: str | None = None,
+                      afg_shape_str: str | None = None,
+                      ts: float | None = None) -> None:
+        with self._lock:
+            if load_stat_func is not None:
+                self.load_stat_func = load_stat_func
+            if load_stat_curr is not None:
+                self.load_stat_curr = load_stat_curr
+            if load_stat_res is not None:
+                self.load_stat_res = load_stat_res
+            if load_stat_imp is not None:
+                self.load_stat_imp = load_stat_imp
+            if load_stat_short is not None:
+                self.load_stat_short = load_stat_short
+
+            if afg_freq_str is not None:
+                self.afg_freq_str = afg_freq_str
+            if afg_ampl_str is not None:
+                self.afg_ampl_str = afg_ampl_str
+            if afg_offset_str is not None:
+                self.afg_offset_str = afg_offset_str
+            if afg_duty_str is not None:
+                self.afg_duty_str = afg_duty_str
+            if afg_out_str is not None:
+                self.afg_out_str = afg_out_str
+            if afg_shape_str is not None:
+                self.afg_shape_str = afg_shape_str
+
+            self.last_status_ts = float(ts if ts is not None else time.monotonic())
+
+    def snapshot(self) -> Dict[str, object]:
+        with self._lock:
+            return {
+                "meter_current_mA": int(self.meter_current_mA),
+                "load_volts_mV": int(self.load_volts_mV),
+                "load_current_mA": int(self.load_current_mA),
+                "load_stat_func": str(self.load_stat_func),
+                "load_stat_curr": str(self.load_stat_curr),
+                "load_stat_res": str(self.load_stat_res),
+                "load_stat_imp": str(self.load_stat_imp),
+                "load_stat_short": str(self.load_stat_short),
+                "afg_freq_str": str(self.afg_freq_str),
+                "afg_ampl_str": str(self.afg_ampl_str),
+                "afg_offset_str": str(self.afg_offset_str),
+                "afg_duty_str": str(self.afg_duty_str),
+                "afg_out_str": str(self.afg_out_str),
+                "afg_shape_str": str(self.afg_shape_str),
+                "last_meas_ts": float(self.last_meas_ts),
+                "last_status_ts": float(self.last_status_ts),
+            }
+
+
+def instrument_poll_loop(
+    hardware: HardwareManager,
+    tx_state: OutgoingTxState,
+    telemetry: TelemetryState,
+    stop_event: threading.Event,
+    status_period_s: float,
+    meas_period_s: float,
+) -> None:
+    """Poll instruments in the background so the UI render loop stays snappy."""
+
+    try:
+        status_period_s = float(status_period_s)
+    except Exception:
+        status_period_s = 1.0
+    if status_period_s <= 0:
+        status_period_s = 1.0
+
+    try:
+        meas_period_s = float(meas_period_s)
+    except Exception:
+        meas_period_s = 0.2
+    if meas_period_s <= 0:
+        meas_period_s = 0.2
+
+    _log(f"Instrument poll thread started (meas={meas_period_s:.3f}s, status={status_period_s:.3f}s).")
+
+    last_status = 0.0
+    next_meas = time.monotonic()
+
+    while not stop_event.is_set():
+        now_m = time.monotonic()
+
+        # --- Fast measurements (tight loop) ---
+        if now_m >= next_meas:
+            next_meas += meas_period_s
+            # avoid runaway if we get stalled for a while
+            if next_meas < now_m - (10.0 * meas_period_s):
+                next_meas = now_m + meas_period_s
+
+            meter_current_mA = None
+            load_volts_mV = None
+            load_current_mA = None
+
+            # Multimeter read
+            if hardware.multi_meter:
+                try:
+                    with hardware.mmeter_lock:
+                        hardware.multi_meter.write(b"FETC?\n")
+                        raw = hardware.multi_meter.readline()
+                    resp = raw.decode("ascii", errors="replace").strip()
+                    if resp:
+                        val = float(resp)
+                        meter_current_mA = int(round(val * 1000))
+                        tx_state.update_meter_current(meter_current_mA)
+                except Exception:
+                    pass
+
+            # E-Load measurement
+            if hardware.e_load:
+                try:
+                    with hardware.eload_lock:
+                        v_str = hardware.e_load.query("MEAS:VOLT?").strip()
+                        i_str = hardware.e_load.query("MEAS:CURR?").strip()
+                    if v_str and i_str:
+                        load_volts_mV = int(float(v_str) * 1000)
+                        load_current_mA = int(float(i_str) * 1000)
+                        tx_state.update_eload(load_volts_mV, load_current_mA)
+                except Exception:
+                    pass
+
+            if (meter_current_mA is not None) or (load_volts_mV is not None) or (load_current_mA is not None):
+                telemetry.update_meas(
+                    meter_current_mA=meter_current_mA,
+                    load_volts_mV=load_volts_mV,
+                    load_current_mA=load_current_mA,
+                    ts=now_m,
+                )
+
+        # --- Slow status poll (setpoints/mode) ---
+        if (now_m - last_status) >= status_period_s:
+            last_status = now_m
+
+            load_stat_func = None
+            load_stat_curr = None
+            load_stat_imp = None
+            load_stat_res = None
+            load_stat_short = None
+
+            afg_freq_str = None
+            afg_ampl_str = None
+            afg_out_str = None
+            afg_shape_str = None
+            afg_offset_str = None
+            afg_duty_str = None
+
+            if hardware.e_load:
+                try:
+                    with hardware.eload_lock:
+                        load_stat_func = hardware.e_load.query("FUNC?").strip()
+                        load_stat_curr = hardware.e_load.query("CURR?").strip()
+                        load_stat_imp = hardware.e_load.query("INP?").strip()
+                        load_stat_res = hardware.e_load.query("RES?").strip()
+                        # Some loads have SHOR?; keep optional
+                        try:
+                            load_stat_short = hardware.e_load.query("INP:SHOR?").strip()
+                        except Exception:
+                            load_stat_short = ""
+                except Exception:
+                    pass
+
+            if hardware.afg:
+                try:
+                    with hardware.afg_lock:
+                        afg_freq_str = hardware.afg.query("SOUR1:FREQ?").strip()
+                        afg_ampl_str = hardware.afg.query("SOUR1:AMPL?").strip()
+                        afg_out_str = hardware.afg.query("SOUR1:OUTP?").strip()
+
+                        is_actually_on = str(afg_out_str).strip().upper() in ["ON", "1"]
+                        if hardware.afg_output != is_actually_on:
+                            hardware.afg_output = is_actually_on
+
+                        afg_shape_str = hardware.afg.query("SOUR1:FUNC?").strip()
+                        afg_offset_str = hardware.afg.query("SOUR1:VOLT:OFFS?").strip()
+                        afg_duty_str = hardware.afg.query("SOUR1:SQU:DCYC?").strip()
+
+                        if afg_offset_str and afg_duty_str:
+                            off_mv = _i16_clamp(int(float(afg_offset_str) * 1000))
+                            duty_pct = max(0, min(100, int(float(afg_duty_str))))
+                            tx_state.update_afg_ext(off_mv, duty_pct)
+                except Exception:
+                    pass
+
+            telemetry.update_status(
+                load_stat_func=load_stat_func,
+                load_stat_curr=load_stat_curr,
+                load_stat_res=load_stat_res,
+                load_stat_imp=load_stat_imp,
+                load_stat_short=load_stat_short,
+                afg_freq_str=afg_freq_str,
+                afg_ampl_str=afg_ampl_str,
+                afg_out_str=afg_out_str,
+                afg_shape_str=afg_shape_str,
+                afg_offset_str=afg_offset_str,
+                afg_duty_str=afg_duty_str,
+                ts=now_m,
+            )
+
+        # Short wait to avoid pegging a core.
+        stop_event.wait(timeout=0.01)
+
+
+def receive_can_messages(cbus: can.BusABC, hardware: HardwareManager, stop_event: threading.Event, watchdog: ControlWatchdog) -> None:
     """Background thread to process incoming CAN commands."""
 
     _log("Receiver thread started.")
@@ -309,12 +551,6 @@ def receive_can_messages(cbus: can.BusABC, hardware: HardwareManager, stop_event
 
         arb = int(message.arbitration_id)
         data = bytes(message.data or b"")
-
-        if busload:
-            try:
-                busload.record_rx(len(data))
-            except Exception:
-                pass
 
         # Relay control (K1 direct drive)
         if arb == int(config.RLY_CTRL_ID):
@@ -467,15 +703,6 @@ def main() -> int:
     stop_event = threading.Event()
     watchdog = ControlWatchdog()
 
-    # CAN bus load estimator (dashboard)
-    busload = BusLoadMeter(
-        bitrate=int(config.CAN_BITRATE),
-        window_s=float(getattr(config, 'CAN_BUS_LOAD_WINDOW_SEC', 1.0)),
-        stuffing_factor=float(getattr(config, 'CAN_BUS_LOAD_STUFFING_FACTOR', 1.2)),
-        overhead_bits=int(getattr(config, 'CAN_BUS_LOAD_OVERHEAD_BITS', 48)),
-        enabled=bool(getattr(config, 'CAN_BUS_LOAD_ENABLE', True)),
-    )
-
     # measurement vars
     meter_current_mA = 0
     load_volts_mV = 0
@@ -488,10 +715,6 @@ def main() -> int:
     load_stat_func, load_stat_curr, load_stat_imp, load_stat_res, load_stat_short = "", "", "", "", ""
     afg_freq_str, afg_ampl_str, afg_out_str, afg_shape_str = "", "", "", ""
     afg_offset_str, afg_duty_str = "0", "50"
-
-    last_status_poll = 0.0
-    STATUS_POLL_PERIOD = 1.0
-
     # Decide UI mode
     headless = bool(args.headless or config.ROI_HEADLESS or (not sys.stdout.isatty()) or (not HAVE_RICH) or (Live is None))
 
@@ -511,7 +734,7 @@ def main() -> int:
 
         receiver_thread = threading.Thread(
             target=receive_can_messages,
-            args=(cbus, hardware, stop_event, watchdog, busload),
+            args=(cbus, hardware, stop_event, watchdog),
             daemon=True,
         )
         receiver_thread.start()
@@ -525,212 +748,108 @@ def main() -> int:
             if period_ms > 0:
                 tx_thread = threading.Thread(
                     target=can_tx_loop,
-                    args=(cbus, tx_state, stop_event, period_ms / 1000.0, busload),
+                    args=(cbus, tx_state, stop_event, period_ms / 1000.0),
                     daemon=True,
                 )
                 tx_thread.start()
             else:
                 _log('CAN_TX_PERIOD_MS <= 0; TX rate regulation disabled.')
 
+                
+        # Start background instrument polling so the UI stays responsive even if instrument I/O blocks.
+        try:
+            status_period = float(getattr(config, "STATUS_POLL_PERIOD", 1.0))
+        except Exception:
+            status_period = 1.0
+        try:
+            meas_period = float(getattr(config, "MEAS_POLL_PERIOD", 0.2))
+        except Exception:
+            meas_period = 0.2
+        try:
+            dash_fps = int(getattr(config, "DASH_FPS", 15))
+        except Exception:
+            dash_fps = 15
+        if dash_fps <= 0:
+            dash_fps = 10
+        
+        telemetry = TelemetryState()
+        poll_thread = threading.Thread(
+            target=instrument_poll_loop,
+            args=(hardware, tx_state, telemetry, stop_event, status_period, meas_period),
+            daemon=True,
+        )
+        poll_thread.start()
+        
         # Headless loop (no rich Live)
         if headless:
             _log("Running headless (no Rich TUI).")
             next_log = 0.0
             while True:
                 now = time.time()
-
+        
                 # Enforce watchdog first so timed-out controls go idle promptly
                 watchdog.enforce(hardware)
-
-                # 1. Multimeter Read
-                if hardware.multi_meter:
-                    try:
-                        with hardware.mmeter_lock:
-                            hardware.multi_meter.write(b"FETC?\n")
-                            raw = hardware.multi_meter.readline()
-                        resp = raw.decode("ascii", errors="replace").strip()
-                        if resp:
-                            val = float(resp)
-                            meter_current_mA = int(round(val * 1000))
-                            tx_state.update_meter_current(meter_current_mA)
-                    except Exception:
-                        pass
-
-                # 2. E-Load Meas
-                if hardware.e_load:
-                    try:
-                        with hardware.eload_lock:
-                            v_str = hardware.e_load.query("MEAS:VOLT?").strip()
-                            i_str = hardware.e_load.query("MEAS:CURR?").strip()
-                        if v_str and i_str:
-                            load_volts_mV = int(float(v_str) * 1000)
-                            load_current_mA = int(float(i_str) * 1000)
-                            tx_state.update_eload(load_volts_mV, load_current_mA)
-                    except Exception:
-                        pass
-
-                # 3. Status Poll
-                if now - last_status_poll >= STATUS_POLL_PERIOD:
-                    last_status_poll = now
-
-                    if hardware.e_load:
-                        try:
-                            with hardware.eload_lock:
-                                load_stat_func = hardware.e_load.query("FUNC?").strip()
-                                load_stat_curr = hardware.e_load.query("CURR?").strip()
-                                load_stat_imp = hardware.e_load.query("INP?").strip()
-                                load_stat_res = hardware.e_load.query("RES?").strip()
-                        except Exception:
-                            pass
-
-                    if hardware.afg:
-                        try:
-                            with hardware.afg_lock:
-                                afg_freq_str = hardware.afg.query("SOUR1:FREQ?").strip()
-                                afg_ampl_str = hardware.afg.query("SOUR1:AMPL?").strip()
-                                afg_out_str = hardware.afg.query("SOUR1:OUTP?").strip()
-                                afg_shape_str = hardware.afg.query("SOUR1:FUNC?").strip()
-                                afg_offset_str = hardware.afg.query("SOUR1:VOLT:OFFS?").strip()
-                                afg_duty_str = hardware.afg.query("SOUR1:SQU:DCYC?").strip()
-
-                                if afg_offset_str and afg_duty_str:
-                                    off_mv = _i16_clamp(int(float(afg_offset_str) * 1000))
-                                    duty_pct = max(0, min(100, int(float(afg_duty_str))))
-                                    tx_state.update_afg_ext(off_mv, duty_pct)
-                        except Exception:
-                            pass
-
+        
                 # Periodic log line
                 if now >= next_log:
                     next_log = now + 5.0
                     wd = watchdog.snapshot()
-
+                    snap = telemetry.snapshot()
+        
                     k1_drive = False
                     try:
                         k1_drive = bool(hardware.get_k1_drive())
                     except Exception:
                         k1_drive = bool(getattr(hardware.relay, "is_lit", False))
-
+        
                     try:
                         k1_level = hardware.get_k1_pin_level()
                     except Exception:
                         k1_level = None
-
+        
                     gpio_str = "--" if k1_level is None else ("H" if bool(k1_level) else "L")
-
-                    load_pct, rx_fps, tx_fps = busload.snapshot() if busload else (None, None, None)
-                    bus_str = "--" if load_pct is None else f"{load_pct:.1f}%"
-
+        
                     _log(
                         f"K1={'ON' if k1_drive else 'OFF'} GPIO={gpio_str} "
-                        f"Bus={bus_str} "
-                        f"Load={load_volts_mV/1000:.3f}V {load_current_mA/1000:.3f}A "
-                        f"Meter={meter_current_mA/1000:.3f}A "
+                        f"Load={int(snap.get('load_volts_mV', 0))/1000:.3f}V {int(snap.get('load_current_mA', 0))/1000:.3f}A "
+                        f"Meter={int(snap.get('meter_current_mA', 0))/1000:.3f}A "
                         f"WD={wd.get('timed_out')}"
                     )
-
-                time.sleep(0.1)
-
+        
+                stop_event.wait(timeout=0.1)
+        
         # Rich TUI loop
         else:
-            with Live(console=console, screen=True, refresh_per_second=10) as live:
+            with Live(console=console, screen=True, refresh_per_second=dash_fps) as live:
+                render_period = 1.0 / float(dash_fps) if dash_fps > 0 else 0.1
                 while True:
-                    now = time.time()
-
                     watchdog.enforce(hardware)
-
-                    # 1. Multimeter Read
-                    if hardware.multi_meter:
-                        try:
-                            with hardware.mmeter_lock:
-                                hardware.multi_meter.write(b"FETC?\n")
-                                raw = hardware.multi_meter.readline()
-                            resp = raw.decode("ascii", errors="replace").strip()
-                            if resp:
-                                val = float(resp)
-                                meter_current_mA = int(round(val * 1000))
-                                tx_state.update_meter_current(meter_current_mA)
-                        except Exception:
-                            pass
-
-                    # 2. E-Load Meas
-                    if hardware.e_load:
-                        try:
-                            with hardware.eload_lock:
-                                v_str = hardware.e_load.query("MEAS:VOLT?").strip()
-                                i_str = hardware.e_load.query("MEAS:CURR?").strip()
-                            if v_str and i_str:
-                                load_volts_mV = int(float(v_str) * 1000)
-                                load_current_mA = int(float(i_str) * 1000)
-                                tx_state.update_eload(load_volts_mV, load_current_mA)
-                        except Exception:
-                            pass
-
-                    # 3. Status Poll (Low Priority)
-                    if now - last_status_poll >= STATUS_POLL_PERIOD:
-                        last_status_poll = now
-
-                        if hardware.e_load:
-                            try:
-                                with hardware.eload_lock:
-                                    load_stat_func = hardware.e_load.query("FUNC?").strip()
-                                    load_stat_curr = hardware.e_load.query("CURR?").strip()
-                                    load_stat_imp = hardware.e_load.query("INP?").strip()
-                                    load_stat_res = hardware.e_load.query("RES?").strip()
-                            except Exception:
-                                pass
-
-                        if hardware.afg:
-                            try:
-                                with hardware.afg_lock:
-                                    afg_freq_str = hardware.afg.query("SOUR1:FREQ?").strip()
-                                    afg_ampl_str = hardware.afg.query("SOUR1:AMPL?").strip()
-                                    afg_out_str = hardware.afg.query("SOUR1:OUTP?").strip()
-
-                                    is_actually_on = str(afg_out_str).strip().upper() in ["ON", "1"]
-                                    if hardware.afg_output != is_actually_on:
-                                        hardware.afg_output = is_actually_on
-
-                                    afg_shape_str = hardware.afg.query("SOUR1:FUNC?").strip()
-                                    afg_offset_str = hardware.afg.query("SOUR1:VOLT:OFFS?").strip()
-                                    afg_duty_str = hardware.afg.query("SOUR1:SQU:DCYC?").strip()
-
-                                    if afg_offset_str and afg_duty_str:
-                                        off_mv = _i16_clamp(int(float(afg_offset_str) * 1000))
-                                        duty_pct = max(0, min(100, int(float(afg_duty_str))))
-                                        tx_state.update_afg_ext(off_mv, duty_pct)
-                            except Exception:
-                                pass
-
-                    # 4. Update UI
-                    bus_load_pct, bus_rx_fps, bus_tx_fps = busload.snapshot() if busload else (None, None, None)
+                    snap = telemetry.snapshot()
+        
                     renderable = build_dashboard(
                         hardware,
-                        meter_current_mA=meter_current_mA,
-                        load_volts_mV=load_volts_mV,
-                        load_current_mA=load_current_mA,
-                        load_stat_func=load_stat_func,
-                        load_stat_curr=load_stat_curr,
-                        load_stat_res=load_stat_res,
-                        load_stat_imp=load_stat_imp,
-                        load_stat_short=load_stat_short,
-                        afg_freq_read=afg_freq_str,
-                        afg_ampl_read=afg_ampl_str,
-                        afg_offset_read=afg_offset_str,
-                        afg_duty_read=afg_duty_str,
-                        afg_out_read=afg_out_str,
-                        afg_shape_read=afg_shape_str,
+                        meter_current_mA=int(snap.get("meter_current_mA", 0)),
+                        load_volts_mV=int(snap.get("load_volts_mV", 0)),
+                        load_current_mA=int(snap.get("load_current_mA", 0)),
+                        load_stat_func=str(snap.get("load_stat_func", "")),
+                        load_stat_curr=str(snap.get("load_stat_curr", "")),
+                        load_stat_res=str(snap.get("load_stat_res", "")),
+                        load_stat_imp=str(snap.get("load_stat_imp", "")),
+                        load_stat_short=str(snap.get("load_stat_short", "")),
+                        afg_freq_read=str(snap.get("afg_freq_str", "")),
+                        afg_ampl_read=str(snap.get("afg_ampl_str", "")),
+                        afg_offset_read=str(snap.get("afg_offset_str", "0")),
+                        afg_duty_read=str(snap.get("afg_duty_str", "50")),
+                        afg_out_read=str(snap.get("afg_out_str", "")),
+                        afg_shape_read=str(snap.get("afg_shape_str", "")),
                         can_channel=config.CAN_CHANNEL,
                         can_bitrate=int(config.CAN_BITRATE),
-                        status_poll_period=STATUS_POLL_PERIOD,
-                        bus_load_pct=bus_load_pct,
-                        bus_rx_fps=bus_rx_fps,
-                        bus_tx_fps=bus_tx_fps,
+                        status_poll_period=status_period,
                         watchdog=watchdog.snapshot(),
                     )
-                    live.update(renderable)
-                    time.sleep(0.1)
-
+                    live.update(renderable, refresh=True)
+                    stop_event.wait(timeout=render_period)
+        
     except KeyboardInterrupt:
         return 0
     finally:

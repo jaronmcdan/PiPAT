@@ -156,8 +156,8 @@ class HardwareManager:
             mmeter = serial.Serial(
                 config.MULTI_METER_PATH,
                 int(config.MULTI_METER_BAUD),
-                timeout=1,
-                write_timeout=1,
+                timeout=float(getattr(config, 'MULTI_METER_TIMEOUT', 1.0)),
+                write_timeout=float(getattr(config, 'MULTI_METER_WRITE_TIMEOUT', 1.0)),
             )
             # Clear any garbage that could cause decode issues.
             try:
