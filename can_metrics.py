@@ -25,6 +25,9 @@ class BusLoadMeter:
         window_s: float = 1.0,
         stuffing_factor: float = 1.2,
         overhead_bits: int = 48,
+        # Exponential smoothing for displayed load percentage.
+        # 0.0 disables smoothing. Typical range: 0.15 - 0.35
+        smooth_alpha: float = 0.0,
         enabled: bool = True,
     ) -> None:
         self.enabled = bool(enabled)
@@ -32,6 +35,11 @@ class BusLoadMeter:
         self._window_s = max(0.1, float(window_s))
         self._stuff = max(1.0, float(stuffing_factor))
         self._overhead = max(0, int(overhead_bits))
+
+        # Smoothing is applied in snapshot() only (doesn't affect internal counts).
+        # Clamp to [0, 1] so an env-var typo can't break the meter.
+        self._smooth_alpha = max(0.0, min(1.0, float(smooth_alpha)))
+        self._ema_load_pct: float | None = None
 
         self._lock = threading.Lock()
         self._events: Deque[Tuple[float, int, bool]] = deque()  # (t, bits, is_tx)
@@ -83,8 +91,20 @@ class BusLoadMeter:
         with self._lock:
             self._purge(now)
             window = self._window_s
-            load = 100.0 * (float(self._sum_bits) / float(self._bitrate * window))
-            load = max(0.0, min(100.0, load))
+            raw = 100.0 * (float(self._sum_bits) / float(self._bitrate * window))
+            raw = max(0.0, min(100.0, raw))
+
+            # Optional low-pass filter so a short window doesn't visibly
+            # "toggle" between two nearby values on periodic traffic.
+            if self._smooth_alpha > 0.0:
+                if self._ema_load_pct is None:
+                    self._ema_load_pct = raw
+                else:
+                    a = self._smooth_alpha
+                    self._ema_load_pct = (a * raw) + ((1.0 - a) * self._ema_load_pct)
+                load = self._ema_load_pct
+            else:
+                load = raw
             rx_fps = float(self._rx_frames) / window
             tx_fps = float(self._tx_frames) / window
             return (load, rx_fps, tx_fps)

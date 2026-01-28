@@ -90,13 +90,19 @@ class ControlWatchdog:
         self._lock = threading.Lock()
         self._last_seen: Dict[str, float] = {}
         self._timed_out: Dict[str, bool] = {
+            "can": True,
             "k1": True,
             "eload": True,
             "afg": True,
             "mmeter": True,
         }
 
+        # Soft timeout threshold is the per-key timeout; hard timeout is
+        # timeout + grace. We only enforce idle on hard timeout transitions.
+        self._grace_s: float = float(getattr(config, "WATCHDOG_GRACE_SEC", 0.25))
+
         self._timeouts: Dict[str, float] = {
+            "can": float(getattr(config, "CAN_TIMEOUT_SEC", float(config.CONTROL_TIMEOUT_SEC))),
             "k1": float(config.K1_TIMEOUT_SEC),
             "eload": float(config.ELOAD_TIMEOUT_SEC),
             "afg": float(config.AFG_TIMEOUT_SEC),
@@ -104,28 +110,43 @@ class ControlWatchdog:
         }
 
     def mark(self, key: str) -> None:
-        now = time.time()
+        now = time.monotonic()
         with self._lock:
             self._last_seen[key] = now
             self._timed_out[key] = False
 
     def snapshot(self) -> Dict:
-        now = time.time()
+        now = time.monotonic()
         with self._lock:
             ages: Dict[str, Optional[float]] = {}
+            states: Dict[str, str] = {}
             for k in self._timeouts.keys():
                 if k in self._last_seen:
                     ages[k] = now - self._last_seen[k]
                 else:
                     ages[k] = None
+
+                timeout_s = float(self._timeouts.get(k, 0.0))
+                grace_s = float(self._grace_s)
+                age = ages[k]
+                if age is None:
+                    states[k] = "to"
+                elif age > (timeout_s + grace_s):
+                    states[k] = "to"
+                elif age > timeout_s:
+                    states[k] = "warn"
+                else:
+                    states[k] = "ok"
             return {
                 "ages": ages,
+                "states": states,
                 "timed_out": dict(self._timed_out),
                 "timeouts": dict(self._timeouts),
+                "grace_s": float(self._grace_s),
             }
 
     def enforce(self, hardware: HardwareManager) -> None:
-        now = time.time()
+        now = time.monotonic()
         with self._lock:
             for key, timeout_s in self._timeouts.items():
                 last = self._last_seen.get(key)
@@ -135,11 +156,15 @@ class ControlWatchdog:
                     continue
 
                 age = now - last
-                if age > timeout_s:
+                hard_timeout_s = float(timeout_s) + float(self._grace_s)
+                if age > hard_timeout_s:
                     if not self._timed_out.get(key, False):
                         # Transition into timeout => apply idle once
                         self._timed_out[key] = True
-                        if key == "k1":
+                        if key == "can":
+                            # Indicator only; we don't apply device idles on generic CAN silence.
+                            pass
+                        elif key == "k1":
                             hardware.set_k1_idle()
                         elif key == "eload":
                             hardware.apply_idle_eload()
@@ -575,6 +600,9 @@ def receive_can_messages(cbus: can.BusABC, hardware: HardwareManager, stop_event
             except Exception:
                 pass
 
+        # Any CAN traffic counts as "CAN is alive" regardless of message type.
+        watchdog.mark("can")
+
         # Relay control (K1 direct drive)
         if arb == int(config.RLY_CTRL_ID):
             watchdog.mark("k1")
@@ -732,6 +760,7 @@ def main() -> int:
         window_s=float(getattr(config, 'CAN_BUS_LOAD_WINDOW_SEC', 1.0)),
         stuffing_factor=float(getattr(config, 'CAN_BUS_LOAD_STUFFING_FACTOR', 1.2)),
         overhead_bits=int(getattr(config, 'CAN_BUS_LOAD_OVERHEAD_BITS', 48)),
+        smooth_alpha=float(getattr(config, 'CAN_BUS_LOAD_SMOOTH_ALPHA', 0.0)),
         enabled=bool(getattr(config, 'CAN_BUS_LOAD_ENABLE', True)),
     )
 

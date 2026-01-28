@@ -173,17 +173,23 @@ def build_dashboard(hardware, *,
     if watchdog and isinstance(watchdog, dict):
         ages = watchdog.get("ages", {}) or {}
         timed_out = watchdog.get("timed_out", {}) or {}
+        status_map = watchdog.get("status", {}) or {}
 
         def _seg(key: str, label: str):
             age = ages.get(key)
+            st = status_map.get(key)
             to = bool(timed_out.get(key, False))
             if age is None:
                 return (f" {label}:-- ", "dim")
-            if to:
+            # Prefer the richer status (ok/warn/to) when available.
+            if st == "warn":
+                return (f" {label}:LAG({age:.1f}s) ", "yellow")
+            if st == "to" or to:
                 return (f" {label}:TO({age:.1f}s) ", "red")
             return (f" {label}:{age:.1f}s ", "green")
 
         status.append(" WD:", style="bold")
+        status.append(*_seg("can", "CAN"))
         status.append(*_seg("k1", "K1"))
         status.append(*_seg("eload", "Load"))
         status.append(*_seg("afg", "AFG"))

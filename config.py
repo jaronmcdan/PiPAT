@@ -92,6 +92,14 @@ CAN_SETUP = _env_bool("CAN_SETUP", True)
 # If a given device doesn't receive its control message within the timeout,
 # we drive that device back to its configured idle state.
 CONTROL_TIMEOUT_SEC = _env_float("CONTROL_TIMEOUT_SEC", 2.0)
+
+# Extra grace before declaring a *hard* timeout (beyond CONTROL_TIMEOUT_SEC).
+# This eliminates most UI flicker caused by borderline jitter when control
+# frames arrive near the threshold.
+WATCHDOG_GRACE_SEC = _env_float("WATCHDOG_GRACE_SEC", 0.25)
+
+# Timeout used for the "CAN" freshness indicator (any CAN message received).
+CAN_TIMEOUT_SEC = _env_float("CAN_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
 K1_TIMEOUT_SEC = _env_float("K1_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
 ELOAD_TIMEOUT_SEC = _env_float("ELOAD_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
 AFG_TIMEOUT_SEC = _env_float("AFG_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
@@ -146,6 +154,9 @@ CAN_BUS_LOAD_WINDOW_SEC = _env_float("CAN_BUS_LOAD_WINDOW_SEC", 1.0)
 
 # Physical-layer bit stuffing increases actual bits on-wire; 1.2 is a reasonable heuristic.
 CAN_BUS_LOAD_STUFFING_FACTOR = _env_float("CAN_BUS_LOAD_STUFFING_FACTOR", 1.2)
+
+# Exponential smoothing for the displayed bus load percent. 0.0 disables.
+CAN_BUS_LOAD_SMOOTH_ALPHA = _env_float("CAN_BUS_LOAD_SMOOTH_ALPHA", 0.25)
 
 # Approximate overhead bits per classic CAN frame excluding data (SOF..IFS). This is an estimate.
 CAN_BUS_LOAD_OVERHEAD_BITS = _env_int("CAN_BUS_LOAD_OVERHEAD_BITS", 48)

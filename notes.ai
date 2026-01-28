@@ -1,0 +1,12 @@
+# PiPAT project notes (notes.ai)
+
+## 2026-01-28
+
+### Dashboard stability fixes
+- **Bus load display smoothing**: `can_metrics.BusLoadMeter` now supports an EMA (`smooth_alpha`) and main wires it to `config.CAN_BUS_LOAD_SMOOTH_ALPHA`. This reduces the visible 1 Hz “flip-flop” caused by a short sliding window and message burstiness.
+- **Control watchdog reliability**:
+  - Watchdog timestamps switched to **`time.monotonic()`** (avoids NTP/system-clock steps).
+  - Added **soft vs hard timeout** with configurable **`config.WATCHDOG_GRACE_SEC`**. UI shows `LAG` in yellow when age is slightly past the timeout but within grace; only hard timeouts enforce idle.
+  - Added a dedicated **"CAN" liveness** key (`config.CAN_TIMEOUT_SEC`) that is marked on *any* received CAN message, so the UI can distinguish “CAN is dead” from “a particular device’s periodic control frame is late”.
+
+Files touched: `main.py`, `dashboard.py`, `can_metrics.py`, `config.py`.
