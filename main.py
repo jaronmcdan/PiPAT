@@ -880,6 +880,78 @@ def instrument_poll_loop(
         stop_event.wait(timeout=0.01)
 
 
+
+def _decode_mrsignal_control(data: bytes) -> Optional[tuple[bool, int, float]]:
+    """Decode MrSignal control frame.
+
+    Expected legacy layout (PiPAT):
+      - byte0: bit0 = enable
+      - byte1: output_select (0=mA, 1=V, 4=mV, 6=24V)
+      - bytes2..5: IEEE754 float (little-endian), setpoint in units per output_select
+
+    Some senders swap byte0/byte1; some send big-endian float. To preserve
+    compatibility, we try both layouts and both float endiannesses and pick the
+    first plausible interpretation.
+    """
+    if data is None or len(data) < 6:
+        return None
+
+    allowed = (0, 1, 4, 6)
+    max_v = float(getattr(config, "MRSIGNAL_MAX_V", 24.0))
+    max_ma = float(getattr(config, "MRSIGNAL_MAX_MA", 24.0))
+
+    def plausible(sel: int, v: float) -> bool:
+        import math
+        if not math.isfinite(v):
+            return False
+        # Allow small negative noise but clamp later
+        if v < -0.001:
+            return False
+        if sel == 0:
+            lim = max_ma * 1.10
+            return v <= lim
+        if sel in (1, 6):
+            lim = max_v * 1.10
+            return v <= lim
+        if sel == 4:
+            lim = (max_v * 1000.0) * 1.10
+            return v <= lim
+        return False
+
+    # candidate layouts: (enable, output_select, float_bytes)
+    layouts = [
+        (bool(data[0] & 0x01), int(data[1]) & 0xFF, data[2:6]),  # legacy
+        (bool(data[1] & 0x01), int(data[0]) & 0xFF, data[2:6]),  # swapped enable/select
+    ]
+
+    # Parse float both LE and BE for each layout
+    candidates: list[tuple[bool, int, float]] = []
+    for en, sel, fb in layouts:
+        if sel not in allowed:
+            continue
+        try:
+            v_le = struct.unpack("<f", fb)[0]
+            if plausible(sel, float(v_le)):
+                candidates.append((en, sel, float(v_le)))
+        except Exception:
+            pass
+        try:
+            v_be = struct.unpack(">f", fb)[0]
+            if plausible(sel, float(v_be)):
+                candidates.append((en, sel, float(v_be)))
+        except Exception:
+            pass
+
+    if not candidates:
+        return None
+
+    # If any candidate has enable==True, prefer those (common for set commands)
+    for en, sel, v in candidates:
+        if en:
+            return (en, sel, v)
+    return candidates[0]
+
+
 def receive_can_messages(
     cbus: can.BusABC,
     hardware: HardwareManager,
@@ -1002,27 +1074,24 @@ def receive_can_messages(
                 controls.request_eload(enable=int(new_enable), mode_res=int(new_mode), short=int(new_short), csetting_mA=int(val_c), rsetting_mOhm=int(val_r))
             continue
 
-        # MrSignal control (MR2.0)
-        if arb == int(getattr(config, "MRSIGNAL_CTRL_ID", 0x0CFF0800)):
-            watchdog.mark("mrsignal")
-            if len(data) < 6:
-                continue
-            if not getattr(hardware, "mrsignal", None):
-                continue
+# MrSignal control (MR2.0)
+if arb == int(getattr(config, "MRSIGNAL_CTRL_ID", 0x0CFF0800)):
+    cmd = _decode_mrsignal_control(bytes(data))
+    if cmd is None:
+        continue
+    enable, output_select, value = cmd
 
-            enable = (data[0] & 0x01) == 0x01
-            output_select = int(data[1])  # direct register value (0=mA, 1=V, 4=mV, 6=24V)
-            try:
-                value = struct.unpack("<f", data[2:6])[0]
-            except Exception:
-                continue
+    # Mark watchdog only when we accept a well-formed command
+    watchdog.mark("mrsignal")
 
-            # Safety: ignore unknown modes (extend if needed)
-            if output_select not in (0, 1, 4, 6):
-                continue
+    if not getattr(hardware, "mrsignal", None):
+        continue
 
-            controls.request_mrsignal(enable=bool(enable), output_select=int(output_select), value=float(value))
-            continue
+    if bool(getattr(config, "MRSIGNAL_CAN_DEBUG", False)):
+        _log(f"[mrsignal] CAN cmd raw={list(data)} -> enable={enable} sel={output_select} value={value}")
+
+    controls.request_mrsignal(enable=bool(enable), output_select=int(output_select), value=float(value))
+    continue
 
 
 def parse_args() -> argparse.Namespace:

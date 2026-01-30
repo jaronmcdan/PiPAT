@@ -169,6 +169,7 @@ MRSIGNAL_TIMEOUT_SEC = _env_float("MRSIGNAL_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
 
 # Poll cadence for status/input reads (seconds)
 MRSIGNAL_POLL_PERIOD = _env_float("MRSIGNAL_POLL_PERIOD", STATUS_POLL_PERIOD)
+MRSIGNAL_CAN_DEBUG = _env_bool("MRSIGNAL_CAN_DEBUG", False)
 
 
 # --- CAN IDs (Control) ---
