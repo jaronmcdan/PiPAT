@@ -22,6 +22,16 @@ sudo apt-get install -y \
   python3 python3-venv python3-pip python3-dev \
   can-utils \
   libusb-1.0-0
+
+# GPIO backends for gpiozero (recommended on Pi OS Bookworm)
+sudo apt-get install -y python3-lgpio
+
+# Optional (older stacks / alternates)
+# sudo apt-get install -y python3-rpi.gpio python3-pigpio
+
+# Ensure your user can access GPIO without sudo
+sudo usermod -aG gpio $USER
+# Log out/in (or reboot) for group membership to take effect
 ```
 
 ### 2) Create a virtualenv and install Python deps
@@ -47,6 +57,8 @@ The most common settings:
 
 - `CAN_CHANNEL`, `CAN_BITRATE`, `CAN_SETUP`
 - `CAN_TX_ENABLE`, `CAN_TX_PERIOD_MS` (regulate outgoing readback frames; default 50ms)
+- `DASH_FPS` (Rich TUI render rate; default 15)
+- `MEAS_POLL_PERIOD`, `STATUS_POLL_PERIOD` (instrument poll cadence; defaults 0.2s/1.0s)
 - `K1_PIN_BCM`, `K1_ACTIVE_LOW`, `K1_CAN_INVERT`, `K1_IDLE_DRIVE`
 - `K1_TIMEOUT_SEC` (watchdog timeout for K1)
 - `CONTROL_TIMEOUT_SEC` (or per-device timeouts)
@@ -83,6 +95,8 @@ ip -details link show can1
 ## K1 relay semantics (no inference)
 
 PiPAT treats the relay as a **direct K1 drive output** controlled by CAN bit0 in `RLY_CTRL_ID`.
+
+If GPIO is unavailable (or `K1_ENABLE=0`), PiPAT falls back to a **no-op/mock relay driver** so the rest of the bridge can run.
 The UI reports only what the software is commanding and what the GPIO pin is doing.
 
 - There is **no NC/NO “DUT power” inference**.
@@ -158,6 +172,45 @@ Output: `dist/roi-<version>.tar.gz`
 
 ## Troubleshooting
 
+### `gpiozero.exc.BadPinFactory: Unable to load any default pin factory!`
+
+This means gpiozero cannot find a working GPIO backend on this host (common when:
+running off-Pi, inside a container without GPIO access, missing `python3-lgpio`,
+or lacking permissions for `/dev/gpiomem`/`/dev/gpiochip*`).
+
+Options:
+
+1) **Real GPIO on a Pi:** install `python3-lgpio` and ensure you are in the `gpio` group:
+
+```bash
+sudo apt-get install -y python3-lgpio
+sudo usermod -aG gpio $USER
+```
+
+**Virtualenv note:** apt-installed GPIO backends (like `python3-lgpio`) live in system site-packages. If you are running inside a venv and still see this error, recreate it with system site packages enabled:
+
+```bash
+rm -rf .venv
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+
+2) **Dev / no-GPIO mode:** disable K1 entirely:
+
+```bash
+export K1_ENABLE=0
+python3 main.py
+```
+
+3) **Dev / simulated GPIO:** run with gpiozero's mock pin factory:
+
+```bash
+export GPIOZERO_PIN_FACTORY=mock
+python3 main.py
+```
+
 ### Multimeter `UnicodeDecodeError`
 
 If the serial port returns non-ASCII garbage (e.g. noise at boot), this code now decodes with `errors='replace'` and flushes buffers before `*IDN?`.
@@ -176,3 +229,22 @@ Double-check:
 
 This code can control power to external equipment.
 Verify relay wiring (NC/NO), polarity, and idle defaults before running unattended.
+
+
+## CAN bus load (dashboard)
+
+PiPAT shows an estimated CAN **bus load %** on the dashboard status line.
+
+Notes:
+
+- This is an **estimator**, not a physical-layer measurement.
+- It uses the configured `CAN_BITRATE` and observed frame sizes to approximate on-wire bits.
+- TX frames sent by PiPAT are counted in software; RX frames are counted from SocketCAN.
+
+Tuning (optional):
+
+- `CAN_BUS_LOAD_ENABLE=0` to hide/disable load calculation
+- `CAN_BUS_LOAD_WINDOW_SEC=1.0` sliding window (seconds)
+- `CAN_BUS_LOAD_STUFFING_FACTOR=1.2` heuristic stuffing multiplier
+- `CAN_BUS_LOAD_OVERHEAD_BITS=48` approximate overhead bits per classic CAN frame
+
