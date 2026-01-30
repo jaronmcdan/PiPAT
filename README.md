@@ -72,7 +72,9 @@ The most common settings:
 - `MULTI_METER_PATH`, `MULTI_METER_BAUD`
   - `MULTI_METER_TIMEOUT`, `MULTI_METER_WRITE_TIMEOUT`
   - `MULTI_METER_ERRQ_PROBE` (default 0; enable only if your meter supports `SYST:ERR?`)
-- `ELOAD_VISA_ID`, `AFG_VISA_ID`
+- `ELOAD_VISA_ID`, `AFG_VISA_ID`, `AFG_ENABLE`
+  - If `AFG_VISA_ID` accidentally points at another serial device (common when USB ACM ports shift),
+    set `AFG_ENABLE=0` to prevent PyVISA probing from interfering with Modbus/serial traffic.
 - `MRSIGNAL_ENABLE`, `MRSIGNAL_PORT`, `MRSIGNAL_BAUD`, `MRSIGNAL_SLAVE_ID`, `MRSIGNAL_PARITY`, `MRSIGNAL_STOPBITS`
 
 ### 4) Run

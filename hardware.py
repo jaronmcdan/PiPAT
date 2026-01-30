@@ -224,28 +224,69 @@ class HardwareManager:
                             break
                         except Exception as e:
                             print(f"Skip E-LOAD ({resource_id}): {e}")
+                            try:
+                                dev.close()
+                            except Exception:
+                                pass
             except Exception as e:
                 print(f"E-Load Scan Error: {e}")
 
             # --- 2. AFG (Direct Connect) ---
-            try:
-                print(f"Attempting AFG connection at {config.AFG_VISA_ID}...")
-                afg_dev = self.resource_manager.open_resource(config.AFG_VISA_ID)
-                # Some VISA backends expose serial config fields
+            def _asrl_to_devpath(visa_id: str) -> str | None:
+                # Common form: "ASRL/dev/ttyACM1::INSTR" -> "/dev/ttyACM1"
+                s = (visa_id or "").strip()
+                if not s.upper().startswith("ASRL/"):
+                    return None
                 try:
-                    afg_dev.baud_rate = 115200
+                    tail = s.split("ASRL/", 1)[1]
+                    dev = tail.split("::", 1)[0]
+                    if not dev.startswith("/"):
+                        dev = "/" + dev
+                    return dev
                 except Exception:
-                    pass
-                afg_dev.read_termination = "\n"
-                afg_dev.write_termination = "\n"
+                    return None
 
-                dev_id = afg_dev.query("*IDN?").strip()
-                print(f"AFG FOUND: {dev_id}")
-                self.afg = afg_dev
-                self.afg_id = dev_id
+            try:
+                afg_enable = bool(getattr(config, "AFG_ENABLE", True))
+                afg_visa_id = str(getattr(config, "AFG_VISA_ID", "") or "").strip()
 
+                if not afg_enable:
+                    print("AFG disabled via AFG_ENABLE=0")
+                elif not afg_visa_id:
+                    print("WARNING: AFG_VISA_ID is empty; skipping AFG")
+                else:
+                    # Guard: don't let AFG probing hijack another serial device (e.g. MrSignal)
+                    devpath = _asrl_to_devpath(afg_visa_id)
+                    mrs_port = str(getattr(config, "MRSIGNAL_PORT", "") or "").strip()
+                    mm_port = str(getattr(config, "MULTI_METER_PATH", "") or "").strip()
+                    if devpath and (devpath == mrs_port or devpath == mm_port):
+                        print(
+                            f"WARNING: AFG_VISA_ID={afg_visa_id} maps to {devpath}, which matches another device port. "
+                            "Skipping AFG init to avoid interfering with Modbus/SCPI."
+                        )
+                    else:
+                        print(f"Attempting AFG connection at {afg_visa_id}...")
+                        afg_dev = self.resource_manager.open_resource(afg_visa_id)
+                        try:
+                            # Some VISA backends expose serial config fields
+                            try:
+                                afg_dev.baud_rate = 115200
+                            except Exception:
+                                pass
+                            afg_dev.read_termination = "\n"
+                            afg_dev.write_termination = "\n"
+                            dev_id = afg_dev.query("*IDN?").strip()
+                            print(f"AFG FOUND: {dev_id}")
+                            self.afg = afg_dev
+                            self.afg_id = dev_id
+                        except Exception as e:
+                            print(f"AFG Connection Failed ({afg_visa_id}): {e}")
+                            try:
+                                afg_dev.close()
+                            except Exception:
+                                pass
             except Exception as e:
-                print(f"AFG Connection Failed ({config.AFG_VISA_ID}): {e}")
+                print(f"AFG Connection Failed ({getattr(config, 'AFG_VISA_ID', '')}): {e}")
 
             if not self.e_load:
                 print("WARNING: E-LOAD not found.")

@@ -474,20 +474,26 @@ class DeviceControlCoordinator:
                 pass
 
     def _mrs_worker(self) -> None:
+        # Important: only advance last_seq after a successful apply.
+        # Otherwise a transient Modbus failure can make it look like MrSignal
+        # "stopped responding" because we never retry the same desired state.
         last_seq = -1
+        fail_count = 0
         while not self.stop_event.is_set():
             self._ev_mrs.wait(timeout=0.2)
             self._ev_mrs.clear()
+
             snap = self.state.snapshot_mrs()
             if snap.seq == last_seq:
                 continue
-            last_seq = snap.seq
             if not getattr(self.hardware, "mrsignal", None):
                 continue
+
+            # Safety: ignore unknown modes (extend as needed)
+            if int(snap.output_select) not in (0, 1, 4, 6):
+                continue
+
             try:
-                # Safety: ignore unknown modes (extend as needed)
-                if int(snap.output_select) not in (0, 1, 4, 6):
-                    continue
                 self.hardware.set_mrsignal(
                     enable=bool(snap.enable),
                     output_select=int(snap.output_select),
@@ -495,5 +501,12 @@ class DeviceControlCoordinator:
                     max_v=float(getattr(config, "MRSIGNAL_MAX_V", 24.0)),
                     max_ma=float(getattr(config, "MRSIGNAL_MAX_MA", 24.0)),
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                fail_count += 1
+                if fail_count in (1, 2, 3, 5, 10) or (fail_count % 25 == 0):
+                    _log(f"[mrsignal] apply failed (count={fail_count}): {e}")
+                # Do NOT advance last_seq so we retry on the next wake.
+                continue
+
+            fail_count = 0
+            last_seq = snap.seq

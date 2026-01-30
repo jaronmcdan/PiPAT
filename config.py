@@ -70,7 +70,12 @@ MULTI_METER_ERRQ_PROBE = _env_bool("MULTI_METER_ERRQ_PROBE", False)
 
 # VISA Resource IDs (PyVISA)
 ELOAD_VISA_ID = _env_str("ELOAD_VISA_ID", "USB0::11975::34816::*::0::INSTR")
-AFG_VISA_ID = _env_str("AFG_VISA_ID", "ASRL/dev/ttyACM1::INSTR")
+AFG_VISA_ID = _env_str("AFG_VISA_ID", "ASRL/dev/ttyACM0::INSTR")
+
+# If False, skip AFG initialization entirely. Useful when the AFG is not
+# connected, or when AFG_VISA_ID accidentally points at a non-AFG serial device
+# (e.g. MrSignal), which can interfere with Modbus traffic.
+AFG_ENABLE = _env_bool("AFG_ENABLE", True)
 
 # --- GPIO / K1 relay drive ---
 K1_ENABLE = _env_bool("K1_ENABLE", True)
@@ -140,7 +145,7 @@ AFG_IDLE_OUTPUT_ON = _env_bool("AFG_IDLE_OUTPUT_ON", False)
 # MrSignal / LANYI MR2.0 (Modbus RTU over USB-serial)
 MRSIGNAL_ENABLE = _env_bool("MRSIGNAL_ENABLE", True)
 # Default is /dev/ttyUSB1 to avoid colliding with the multimeter default (/dev/ttyUSB0).
-MRSIGNAL_PORT = _env_str("MRSIGNAL_PORT", "/dev/ttyACM0")
+MRSIGNAL_PORT = _env_str("MRSIGNAL_PORT", "/dev/ttyACM1")
 MRSIGNAL_BAUD = _env_int("MRSIGNAL_BAUD", 9600)
 MRSIGNAL_SLAVE_ID = _env_int("MRSIGNAL_SLAVE_ID", 1)
 MRSIGNAL_PARITY = _env_str("MRSIGNAL_PARITY", "N")  # N/E/O
