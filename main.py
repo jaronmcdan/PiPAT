@@ -1074,24 +1074,24 @@ def receive_can_messages(
                 controls.request_eload(enable=int(new_enable), mode_res=int(new_mode), short=int(new_short), csetting_mA=int(val_c), rsetting_mOhm=int(val_r))
             continue
 
-# MrSignal control (MR2.0)
-if arb == int(getattr(config, "MRSIGNAL_CTRL_ID", 0x0CFF0800)):
-    cmd = _decode_mrsignal_control(bytes(data))
-    if cmd is None:
-        continue
-    enable, output_select, value = cmd
+        # MrSignal control (MR2.0)
+        if arb == int(getattr(config, "MRSIGNAL_CTRL_ID", 0x0CFF0800)):
+            cmd = _decode_mrsignal_control(bytes(data))
+            if cmd is None:
+                continue
+            enable, output_select, value = cmd
 
-    # Mark watchdog only when we accept a well-formed command
-    watchdog.mark("mrsignal")
+            # Mark watchdog only when we accept a well-formed command
+            watchdog.mark("mrsignal")
 
-    if not getattr(hardware, "mrsignal", None):
-        continue
+            if not getattr(hardware, "mrsignal", None):
+                continue
 
-    if bool(getattr(config, "MRSIGNAL_CAN_DEBUG", False)):
-        _log(f"[mrsignal] CAN cmd raw={list(data)} -> enable={enable} sel={output_select} value={value}")
+            if bool(getattr(config, "MRSIGNAL_CAN_DEBUG", False)):
+                _log(f"[mrsignal] CAN cmd raw={list(data)} -> enable={enable} sel={output_select} value={value}")
 
-    controls.request_mrsignal(enable=bool(enable), output_select=int(output_select), value=float(value))
-    continue
+            controls.request_mrsignal(enable=bool(enable), output_select=int(output_select), value=float(value))
+            continue
 
 
 def parse_args() -> argparse.Namespace:
