@@ -88,6 +88,11 @@ CAN_BITRATE = _env_int("CAN_BITRATE", 250000)
 # If True, main.py will try to bring the SocketCAN interface up.
 CAN_SETUP = _env_bool("CAN_SETUP", True)
 
+# Max number of incoming CAN control frames buffered between the CAN RX thread
+# and the device command worker. Keeping this bounded ensures the CAN RX loop
+# never blocks on slow instrument I/O.
+CAN_CMD_QUEUE_MAX = _env_int("CAN_CMD_QUEUE_MAX", 256)
+
 # --- Control watchdog ---
 # If a given device doesn't receive its control message within the timeout,
 # we drive that device back to its configured idle state.

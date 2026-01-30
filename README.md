@@ -9,7 +9,19 @@ This project runs on a Raspberry Pi and bridges **SocketCAN** control messages t
 - **K1 Relay** (GPIO) for DUT power control
 - Optional terminal dashboard (Rich TUI)
 
-> Key files: `main.py`, `hardware.py`, `dashboard.py`, `config.py`
+> Key files: `main.py`, `hardware.py`, `can_comm.py`, `device_comm.py`, `dashboard.py`, `config.py`
+
+### Architecture note: CAN vs device I/O are isolated
+
+PiPAT runs **CAN RX** and **device/instrument control** in separate threads:
+
+- `can_comm.py` (`can_rx_loop`) reads SocketCAN frames and enqueues *only* control frames.
+- `device_comm.py` (`device_command_loop`) dequeues commands and applies them to instruments/GPIO.
+
+This keeps CAN reception responsive even when instrument I/O blocks.
+
+Tuning:
+- `CAN_CMD_QUEUE_MAX` controls the buffer size between the two threads (default `256`).
 
 ---
 

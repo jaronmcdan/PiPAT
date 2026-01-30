@@ -4,19 +4,24 @@
 from __future__ import annotations
 
 import argparse
-import struct
-import subprocess
 import sys
 import threading
 import time
+import queue
 from typing import Dict, Optional
-
-import can
 
 import config
 from can_metrics import BusLoadMeter
 from dashboard import HAVE_RICH, build_dashboard, console
 from hardware import HardwareManager
+from can_comm import (
+    OutgoingTxState,
+    can_rx_loop,
+    can_tx_loop,
+    setup_can_interface,
+    shutdown_can_interface,
+)
+from device_comm import device_command_loop
 
 try:
     from rich.live import Live
@@ -42,45 +47,6 @@ def _i16_clamp(x: int) -> int:
 
 def _log(msg: str) -> None:
     (console.log if HAVE_RICH else print)(msg)
-
-
-def setup_can_interface(channel: str, bitrate: int, *, do_setup: bool = True) -> Optional[can.BusABC]:
-    """Bring up SocketCAN and open a python-can bus.
-
-    If the interface is already configured/up, bus open will still succeed.
-    """
-
-    if do_setup:
-        # Try without sudo first (works when running as root / in systemd).
-        cmds = [
-            ["ip", "link", "set", channel, "up", "type", "can", "bitrate", str(bitrate)],
-            ["sudo", "ip", "link", "set", channel, "up", "type", "can", "bitrate", str(bitrate)],
-        ]
-        for cmd in cmds:
-            try:
-                res = subprocess.run(cmd, check=False, capture_output=True, text=True)
-                if res.returncode == 0:
-                    break
-            except FileNotFoundError:
-                # ip or sudo missing; continue to bus open attempt
-                break
-
-    try:
-        return can.interface.Bus(interface="socketcan", channel=channel)
-    except Exception as e:
-        _log(f"CAN Init Failed: {e}")
-        return None
-
-
-def shutdown_can_interface(channel: str, *, do_setup: bool = True) -> None:
-    if not do_setup:
-        return
-    for cmd in (["ip", "link", "set", channel, "down"], ["sudo", "ip", "link", "set", channel, "down"]):
-        try:
-            subprocess.run(cmd, check=False, capture_output=True, text=True)
-            break
-        except FileNotFoundError:
-            break
 
 
 class ControlWatchdog:
@@ -180,199 +146,6 @@ class ControlWatchdog:
 
                 else:
                     self._timed_out[key] = False
-
-
-
-
-class OutgoingTxState:
-    """Thread-safe container for outgoing CAN readback values.
-
-    The main thread updates this state whenever it successfully polls an instrument.
-    A dedicated TX thread publishes the latest values on CAN at a fixed rate.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._meter_current_mA: Optional[int] = None
-        self._load_volts_mV: Optional[int] = None
-        self._load_current_mA: Optional[int] = None
-        self._afg_offset_mV: Optional[int] = None
-        self._afg_duty_pct: Optional[int] = None
-        self._mrs_status: Optional[tuple[int, int, float]] = None  # (on, mode, out_val)
-        self._mrs_input: Optional[float] = None
-
-    def update_meter_current(self, meter_current_mA: int) -> None:
-        with self._lock:
-            self._meter_current_mA = int(meter_current_mA)
-
-    def update_eload(self, load_volts_mV: int, load_current_mA: int) -> None:
-        with self._lock:
-            self._load_volts_mV = int(load_volts_mV)
-            self._load_current_mA = int(load_current_mA)
-
-    def update_afg_ext(self, offset_mV: int, duty_pct: int) -> None:
-        with self._lock:
-            self._afg_offset_mV = int(offset_mV)
-            self._afg_duty_pct = int(duty_pct)
-
-
-    def update_mrsignal_status(self, *, output_on: bool, output_select: int, output_value: float) -> None:
-        with self._lock:
-            self._mrs_status = (1 if output_on else 0, int(output_select) & 0xFF, float(output_value))
-
-    def update_mrsignal_input(self, input_value: float) -> None:
-        with self._lock:
-            self._mrs_input = float(input_value)
-
-    def snapshot(self) -> tuple[Optional[int], Optional[int], Optional[int], Optional[int], Optional[int], Optional[tuple[int,int,float]], Optional[float]]:
-        with self._lock:
-            return (
-                self._meter_current_mA,
-                self._load_volts_mV,
-                self._load_current_mA,
-                self._afg_offset_mV,
-                self._afg_duty_pct,
-                self._mrs_status,
-                self._mrs_input,
-            )
-
-
-def can_tx_loop(
-    cbus: can.BusABC,
-    tx_state: OutgoingTxState,
-    stop_event: threading.Event,
-    period_s: float,
-    busload: BusLoadMeter | None = None,
-) -> None:
-    """Publish outgoing readback frames at a fixed period (e.g., 50 ms)."""
-
-    try:
-        period_s = float(period_s)
-    except Exception:
-        period_s = 0.05
-
-    if period_s <= 0:
-        _log("TX thread disabled (period <= 0).")
-        return
-
-    _log(f"TX thread started (period={period_s*1000:.0f} ms).")
-
-    next_t = time.monotonic()
-    err_count = 0
-
-    while not stop_event.is_set():
-        now = time.monotonic()
-        delay = next_t - now
-        if delay > 0:
-            stop_event.wait(timeout=delay)
-            continue
-
-        # Advance the schedule first; this avoids drift if send() takes time.
-        next_t += period_s
-        if next_t < now - (10.0 * period_s):
-            next_t = now + period_s
-
-        meter_current_mA, load_volts_mV, load_current_mA, afg_offset_mV, afg_duty_pct, mrs_status, mrs_input = tx_state.snapshot()
-
-        # Send each frame independently; one failure should not block others.
-        if meter_current_mA is not None:
-            try:
-                u16 = _u16_clamp(meter_current_mA)
-                msg = can.Message(
-                    arbitration_id=int(config.MMETER_READ_ID),
-                    data=list(int(u16).to_bytes(2, "little")) + [0] * 6,
-                    is_extended_id=True,
-                )
-                cbus.send(msg)
-                if busload:
-                    try:
-                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
-                    except Exception:
-                        pass
-            except Exception as e:
-                err_count += 1
-                if err_count in (1, 10, 100):
-                    _log(f"TX MMETER send error (count={err_count}): {e}")
-
-        if (load_volts_mV is not None) and (load_current_mA is not None):
-            try:
-                v_u16 = _u16_clamp(load_volts_mV)
-                i_u16 = _u16_clamp(load_current_mA)
-                data = (
-                    list(int(v_u16).to_bytes(2, "little"))
-                    + list(int(i_u16).to_bytes(2, "little"))
-                    + [0] * 4
-                )
-                msg = can.Message(arbitration_id=int(config.ELOAD_READ_ID), data=data, is_extended_id=True)
-                cbus.send(msg)
-                if busload:
-                    try:
-                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
-                    except Exception:
-                        pass
-            except Exception as e:
-                err_count += 1
-                if err_count in (1, 10, 100):
-                    _log(f"TX ELOAD send error (count={err_count}): {e}")
-
-        if (afg_offset_mV is not None) and (afg_duty_pct is not None):
-            try:
-                off_mv = _i16_clamp(afg_offset_mV)
-                duty_pct = max(0, min(100, int(afg_duty_pct)))
-                payload = bytearray(struct.pack("<h", off_mv))
-                payload.append(duty_pct & 0xFF)
-                payload.extend([0] * 5)
-                msg = can.Message(arbitration_id=int(config.AFG_READ_EXT_ID), data=payload, is_extended_id=True)
-                cbus.send(msg)
-                if busload:
-                    try:
-                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
-                    except Exception:
-                        pass
-            except Exception as e:
-                err_count += 1
-                if err_count in (1, 10, 100):
-                    _log(f"TX AFG_EXT send error (count={err_count}): {e}")
-        # MrSignal readback (status + input)
-        if mrs_status is not None:
-            try:
-                on_i, mode_i, out_val = mrs_status
-                payload = bytearray(8)
-                payload[0] = 1 if int(on_i) else 0
-                payload[1] = int(mode_i) & 0xFF
-                payload[2:6] = struct.pack("<f", float(out_val))
-                msg = can.Message(arbitration_id=int(getattr(config, "MRSIGNAL_READ_STATUS_ID", 0x0CFF0007)),
-                                  data=payload, is_extended_id=True)
-                cbus.send(msg)
-                if busload:
-                    try:
-                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
-                    except Exception:
-                        pass
-            except Exception as e:
-                err_count += 1
-                if err_count in (1, 10, 100):
-                    _log(f"TX MRSIGNAL_STATUS send error (count={err_count}): {e}")
-
-        if mrs_input is not None:
-            try:
-                payload = bytearray(8)
-                payload[0:4] = struct.pack("<f", float(mrs_input))
-                msg = can.Message(arbitration_id=int(getattr(config, "MRSIGNAL_READ_INPUT_ID", 0x0CFF0008)),
-                                  data=payload, is_extended_id=True)
-                cbus.send(msg)
-                if busload:
-                    try:
-                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
-                    except Exception:
-                        pass
-            except Exception as e:
-                err_count += 1
-                if err_count in (1, 10, 100):
-                    _log(f"TX MRSIGNAL_INPUT send error (count={err_count}): {e}")
-
-
-
 
 class TelemetryState:
     """Thread-safe snapshot of instrument telemetry for the dashboard and logs.
@@ -735,202 +508,6 @@ def instrument_poll_loop(
         # Short wait to avoid pegging a core.
         stop_event.wait(timeout=0.01)
 
-
-def receive_can_messages(cbus: can.BusABC, hardware: HardwareManager, stop_event: threading.Event, watchdog: ControlWatchdog, busload: BusLoadMeter | None = None) -> None:
-    """Background thread to process incoming CAN commands."""
-
-    _log("Receiver thread started.")
-
-    SHAPE_MAP = {0: "SIN", 1: "SQU", 2: "RAMP"}
-
-    while not stop_event.is_set():
-        try:
-            message = cbus.recv(timeout=1.0)
-        except Exception:
-            continue
-        if not message:
-            continue
-
-        arb = int(message.arbitration_id)
-        data = bytes(message.data or b"")
-
-        if busload:
-            try:
-                busload.record_rx(len(data))
-            except Exception:
-                pass
-
-        # Any CAN traffic counts as "CAN is alive" regardless of message type.
-        watchdog.mark("can")
-
-        # Relay control (K1 direct drive)
-        if arb == int(config.RLY_CTRL_ID):
-            watchdog.mark("k1")
-            if len(data) < 1:
-                continue
-
-            # CAN bit0 (K1)
-            k1_is_1 = (data[0] & 0x01) == 0x01
-
-            # Direct drive only (no DUT inference). Optional invert via K1_CAN_INVERT.
-            drive = (not k1_is_1) if bool(getattr(config, "K1_CAN_INVERT", False)) else k1_is_1
-            hardware.set_k1_drive(bool(drive))
-
-            continue
-
-# AFG Control (Primary)
-        if arb == int(config.AFG_CTRL_ID):
-            watchdog.mark("afg")
-            if not hardware.afg or len(data) < 8:
-                continue
-
-            enable = data[0] != 0
-            shape_idx = data[1]
-            freq = struct.unpack("<I", data[2:6])[0]
-            ampl_mV = struct.unpack("<H", data[6:8])[0]
-            ampl_V = ampl_mV / 1000.0
-
-            try:
-                with hardware.afg_lock:
-                    if hardware.afg_output != enable:
-                        hardware.afg.write(f"SOUR1:OUTP {'ON' if enable else 'OFF'}")
-                        hardware.afg_output = enable
-                    if hardware.afg_shape != shape_idx:
-                        shape_str = SHAPE_MAP.get(shape_idx, "SIN")
-                        hardware.afg.write(f"SOUR1:FUNC {shape_str}")
-                        hardware.afg_shape = shape_idx
-                    if hardware.afg_freq != freq:
-                        hardware.afg.write(f"SOUR1:FREQ {freq}")
-                        hardware.afg_freq = freq
-                    if hardware.afg_ampl != ampl_mV:
-                        hardware.afg.write(f"SOUR1:AMPL {ampl_V}")
-                        hardware.afg_ampl = ampl_mV
-            except Exception as e:
-                _log(f"AFG Control Error: {e}")
-            continue
-
-        # AFG Control (Extended)
-        if arb == int(config.AFG_CTRL_EXT_ID):
-            watchdog.mark("afg")
-            if not hardware.afg or len(data) < 3:
-                continue
-
-            offset_mV = struct.unpack("<h", data[0:2])[0]
-            offset_V = offset_mV / 1000.0
-            duty_cycle = int(data[2])
-            duty_cycle = max(1, min(99, duty_cycle))
-
-            try:
-                with hardware.afg_lock:
-                    if hardware.afg_offset != offset_mV:
-                        hardware.afg.write(f"SOUR1:VOLT:OFFS {offset_V}")
-                        hardware.afg_offset = offset_mV
-                    if hardware.afg_duty != duty_cycle:
-                        hardware.afg.write(f"SOUR1:SQU:DCYC {duty_cycle}")
-                        hardware.afg_duty = duty_cycle
-            except Exception as e:
-                _log(f"AFG Ext Error: {e}")
-            continue
-
-        # Multimeter control
-        if arb == int(config.MMETER_CTRL_ID):
-            watchdog.mark("mmeter")
-            if len(data) < 2:
-                continue
-
-            meter_mode = int(data[0])
-            meter_range = int(data[1])
-
-            if hardware.multi_meter and (hardware.multi_meter_mode != meter_mode):
-                try:
-                    with hardware.mmeter_lock:
-                        if meter_mode == 0:
-                            hardware.multi_meter.write(b"FUNC VOLT:DC\n")
-                        elif meter_mode == 1:
-                            hardware.multi_meter.write(b"FUNC CURR:DC\n")
-                            time.sleep(0.2)
-                            # NOTE: this range is instrument-specific; keep as existing default
-                            hardware.multi_meter.write(b"CURR:DC:RANG 5\n")
-                        hardware.multi_meter_mode = meter_mode
-                except Exception:
-                    pass
-
-            hardware.multi_meter_range = meter_range
-            continue
-
-        # E-load control
-        if arb == int(config.LOAD_CTRL_ID):
-            watchdog.mark("eload")
-            if not hardware.e_load or len(data) < 6:
-                continue
-
-            first_byte = data[0]
-            new_enable = 1 if (first_byte & 0x0C) == 0x04 else 0
-            new_mode = 1 if (first_byte & 0x30) == 0x10 else 0
-            new_short = 1 if (first_byte & 0xC0) == 0x40 else 0
-
-            try:
-                if hardware.e_load_enabled != new_enable:
-                    hardware.e_load_enabled = new_enable
-                    with hardware.eload_lock:
-                        hardware.e_load.write("INP ON" if new_enable else "INP OFF")
-
-                if hardware.e_load_mode != new_mode:
-                    hardware.e_load_mode = new_mode
-                    with hardware.eload_lock:
-                        hardware.e_load.write("FUNC RES" if new_mode else "FUNC CURR")
-
-                if hardware.e_load_short != new_short:
-                    hardware.e_load_short = new_short
-                    with hardware.eload_lock:
-                        hardware.e_load.write("INP:SHOR ON" if new_short else "INP:SHOR OFF")
-
-                val_c = (data[3] << 8) | data[2]
-                if hardware.e_load_csetting != val_c:
-                    hardware.e_load_csetting = val_c
-                    with hardware.eload_lock:
-                        hardware.e_load.write(f"CURR {val_c/1000}")
-
-                val_r = (data[5] << 8) | data[4]
-                if hardware.e_load_rsetting != val_r:
-                    hardware.e_load_rsetting = val_r
-                    with hardware.eload_lock:
-                        hardware.e_load.write(f"RES {val_r/1000}")
-            except Exception:
-                pass
-
-        # MrSignal control (MR2.0)
-        if arb == int(getattr(config, "MRSIGNAL_CTRL_ID", 0x0CFF0800)):
-            watchdog.mark("mrsignal")
-            if len(data) < 6:
-                continue
-            if not getattr(hardware, "mrsignal", None):
-                continue
-
-            enable = (data[0] & 0x01) == 0x01
-            output_select = int(data[1])  # direct register value (0=mA, 1=V, 4=mV, 6=24V)
-            try:
-                value = struct.unpack("<f", data[2:6])[0]
-            except Exception:
-                continue
-
-            # Safety: ignore unknown modes (you can extend this later if desired)
-            if output_select not in (0, 1, 4, 6):
-                continue
-
-            try:
-                hardware.set_mrsignal(
-                    enable=bool(enable),
-                    output_select=int(output_select),
-                    value=float(value),
-                    max_v=float(getattr(config, "MRSIGNAL_MAX_V", 24.0)),
-                    max_ma=float(getattr(config, "MRSIGNAL_MAX_MA", 24.0)),
-                )
-            except Exception as e:
-                _log(f"MrSignal Control Error: {e}")
-            continue
-
-
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="ROI Instrument Bridge")
     p.add_argument("--headless", action="store_true", help="Disable Rich TUI (better for systemd)")
@@ -984,12 +561,26 @@ def main() -> int:
         if not cbus:
             return 2
 
-        receiver_thread = threading.Thread(
-            target=receive_can_messages,
-            args=(cbus, hardware, stop_event, watchdog, busload),
+        # --- CAN RX is isolated from *all* device I/O ---
+        # CAN RX thread only enqueues control frames. A dedicated device
+        # command worker applies them to instruments/IO.
+        cmd_queue = queue.Queue(maxsize=int(getattr(config, "CAN_CMD_QUEUE_MAX", 256)))
+
+        device_thread = threading.Thread(
+            target=device_command_loop,
+            args=(cmd_queue, hardware, stop_event),
+            kwargs={"log_fn": _log, "watchdog_mark_fn": watchdog.mark},
             daemon=True,
         )
-        receiver_thread.start()
+        device_thread.start()
+
+        can_rx_thread = threading.Thread(
+            target=can_rx_loop,
+            args=(cbus, cmd_queue, stop_event, watchdog),
+            kwargs={"busload": busload, "log_fn": _log},
+            daemon=True,
+        )
+        can_rx_thread.start()
 
         tx_thread = None
         if bool(getattr(config, 'CAN_TX_ENABLE', True)):
@@ -1001,6 +592,7 @@ def main() -> int:
                 tx_thread = threading.Thread(
                     target=can_tx_loop,
                     args=(cbus, tx_state, stop_event, period_ms / 1000.0, busload),
+                    kwargs={"log_fn": _log},
                     daemon=True,
                 )
                 tx_thread.start()
@@ -1120,10 +712,14 @@ def main() -> int:
     finally:
         stop_event.set()
         try:
-            if "receiver_thread" in locals():
-                receiver_thread.join(timeout=2.0)
-                if 'tx_thread' in locals() and tx_thread:
-                    tx_thread.join(timeout=2.0)
+            if "can_rx_thread" in locals():
+                can_rx_thread.join(timeout=2.0)
+            if "device_thread" in locals():
+                device_thread.join(timeout=2.0)
+            if "poll_thread" in locals():
+                poll_thread.join(timeout=2.0)
+            if 'tx_thread' in locals() and tx_thread:
+                tx_thread.join(timeout=2.0)
         except Exception:
             pass
 
