@@ -95,6 +95,7 @@ class ControlWatchdog:
             "eload": True,
             "afg": True,
             "mmeter": True,
+            "mrsignal": True,
         }
 
         # Soft timeout threshold is the per-key timeout; hard timeout is
@@ -107,6 +108,7 @@ class ControlWatchdog:
             "eload": float(config.ELOAD_TIMEOUT_SEC),
             "afg": float(config.AFG_TIMEOUT_SEC),
             "mmeter": float(config.MMETER_TIMEOUT_SEC),
+            "mrsignal": float(getattr(config, "MRSIGNAL_TIMEOUT_SEC", float(config.CONTROL_TIMEOUT_SEC))),
         }
 
     def mark(self, key: str) -> None:
@@ -173,6 +175,9 @@ class ControlWatchdog:
                         elif key == "mmeter":
                             # Nothing safety-critical to command on timeout.
                             pass
+                        elif key == "mrsignal":
+                            hardware.apply_idle_mrsignal()
+
                 else:
                     self._timed_out[key] = False
 
@@ -193,6 +198,8 @@ class OutgoingTxState:
         self._load_current_mA: Optional[int] = None
         self._afg_offset_mV: Optional[int] = None
         self._afg_duty_pct: Optional[int] = None
+        self._mrs_status: Optional[tuple[int, int, float]] = None  # (on, mode, out_val)
+        self._mrs_input: Optional[float] = None
 
     def update_meter_current(self, meter_current_mA: int) -> None:
         with self._lock:
@@ -208,7 +215,16 @@ class OutgoingTxState:
             self._afg_offset_mV = int(offset_mV)
             self._afg_duty_pct = int(duty_pct)
 
-    def snapshot(self) -> tuple[Optional[int], Optional[int], Optional[int], Optional[int], Optional[int]]:
+
+    def update_mrsignal_status(self, *, output_on: bool, output_select: int, output_value: float) -> None:
+        with self._lock:
+            self._mrs_status = (1 if output_on else 0, int(output_select) & 0xFF, float(output_value))
+
+    def update_mrsignal_input(self, input_value: float) -> None:
+        with self._lock:
+            self._mrs_input = float(input_value)
+
+    def snapshot(self) -> tuple[Optional[int], Optional[int], Optional[int], Optional[int], Optional[int], Optional[tuple[int,int,float]], Optional[float]]:
         with self._lock:
             return (
                 self._meter_current_mA,
@@ -216,6 +232,8 @@ class OutgoingTxState:
                 self._load_current_mA,
                 self._afg_offset_mV,
                 self._afg_duty_pct,
+                self._mrs_status,
+                self._mrs_input,
             )
 
 
@@ -254,7 +272,7 @@ def can_tx_loop(
         if next_t < now - (10.0 * period_s):
             next_t = now + period_s
 
-        meter_current_mA, load_volts_mV, load_current_mA, afg_offset_mV, afg_duty_pct = tx_state.snapshot()
+        meter_current_mA, load_volts_mV, load_current_mA, afg_offset_mV, afg_duty_pct, mrs_status, mrs_input = tx_state.snapshot()
 
         # Send each frame independently; one failure should not block others.
         if meter_current_mA is not None:
@@ -315,6 +333,44 @@ def can_tx_loop(
                 err_count += 1
                 if err_count in (1, 10, 100):
                     _log(f"TX AFG_EXT send error (count={err_count}): {e}")
+        # MrSignal readback (status + input)
+        if mrs_status is not None:
+            try:
+                on_i, mode_i, out_val = mrs_status
+                payload = bytearray(8)
+                payload[0] = 1 if int(on_i) else 0
+                payload[1] = int(mode_i) & 0xFF
+                payload[2:6] = struct.pack("<f", float(out_val))
+                msg = can.Message(arbitration_id=int(getattr(config, "MRSIGNAL_READ_STATUS_ID", 0x0CFF0007)),
+                                  data=payload, is_extended_id=True)
+                cbus.send(msg)
+                if busload:
+                    try:
+                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
+                    except Exception:
+                        pass
+            except Exception as e:
+                err_count += 1
+                if err_count in (1, 10, 100):
+                    _log(f"TX MRSIGNAL_STATUS send error (count={err_count}): {e}")
+
+        if mrs_input is not None:
+            try:
+                payload = bytearray(8)
+                payload[0:4] = struct.pack("<f", float(mrs_input))
+                msg = can.Message(arbitration_id=int(getattr(config, "MRSIGNAL_READ_INPUT_ID", 0x0CFF0008)),
+                                  data=payload, is_extended_id=True)
+                cbus.send(msg)
+                if busload:
+                    try:
+                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
+                    except Exception:
+                        pass
+            except Exception as e:
+                err_count += 1
+                if err_count in (1, 10, 100):
+                    _log(f"TX MRSIGNAL_INPUT send error (count={err_count}): {e}")
+
 
 
 
@@ -347,6 +403,14 @@ class TelemetryState:
         self.afg_out_str: str = ""
         self.afg_shape_str: str = ""
 
+        # MrSignal status
+        self.mrs_id_str: str = ""
+        self.mrs_out_str: str = ""
+        self.mrs_mode_str: str = ""
+        self.mrs_set_str: str = ""
+        self.mrs_in_str: str = ""
+        self.mrs_bo_str: str = ""
+
         # Timestamps (monotonic seconds)
         self.last_meas_ts: float = 0.0
         self.last_status_ts: float = 0.0
@@ -375,6 +439,12 @@ class TelemetryState:
                       afg_duty_str: str | None = None,
                       afg_out_str: str | None = None,
                       afg_shape_str: str | None = None,
+                      mrs_id_str: str | None = None,
+                      mrs_out_str: str | None = None,
+                      mrs_mode_str: str | None = None,
+                      mrs_set_str: str | None = None,
+                      mrs_in_str: str | None = None,
+                      mrs_bo_str: str | None = None,
                       ts: float | None = None) -> None:
         with self._lock:
             if load_stat_func is not None:
@@ -401,6 +471,19 @@ class TelemetryState:
             if afg_shape_str is not None:
                 self.afg_shape_str = afg_shape_str
 
+            if mrs_id_str is not None:
+                self.mrs_id_str = mrs_id_str
+            if mrs_out_str is not None:
+                self.mrs_out_str = mrs_out_str
+            if mrs_mode_str is not None:
+                self.mrs_mode_str = mrs_mode_str
+            if mrs_set_str is not None:
+                self.mrs_set_str = mrs_set_str
+            if mrs_in_str is not None:
+                self.mrs_in_str = mrs_in_str
+            if mrs_bo_str is not None:
+                self.mrs_bo_str = mrs_bo_str
+
             self.last_status_ts = float(ts if ts is not None else time.monotonic())
 
     def snapshot(self) -> Dict[str, object]:
@@ -420,6 +503,12 @@ class TelemetryState:
                 "afg_duty_str": str(self.afg_duty_str),
                 "afg_out_str": str(self.afg_out_str),
                 "afg_shape_str": str(self.afg_shape_str),
+                "mrs_id_str": str(self.mrs_id_str),
+                "mrs_out_str": str(self.mrs_out_str),
+                "mrs_mode_str": str(self.mrs_mode_str),
+                "mrs_set_str": str(self.mrs_set_str),
+                "mrs_in_str": str(self.mrs_in_str),
+                "mrs_bo_str": str(self.mrs_bo_str),
                 "last_meas_ts": float(self.last_meas_ts),
                 "last_status_ts": float(self.last_status_ts),
             }
@@ -452,6 +541,7 @@ def instrument_poll_loop(
     _log(f"Instrument poll thread started (meas={meas_period_s:.3f}s, status={status_period_s:.3f}s).")
 
     last_status = 0.0
+    last_mrs = 0.0
     next_meas = time.monotonic()
 
     while not stop_event.is_set():
@@ -557,6 +647,70 @@ def instrument_poll_loop(
                 except Exception:
                     pass
 
+
+                        # MrSignal (MR2.0) status/input
+            mrs_id_str = None
+            mrs_out_str = None
+            mrs_mode_str = None
+            mrs_set_str = None
+            mrs_in_str = None
+            mrs_bo_str = None
+
+            if getattr(hardware, "mrsignal", None):
+                try:
+                    poll_p = float(getattr(config, "MRSIGNAL_POLL_PERIOD", status_period_s))
+                    if poll_p <= 0:
+                        poll_p = status_period_s
+
+                    if (now_m - last_mrs) >= poll_p:
+                        last_mrs = now_m
+                        with hardware.mrsignal_lock:
+                            st = hardware.mrsignal.read_status()
+
+                        # Update hardware cached fields for dashboard
+                        hardware.mrsignal_id = st.device_id
+                        hardware.mrsignal_output_on = bool(st.output_on) if st.output_on is not None else False
+                        hardware.mrsignal_output_select = int(st.output_select or 0)
+                        if st.output_value is not None:
+                            hardware.mrsignal_output_value = float(st.output_value)
+                        if st.input_value is not None:
+                            hardware.mrsignal_input_value = float(st.input_value)
+                        hardware.mrsignal_float_byteorder = str(st.float_byteorder or "DEFAULT")
+
+                        mrs_id_str = str(st.device_id) if st.device_id is not None else "—"
+                        mrs_out_str = "ON" if bool(st.output_on) else "OFF"
+                        mrs_mode_str = st.mode_label
+
+                        # Render set/input with units based on mode
+                        if st.output_value is not None:
+                            if int(st.output_select or 0) == 0:
+                                mrs_set_str = f"{float(st.output_value):.4g} mA"
+                            elif int(st.output_select or 0) == 4:
+                                mrs_set_str = f"{float(st.output_value):.4g} mV"
+                            else:
+                                mrs_set_str = f"{float(st.output_value):.4g} V"
+                        if st.input_value is not None:
+                            if int(st.output_select or 0) == 0:
+                                mrs_in_str = f"{float(st.input_value):.4g} mA"
+                            elif int(st.output_select or 0) == 4:
+                                mrs_in_str = f"{float(st.input_value):.4g} mV"
+                            else:
+                                mrs_in_str = f"{float(st.input_value):.4g} V"
+                        mrs_bo_str = str(st.float_byteorder or "DEFAULT")
+
+                        # CAN readback publisher state
+                        try:
+                            tx_state.update_mrsignal_status(
+                                output_on=bool(st.output_on),
+                                output_select=int(st.output_select or 0),
+                                output_value=float(st.output_value or 0.0),
+                            )
+                            if st.input_value is not None:
+                                tx_state.update_mrsignal_input(float(st.input_value))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
             telemetry.update_status(
                 load_stat_func=load_stat_func,
                 load_stat_curr=load_stat_curr,
@@ -569,6 +723,12 @@ def instrument_poll_loop(
                 afg_shape_str=afg_shape_str,
                 afg_offset_str=afg_offset_str,
                 afg_duty_str=afg_duty_str,
+                mrs_id_str=mrs_id_str,
+                mrs_out_str=mrs_out_str,
+                mrs_mode_str=mrs_mode_str,
+                mrs_set_str=mrs_set_str,
+                mrs_in_str=mrs_in_str,
+                mrs_bo_str=mrs_bo_str,
                 ts=now_m,
             )
 
@@ -739,6 +899,37 @@ def receive_can_messages(cbus: can.BusABC, hardware: HardwareManager, stop_event
             except Exception:
                 pass
 
+        # MrSignal control (MR2.0)
+        if arb == int(getattr(config, "MRSIGNAL_CTRL_ID", 0x0CFF0800)):
+            watchdog.mark("mrsignal")
+            if len(data) < 6:
+                continue
+            if not getattr(hardware, "mrsignal", None):
+                continue
+
+            enable = (data[0] & 0x01) == 0x01
+            output_select = int(data[1])  # direct register value (0=mA, 1=V, 4=mV, 6=24V)
+            try:
+                value = struct.unpack("<f", data[2:6])[0]
+            except Exception:
+                continue
+
+            # Safety: ignore unknown modes (you can extend this later if desired)
+            if output_select not in (0, 1, 4, 6):
+                continue
+
+            try:
+                hardware.set_mrsignal(
+                    enable=bool(enable),
+                    output_select=int(output_select),
+                    value=float(value),
+                    max_v=float(getattr(config, "MRSIGNAL_MAX_V", 24.0)),
+                    max_ma=float(getattr(config, "MRSIGNAL_MAX_MA", 24.0)),
+                )
+            except Exception as e:
+                _log(f"MrSignal Control Error: {e}")
+            continue
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="ROI Instrument Bridge")
@@ -907,6 +1098,12 @@ def main() -> int:
                         afg_duty_read=str(snap.get("afg_duty_str", "50")),
                         afg_out_read=str(snap.get("afg_out_str", "")),
                         afg_shape_read=str(snap.get("afg_shape_str", "")),
+                        mrs_id=str(snap.get("mrs_id_str", "")),
+                        mrs_out=str(snap.get("mrs_out_str", "")),
+                        mrs_mode=str(snap.get("mrs_mode_str", "")),
+                        mrs_set=str(snap.get("mrs_set_str", "")),
+                        mrs_in=str(snap.get("mrs_in_str", "")),
+                        mrs_bo=str(snap.get("mrs_bo_str", "")),
                         can_channel=config.CAN_CHANNEL,
                         can_bitrate=int(config.CAN_BITRATE),
                         status_poll_period=status_period,

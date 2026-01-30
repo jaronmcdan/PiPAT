@@ -63,7 +63,7 @@ MULTI_METER_WRITE_TIMEOUT = _env_float("MULTI_METER_WRITE_TIMEOUT", 1.0)
 
 # VISA Resource IDs (PyVISA)
 ELOAD_VISA_ID = _env_str("ELOAD_VISA_ID", "USB0::11975::34816::*::0::INSTR")
-AFG_VISA_ID = _env_str("AFG_VISA_ID", "ASRL/dev/ttyACM0::INSTR")
+AFG_VISA_ID = _env_str("AFG_VISA_ID", "ASRL/dev/ttyACM1::INSTR")
 
 # --- GPIO / K1 relay drive ---
 K1_ENABLE = _env_bool("K1_ENABLE", True)
@@ -130,6 +130,34 @@ ELOAD_IDLE_SHORT_ON = _env_bool("ELOAD_IDLE_SHORT_ON", False)
 # AFG: idle means output off.
 AFG_IDLE_OUTPUT_ON = _env_bool("AFG_IDLE_OUTPUT_ON", False)
 
+# MrSignal / LANYI MR2.0 (Modbus RTU over USB-serial)
+MRSIGNAL_ENABLE = _env_bool("MRSIGNAL_ENABLE", True)
+# Default is /dev/ttyUSB1 to avoid colliding with the multimeter default (/dev/ttyUSB0).
+MRSIGNAL_PORT = _env_str("MRSIGNAL_PORT", "/dev/ttyACM0")
+MRSIGNAL_BAUD = _env_int("MRSIGNAL_BAUD", 9600)
+MRSIGNAL_SLAVE_ID = _env_int("MRSIGNAL_SLAVE_ID", 1)
+MRSIGNAL_PARITY = _env_str("MRSIGNAL_PARITY", "N")  # N/E/O
+MRSIGNAL_STOPBITS = _env_int("MRSIGNAL_STOPBITS", 1)  # 1 or 2
+MRSIGNAL_TIMEOUT = _env_float("MRSIGNAL_TIMEOUT", 0.5)
+
+# Float byteorder handling (minimalmodbus varies between versions/devices)
+# Examples: BYTEORDER_BIG, BYTEORDER_LITTLE, BYTEORDER_BIG_SWAP, BYTEORDER_LITTLE_SWAP
+MRSIGNAL_FLOAT_BYTEORDER = _env_str("MRSIGNAL_FLOAT_BYTEORDER", "")
+MRSIGNAL_FLOAT_BYTEORDER_AUTO = _env_bool("MRSIGNAL_FLOAT_BYTEORDER_AUTO", True)
+
+# Safety clamps (applied to incoming CAN setpoints)
+MRSIGNAL_MAX_V = _env_float("MRSIGNAL_MAX_V", 24.0)
+MRSIGNAL_MAX_MA = _env_float("MRSIGNAL_MAX_MA", 24.0)
+
+# Idle behavior: output OFF by default (safety)
+MRSIGNAL_IDLE_OUTPUT_ON = _env_bool("MRSIGNAL_IDLE_OUTPUT_ON", False)
+
+# Watchdog timeout (seconds)
+MRSIGNAL_TIMEOUT_SEC = _env_float("MRSIGNAL_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
+
+# Poll cadence for status/input reads (seconds)
+MRSIGNAL_POLL_PERIOD = _env_float("MRSIGNAL_POLL_PERIOD", STATUS_POLL_PERIOD)
+
 
 # --- CAN IDs (Control) ---
 LOAD_CTRL_ID = 0x0CFF0400
@@ -138,11 +166,18 @@ MMETER_CTRL_ID = 0x0CFF0600
 AFG_CTRL_ID = 0x0CFF0700  # Enable, Shape, Freq, Ampl
 AFG_CTRL_EXT_ID = 0x0CFF0701  # Offset, Duty Cycle
 
+# MrSignal control (enable/mode/value float)
+MRSIGNAL_CTRL_ID = 0x0CFF0800
+
 # --- CAN IDs (Readback) ---
 ELOAD_READ_ID = 0x0CFF0003
 MMETER_READ_ID = 0x0CFF0004
 AFG_READ_ID = 0x0CFF0005  # Status: Enable, Freq, Ampl
 AFG_READ_EXT_ID = 0x0CFF0006  # Status: Offset, Duty Cycle
+
+# MrSignal readback (optional)
+MRSIGNAL_READ_STATUS_ID = 0x0CFF0007
+MRSIGNAL_READ_INPUT_ID = 0x0CFF0008
 
 
 # --- CAN bus load estimator (dashboard) ---

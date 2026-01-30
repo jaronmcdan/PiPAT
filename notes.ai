@@ -10,3 +10,12 @@
   - Added a dedicated **"CAN" liveness** key (`config.CAN_TIMEOUT_SEC`) that is marked on *any* received CAN message, so the UI can distinguish “CAN is dead” from “a particular device’s periodic control frame is late”.
 
 Files touched: `main.py`, `dashboard.py`, `can_metrics.py`, `config.py`.
+
+
+## 2026-01-30
+
+### MrSignal (MR2.0) Modbus RTU support
+- Added `mrsignal.py` (minimalmodbus client with byteorder compatibility helpers).
+- Wired MrSignal into `HardwareManager` for init/idle/shutdown and redundant-write suppression.
+- Added `MRSIGNAL_*` config/env options + CAN IDs + optional CAN readback frames.
+- Dashboard shows MrSignal status (ID, output enable, mode, setpoint, input, float byteorder).

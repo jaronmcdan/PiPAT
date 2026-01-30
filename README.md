@@ -5,6 +5,7 @@ This project runs on a Raspberry Pi and bridges **SocketCAN** control messages t
 - **E-load** via PyVISA (SCPI)
 - **Multimeter** (e.g., Keysight 5491B) via USB-serial
 - **AFG** via PyVISA (SCPI)
+- **MrSignal / LANYI MR2.0** via Modbus RTU (USB-serial)
 - **K1 Relay** (GPIO) for DUT power control
 - Optional terminal dashboard (Rich TUI)
 
@@ -64,6 +65,7 @@ The most common settings:
 - `CONTROL_TIMEOUT_SEC` (or per-device timeouts)
 - `MULTI_METER_PATH`, `MULTI_METER_BAUD`
 - `ELOAD_VISA_ID`, `AFG_VISA_ID`
+- `MRSIGNAL_ENABLE`, `MRSIGNAL_PORT`, `MRSIGNAL_BAUD`, `MRSIGNAL_SLAVE_ID`, `MRSIGNAL_PARITY`, `MRSIGNAL_STOPBITS`
 
 ### 4) Run
 
@@ -247,4 +249,59 @@ Tuning (optional):
 - `CAN_BUS_LOAD_WINDOW_SEC=1.0` sliding window (seconds)
 - `CAN_BUS_LOAD_STUFFING_FACTOR=1.2` heuristic stuffing multiplier
 - `CAN_BUS_LOAD_OVERHEAD_BITS=48` approximate overhead bits per classic CAN frame
+
+---
+
+## MrSignal (MR2.0) support
+
+PiPAT can control a **MrSignal / LANYI MR2.0** over its USB virtual COM port using **Modbus RTU** (via `minimalmodbus`).
+
+### Configure (env vars)
+
+Add these to `roi.env` (see `roi.env.example`):
+
+- `MRSIGNAL_ENABLE=1`
+- `MRSIGNAL_PORT=/dev/ttyUSB1` (or `COM7` on Windows for dev)
+- `MRSIGNAL_BAUD=9600`
+- `MRSIGNAL_SLAVE_ID=1`
+- `MRSIGNAL_PARITY=N`  (`N`/`E`/`O`)
+- `MRSIGNAL_STOPBITS=1`
+- `MRSIGNAL_TIMEOUT=0.5`
+- Optional float byteorder overrides:
+  - `MRSIGNAL_FLOAT_BYTEORDER=` (e.g. `BYTEORDER_BIG_SWAP`)
+  - `MRSIGNAL_FLOAT_BYTEORDER_AUTO=1`
+- Safety clamps:
+  - `MRSIGNAL_MAX_V=24.0`
+  - `MRSIGNAL_MAX_MA=24.0`
+
+### CAN control frame
+
+**Arbitration ID:** `MRSIGNAL_CTRL_ID` (default `0x0CFF0800`, extended)
+
+Payload (8 bytes):
+
+- `byte0`: bit0 = enable (1=ON, 0=OFF)
+- `byte1`: output select (matches MR2.0 register 40022)
+  - `0` = mA
+  - `1` = V
+  - `4` = mV
+  - `6` = 24V
+- `bytes2..5`: `float32` little-endian setpoint
+  - units depend on mode: **mA** when mode=0, **V** when mode=1/6, **mV** when mode=4
+- `bytes6..7`: reserved
+
+PiPAT applies safety clamps (`MRSIGNAL_MAX_V`, `MRSIGNAL_MAX_MA`) before writing to the instrument.
+
+### Optional CAN readback frames
+
+If `CAN_TX_ENABLE=1` (default), PiPAT also publishes:
+
+- `MRSIGNAL_READ_STATUS_ID` (default `0x0CFF0007`):
+  - `byte0` enable (0/1)
+  - `byte1` mode
+  - `bytes2..5` float32 output value (same units as mode)
+- `MRSIGNAL_READ_INPUT_ID` (default `0x0CFF0008`):
+  - `bytes0..3` float32 input value (same units as mode)
+
+---
 

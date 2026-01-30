@@ -34,6 +34,12 @@ def build_dashboard(hardware, *,
                     afg_duty_read: str,
                     afg_out_read: str,
                     afg_shape_read: str,
+                    mrs_id: str = "",
+                    mrs_out: str = "",
+                    mrs_mode: str = "",
+                    mrs_set: str = "",
+                    mrs_in: str = "",
+                    mrs_bo: str = "",
                     can_channel: str,
                     can_bitrate: int,
                     status_poll_period: float,
@@ -47,7 +53,7 @@ def build_dashboard(hardware, *,
 
     layout = Layout()
     layout.split(
-        Layout(name="top", size=11),
+        Layout(name="top", size=12),
         Layout(name="middle", ratio=1),
         Layout(name="bottom", size=3),
     )
@@ -98,7 +104,23 @@ def build_dashboard(hardware, *,
     meter_table.add_row("ID", f"[white]{hardware.mmeter_id or '—'}[/]")
     meter_table.add_row("Range", f"[white]{hardware.multi_meter_range}[/]")
 
+    # MrSignal Panel
+    mrs_table = Table.grid(padding=(0, 1))
+    mrs_table.add_column(justify="right", style="bold white")
+    mrs_table.add_column()
+    if getattr(hardware, "mrsignal", None):
+        mrs_table.add_row("ID", f"[white]{mrs_id or getattr(hardware, 'mrsignal_id', '—') or '—'}[/]")
+        mrs_table.add_row("Output", _badge(str(mrs_out).strip().upper() in ['ON','1','TRUE'], 'ON', 'OFF'))
+        mrs_table.add_row("Mode", f"[white]{mrs_mode or '—'}[/]")
+        mrs_table.add_row("Set", f"[yellow]{mrs_set or '—'}[/]")
+        mrs_table.add_row("Input", f"[cyan]{mrs_in or '—'}[/]")
+        if mrs_bo:
+            mrs_table.add_row("Float", f"[dim]{mrs_bo}[/]")
+    else:
+        mrs_table.add_row("Status", "[red]NOT DETECTED[/]")
+
     top_grid = Table.grid(expand=True)
+    top_grid.add_column(ratio=1)
     top_grid.add_column(ratio=1)
     top_grid.add_column(ratio=1)
     top_grid.add_column(ratio=1)
@@ -106,6 +128,7 @@ def build_dashboard(hardware, *,
         Panel(eload_table, title="[bold]E-Load[/]", border_style="cyan", box=box.ROUNDED),
         Panel(afg_table, title="[bold]AFG-2125[/]", border_style="green", box=box.ROUNDED),
         Panel(meter_table, title="[bold]Multimeter[/]", border_style="magenta", box=box.ROUNDED),
+        Panel(mrs_table, title="[bold]MrSignal[/]", border_style="white", box=box.ROUNDED),
     )
     layout["top"].update(top_grid)
 
@@ -167,13 +190,14 @@ def build_dashboard(hardware, *,
         ((f"{bus_load_pct:.1f}% " if isinstance(bus_load_pct, (int, float)) else "-- "), "yellow"),
         (" Poll: ", "bold"), (f"{status_poll_period:.2f}s ", "cyan"),
         (" AFG: ", "bold"), (f"{'Connected' if hardware.afg else 'Missing'}", "green" if hardware.afg else "red"),
+        (" MR2: ", "bold"), (f"{'Connected' if getattr(hardware, 'mrsignal', None) else 'Missing'}", "green" if getattr(hardware, 'mrsignal', None) else "red"),
     )
 
     # Watchdog / control freshness (optional)
     if watchdog and isinstance(watchdog, dict):
         ages = watchdog.get("ages", {}) or {}
         timed_out = watchdog.get("timed_out", {}) or {}
-        status_map = watchdog.get("status", {}) or {}
+        status_map = watchdog.get("states", {}) or {}
 
         def _seg(key: str, label: str):
             age = ages.get(key)
@@ -194,6 +218,7 @@ def build_dashboard(hardware, *,
         status.append(*_seg("eload", "Load"))
         status.append(*_seg("afg", "AFG"))
         status.append(*_seg("mmeter", "DMM"))
+        status.append(*_seg("mrsignal", "MR2"))
 
     layout["bottom"].update(Panel(status, box=box.SQUARE, border_style="blue"))
     return layout
