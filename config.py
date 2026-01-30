@@ -61,6 +61,13 @@ MULTI_METER_BAUD = _env_int("MULTI_METER_BAUD", 38400)
 MULTI_METER_TIMEOUT = _env_float("MULTI_METER_TIMEOUT", 1.0)
 MULTI_METER_WRITE_TIMEOUT = _env_float("MULTI_METER_WRITE_TIMEOUT", 1.0)
 
+# If True, the DMM driver will probe for an SCPI error queue (SYST:ERR? / SYSTEM:ERROR?)
+# and use it to safely test alternate command spellings.
+#
+# Some 5491B firmwares show a "bad bus command" warning for unsupported headers.
+# If you see that, keep this *OFF* (default).
+MULTI_METER_ERRQ_PROBE = _env_bool("MULTI_METER_ERRQ_PROBE", False)
+
 # VISA Resource IDs (PyVISA)
 ELOAD_VISA_ID = _env_str("ELOAD_VISA_ID", "USB0::11975::34816::*::0::INSTR")
 AFG_VISA_ID = _env_str("AFG_VISA_ID", "ASRL/dev/ttyACM0::INSTR")

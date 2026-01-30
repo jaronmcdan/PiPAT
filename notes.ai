@@ -43,3 +43,12 @@ Files touched: `main.py`, `hardware.py`, `dashboard.py`, `config.py`, `README.md
   - If not supported, **send only the first** (most likely) command to avoid spurious errors.
   - Use **double quotes** for string args (`FUNC "CURR:DC"`, `SENS:FUNC "CURR:DC"`), and clear status with `*CLS`/`SYST:CLE` best-effort.
 Files touched: `dmm_5491b.py`.
+
+
+### Separate device I/O from CAN RX
+- CAN RX thread no longer performs any instrument/GPIO I/O. It only parses frames and updates desired-state.
+- Added `device_control.py` with per-device worker threads (relay/AFG/e-load/DMM/MrSignal) that apply desired state using existing per-device locks.
+- Watchdog idle enforcement now targets the device-control coordinator (queues idles) so idle actions also occur off the main/UI thread.
+- Added `MULTI_METER_ERRQ_PROBE` config/env (default OFF) to avoid long error-queue probes and front-panel "bad bus command" on firmwares without an error queue.
+
+Files touched: `main.py`, `device_control.py`, `config.py`, `hardware.py`, `dmm_5491b.py`, `README.md`, `roi.env.example`.

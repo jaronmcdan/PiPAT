@@ -17,7 +17,8 @@ import config
 from can_metrics import BusLoadMeter
 from dashboard import HAVE_RICH, build_dashboard, console
 from hardware import HardwareManager
-from dmm_5491b import MeterMode, MeterUnit, legacy_range_code_to_value
+from dmm_5491b import MeterMode, MeterUnit
+from device_control import DeviceControlCoordinator
 
 try:
     from rich.live import Live
@@ -148,7 +149,7 @@ class ControlWatchdog:
                 "grace_s": float(self._grace_s),
             }
 
-    def enforce(self, hardware: HardwareManager) -> None:
+    def enforce(self, idle_target) -> None:
         now = time.monotonic()
         with self._lock:
             for key, timeout_s in self._timeouts.items():
@@ -168,16 +169,28 @@ class ControlWatchdog:
                             # Indicator only; we don't apply device idles on generic CAN silence.
                             pass
                         elif key == "k1":
-                            hardware.set_k1_idle()
+                            try:
+                                idle_target.set_k1_idle()
+                            except Exception:
+                                pass
                         elif key == "eload":
-                            hardware.apply_idle_eload()
+                            try:
+                                idle_target.apply_idle_eload()
+                            except Exception:
+                                pass
                         elif key == "afg":
-                            hardware.apply_idle_afg()
+                            try:
+                                idle_target.apply_idle_afg()
+                            except Exception:
+                                pass
                         elif key == "mmeter":
                             # Nothing safety-critical to command on timeout.
                             pass
                         elif key == "mrsignal":
-                            hardware.apply_idle_mrsignal()
+                            try:
+                                idle_target.apply_idle_mrsignal()
+                            except Exception:
+                                pass
 
                 else:
                     self._timed_out[key] = False
@@ -867,12 +880,21 @@ def instrument_poll_loop(
         stop_event.wait(timeout=0.01)
 
 
-def receive_can_messages(cbus: can.BusABC, hardware: HardwareManager, stop_event: threading.Event, watchdog: ControlWatchdog, busload: BusLoadMeter | None = None) -> None:
-    """Background thread to process incoming CAN commands."""
+def receive_can_messages(
+    cbus: can.BusABC,
+    hardware: HardwareManager,
+    controls: DeviceControlCoordinator,
+    stop_event: threading.Event,
+    watchdog: ControlWatchdog,
+    busload: BusLoadMeter | None = None,
+) -> None:
+    """Background thread to process incoming CAN commands.
+
+    IMPORTANT: This thread must never perform instrument/GPIO I/O.
+    It only parses frames, updates desired state, and returns to recv().
+    """
 
     _log("Receiver thread started.")
-
-    SHAPE_MAP = {0: "SIN", 1: "SQU", 2: "RAMP"}
 
     while not stop_event.is_set():
         try:
@@ -902,65 +924,38 @@ def receive_can_messages(cbus: can.BusABC, hardware: HardwareManager, stop_event
 
             # CAN bit0 (K1)
             k1_is_1 = (data[0] & 0x01) == 0x01
-
             # Direct drive only (no DUT inference). Optional invert via K1_CAN_INVERT.
             drive = (not k1_is_1) if bool(getattr(config, "K1_CAN_INVERT", False)) else k1_is_1
-            hardware.set_k1_drive(bool(drive))
-
+            controls.request_k1_drive(bool(drive))
             continue
 
-# AFG Control (Primary)
+        # AFG Control (Primary)
         if arb == int(config.AFG_CTRL_ID):
             watchdog.mark("afg")
-            if not hardware.afg or len(data) < 8:
+            if len(data) < 8:
                 continue
 
             enable = data[0] != 0
-            shape_idx = data[1]
+            shape_idx = int(data[1]) & 0xFF
             freq = struct.unpack("<I", data[2:6])[0]
             ampl_mV = struct.unpack("<H", data[6:8])[0]
-            ampl_V = ampl_mV / 1000.0
 
-            try:
-                with hardware.afg_lock:
-                    if hardware.afg_output != enable:
-                        hardware.afg.write(f"SOUR1:OUTP {'ON' if enable else 'OFF'}")
-                        hardware.afg_output = enable
-                    if hardware.afg_shape != shape_idx:
-                        shape_str = SHAPE_MAP.get(shape_idx, "SIN")
-                        hardware.afg.write(f"SOUR1:FUNC {shape_str}")
-                        hardware.afg_shape = shape_idx
-                    if hardware.afg_freq != freq:
-                        hardware.afg.write(f"SOUR1:FREQ {freq}")
-                        hardware.afg_freq = freq
-                    if hardware.afg_ampl != ampl_mV:
-                        hardware.afg.write(f"SOUR1:AMPL {ampl_V}")
-                        hardware.afg_ampl = ampl_mV
-            except Exception as e:
-                _log(f"AFG Control Error: {e}")
+            # If AFG isn't present, ignore (but keep CAN RX snappy).
+            if hardware.afg:
+                controls.request_afg_primary(enable=bool(enable), shape_idx=int(shape_idx), freq_hz=int(freq), ampl_mVpp=int(ampl_mV))
             continue
 
         # AFG Control (Extended)
         if arb == int(config.AFG_CTRL_EXT_ID):
             watchdog.mark("afg")
-            if not hardware.afg or len(data) < 3:
+            if len(data) < 3:
                 continue
 
             offset_mV = struct.unpack("<h", data[0:2])[0]
-            offset_V = offset_mV / 1000.0
             duty_cycle = int(data[2])
-            duty_cycle = max(1, min(99, duty_cycle))
 
-            try:
-                with hardware.afg_lock:
-                    if hardware.afg_offset != offset_mV:
-                        hardware.afg.write(f"SOUR1:VOLT:OFFS {offset_V}")
-                        hardware.afg_offset = offset_mV
-                    if hardware.afg_duty != duty_cycle:
-                        hardware.afg.write(f"SOUR1:SQU:DCYC {duty_cycle}")
-                        hardware.afg_duty = duty_cycle
-            except Exception as e:
-                _log(f"AFG Ext Error: {e}")
+            if hardware.afg:
+                controls.request_afg_ext(offset_mV=int(offset_mV), duty_pct=int(duty_cycle))
             continue
 
         # Multimeter control (5491B)
@@ -977,7 +972,7 @@ def receive_can_messages(cbus: can.BusABC, hardware: HardwareManager, stop_event
             meter_mode = int(data[0]) & 0xFF
             meter_range_code = int(data[1]) & 0xFF
 
-            range_value = None  # None => AUTO
+            range_value = None  # None => AUTO (worker resolves legacy mapping)
             if len(data) >= 6:
                 rv = bytes(data[2:6])
                 if any(b != 0 for b in rv):
@@ -986,59 +981,13 @@ def receive_can_messages(cbus: can.BusABC, hardware: HardwareManager, stop_event
                     except Exception:
                         range_value = None
 
-            if range_value is None:
-                range_value = legacy_range_code_to_value(meter_mode, meter_range_code)
-
-            # Apply mode/range to the DMM (preferred path: Dmm5491B driver)
-            if getattr(hardware, "dmm", None) is not None:
-                try:
-                    with hardware.mmeter_lock:
-                        if hardware.multi_meter_mode != meter_mode:
-                            hardware.dmm.set_mode(meter_mode)
-                            hardware.multi_meter_mode = meter_mode
-
-                        # Track the *requested* range for dashboard visibility
-                        prev_code = getattr(hardware, "multi_meter_range", 0)
-                        prev_val = float(getattr(hardware, "multi_meter_range_value", 0.0))
-                        desired_val = float(range_value or 0.0)
-                        if (prev_code != meter_range_code) or (abs(prev_val - desired_val) > 1e-12):
-                            hardware.dmm.set_range(meter_mode, range_value)
-                            hardware.multi_meter_range = meter_range_code
-                            hardware.multi_meter_range_value = desired_val
-                except Exception:
-                    pass
-
-            # Fallback (older/simple SCPI): only VDC/IDC
-            elif hardware.multi_meter:
-                try:
-                    with hardware.mmeter_lock:
-                        if hardware.multi_meter_mode != meter_mode:
-                            if meter_mode == MeterMode.VDC:
-                                hardware.multi_meter.write(b"FUNC VOLT:DC\n")
-                            elif meter_mode == MeterMode.IDC:
-                                hardware.multi_meter.write(b"FUNC CURR:DC\n")
-                            elif meter_mode == MeterMode.FREQ:
-                                hardware.multi_meter.write(b"FUNC FREQ\n")
-                            elif meter_mode == MeterMode.OHM:
-                                hardware.multi_meter.write(b"FUNC RES\n")
-                            hardware.multi_meter_mode = meter_mode
-                except Exception:
-                    pass
-
-            # Legacy current-only readback should never go stale when mode changes away from IDC.
-            if meter_mode != MeterMode.IDC:
-                try:
-                    tx_state.update_meter_current(0)
-                except Exception:
-                    pass
-
+            controls.request_mmeter(mode=int(meter_mode), range_code=int(meter_range_code), range_value=range_value)
             continue
-
 
         # E-load control
         if arb == int(config.LOAD_CTRL_ID):
             watchdog.mark("eload")
-            if not hardware.e_load or len(data) < 6:
+            if len(data) < 6:
                 continue
 
             first_byte = data[0]
@@ -1046,35 +995,12 @@ def receive_can_messages(cbus: can.BusABC, hardware: HardwareManager, stop_event
             new_mode = 1 if (first_byte & 0x30) == 0x10 else 0
             new_short = 1 if (first_byte & 0xC0) == 0x40 else 0
 
-            try:
-                if hardware.e_load_enabled != new_enable:
-                    hardware.e_load_enabled = new_enable
-                    with hardware.eload_lock:
-                        hardware.e_load.write("INP ON" if new_enable else "INP OFF")
+            val_c = (data[3] << 8) | data[2]
+            val_r = (data[5] << 8) | data[4]
 
-                if hardware.e_load_mode != new_mode:
-                    hardware.e_load_mode = new_mode
-                    with hardware.eload_lock:
-                        hardware.e_load.write("FUNC RES" if new_mode else "FUNC CURR")
-
-                if hardware.e_load_short != new_short:
-                    hardware.e_load_short = new_short
-                    with hardware.eload_lock:
-                        hardware.e_load.write("INP:SHOR ON" if new_short else "INP:SHOR OFF")
-
-                val_c = (data[3] << 8) | data[2]
-                if hardware.e_load_csetting != val_c:
-                    hardware.e_load_csetting = val_c
-                    with hardware.eload_lock:
-                        hardware.e_load.write(f"CURR {val_c/1000}")
-
-                val_r = (data[5] << 8) | data[4]
-                if hardware.e_load_rsetting != val_r:
-                    hardware.e_load_rsetting = val_r
-                    with hardware.eload_lock:
-                        hardware.e_load.write(f"RES {val_r/1000}")
-            except Exception:
-                pass
+            if hardware.e_load:
+                controls.request_eload(enable=int(new_enable), mode_res=int(new_mode), short=int(new_short), csetting_mA=int(val_c), rsetting_mOhm=int(val_r))
+            continue
 
         # MrSignal control (MR2.0)
         if arb == int(getattr(config, "MRSIGNAL_CTRL_ID", 0x0CFF0800)):
@@ -1091,20 +1017,11 @@ def receive_can_messages(cbus: can.BusABC, hardware: HardwareManager, stop_event
             except Exception:
                 continue
 
-            # Safety: ignore unknown modes (you can extend this later if desired)
+            # Safety: ignore unknown modes (extend if needed)
             if output_select not in (0, 1, 4, 6):
                 continue
 
-            try:
-                hardware.set_mrsignal(
-                    enable=bool(enable),
-                    output_select=int(output_select),
-                    value=float(value),
-                    max_v=float(getattr(config, "MRSIGNAL_MAX_V", 24.0)),
-                    max_ma=float(getattr(config, "MRSIGNAL_MAX_MA", 24.0)),
-                )
-            except Exception as e:
-                _log(f"MrSignal Control Error: {e}")
+            controls.request_mrsignal(enable=bool(enable), output_select=int(output_select), value=float(value))
             continue
 
 
@@ -1150,8 +1067,13 @@ def main() -> int:
     try:
         hardware.initialize_devices()
 
+        # Device I/O workers (separate from CAN RX)
+        controls = DeviceControlCoordinator(hardware, stop_event)
+        controls.start()
+
         if bool(config.APPLY_IDLE_ON_STARTUP):
-            hardware.apply_idle_all()
+            # Queue idles through device workers (keeps all device I/O off main/CAN threads).
+            controls.apply_idle_all()
 
         cbus = setup_can_interface(
             config.CAN_CHANNEL,
@@ -1163,7 +1085,7 @@ def main() -> int:
 
         receiver_thread = threading.Thread(
             target=receive_can_messages,
-            args=(cbus, hardware, stop_event, watchdog, busload),
+            args=(cbus, hardware, controls, stop_event, watchdog, busload),
             daemon=True,
         )
         receiver_thread.start()
@@ -1217,7 +1139,7 @@ def main() -> int:
                 now = time.time()
         
                 # Enforce watchdog first so timed-out controls go idle promptly
-                watchdog.enforce(hardware)
+                watchdog.enforce(controls)
         
                 # Periodic log line
                 if now >= next_log:
@@ -1255,7 +1177,7 @@ def main() -> int:
             with Live(console=console, screen=True, refresh_per_second=dash_fps) as live:
                 render_period = 1.0 / float(dash_fps) if dash_fps > 0 else 0.1
                 while True:
-                    watchdog.enforce(hardware)
+                    watchdog.enforce(controls)
                     snap = telemetry.snapshot()
         
                     bus_load_pct, bus_rx_fps, bus_tx_fps = busload.snapshot() if busload else (None, None, None)

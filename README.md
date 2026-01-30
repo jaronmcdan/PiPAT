@@ -11,6 +11,12 @@ This project runs on a Raspberry Pi and bridges **SocketCAN** control messages t
 
 > Key files: `main.py`, `hardware.py`, `dashboard.py`, `config.py`
 
+Control architecture:
+- **CAN RX thread** only parses incoming frames and updates desired state.
+- **Device workers** (see `device_control.py`) apply that desired state to instruments/GPIO.
+
+This keeps CAN receive smooth even when a device operation (e.g., DMM mode switch) blocks.
+
 ---
 
 ## Quick start (dev / interactive)
@@ -64,6 +70,8 @@ The most common settings:
 - `K1_TIMEOUT_SEC` (watchdog timeout for K1)
 - `CONTROL_TIMEOUT_SEC` (or per-device timeouts)
 - `MULTI_METER_PATH`, `MULTI_METER_BAUD`
+  - `MULTI_METER_TIMEOUT`, `MULTI_METER_WRITE_TIMEOUT`
+  - `MULTI_METER_ERRQ_PROBE` (default 0; enable only if your meter supports `SYST:ERR?`)
 - `ELOAD_VISA_ID`, `AFG_VISA_ID`
 - `MRSIGNAL_ENABLE`, `MRSIGNAL_PORT`, `MRSIGNAL_BAUD`, `MRSIGNAL_SLAVE_ID`, `MRSIGNAL_PARITY`, `MRSIGNAL_STOPBITS`
 

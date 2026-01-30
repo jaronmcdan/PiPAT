@@ -188,7 +188,10 @@ class HardwareManager:
             except Exception:
                 pass
 
-            dmm = Dmm5491B(mmeter)
+            dmm = Dmm5491B(
+                mmeter,
+                errq_probe=bool(getattr(config, "MULTI_METER_ERRQ_PROBE", False)),
+            )
             resp = dmm.identify()
             self.mmeter_id = resp.strip() or None
             print(f"MULTI-METER ID: {self.mmeter_id or 'Unknown'}")

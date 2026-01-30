@@ -79,8 +79,9 @@ def _is_all_zero(bs: bytes) -> bool:
 
 
 class Dmm5491B:
-    def __init__(self, ser: serial.Serial):
+    def __init__(self, ser: serial.Serial, *, errq_probe: bool = False):
         self.ser = ser
+        self._enable_errq_probe = bool(errq_probe)
         # Some units implement an SCPI error queue (SYST:ERR? / SYSTEM:ERROR?).
         # When available, we can safely probe alternate command spellings without
         # leaving the front panel in a persistent "bad bus command" state.
@@ -179,6 +180,12 @@ class Dmm5491B:
 
     def _ensure_errq_cmd(self) -> bool:
         """Detect which error-queue query works (if any)."""
+        if not self._enable_errq_probe:
+            # Explicitly disabled to avoid triggering front-panel "bad bus command" on
+            # firmwares that don't support an error queue.
+            if self._errq_cmd is None:
+                self._errq_cmd = ""  # sentinel = unsupported
+            return False
         if self._errq_cmd is not None:
             return bool(self._errq_cmd)
 
