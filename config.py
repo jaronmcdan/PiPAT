@@ -63,7 +63,7 @@ MULTI_METER_WRITE_TIMEOUT = _env_float("MULTI_METER_WRITE_TIMEOUT", 1.0)
 
 # VISA Resource IDs (PyVISA)
 ELOAD_VISA_ID = _env_str("ELOAD_VISA_ID", "USB0::11975::34816::*::0::INSTR")
-AFG_VISA_ID = _env_str("AFG_VISA_ID", "ASRL/dev/ttyACM0::INSTR")
+AFG_VISA_ID = _env_str("AFG_VISA_ID", "ASRL/dev/ttyACM1::INSTR")
 
 # --- GPIO / K1 relay drive ---
 K1_ENABLE = _env_bool("K1_ENABLE", True)
@@ -133,7 +133,7 @@ AFG_IDLE_OUTPUT_ON = _env_bool("AFG_IDLE_OUTPUT_ON", False)
 # MrSignal / LANYI MR2.0 (Modbus RTU over USB-serial)
 MRSIGNAL_ENABLE = _env_bool("MRSIGNAL_ENABLE", True)
 # Default is /dev/ttyUSB1 to avoid colliding with the multimeter default (/dev/ttyUSB0).
-MRSIGNAL_PORT = _env_str("MRSIGNAL_PORT", "/dev/ttyACM1")
+MRSIGNAL_PORT = _env_str("MRSIGNAL_PORT", "/dev/ttyACM0")
 MRSIGNAL_BAUD = _env_int("MRSIGNAL_BAUD", 9600)
 MRSIGNAL_SLAVE_ID = _env_int("MRSIGNAL_SLAVE_ID", 1)
 MRSIGNAL_PARITY = _env_str("MRSIGNAL_PARITY", "N")  # N/E/O
