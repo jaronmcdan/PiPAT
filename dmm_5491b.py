@@ -1,33 +1,30 @@
 # dmm_5491b.py
-"""B&K Precision 5491B Multimeter support (SCPI over serial).
+"""
+5491B Multimeter support (SCPI over serial).
 
-Key reliability notes for this instrument family:
+Design goals:
+- Tolerant of echoed commands on serial
+- Avoid "BUS:BAD COMMAND" by rooting subsystem commands with ':' (SCPI path-pointer safe)
+- Keep PiPAT compatibility helpers (legacy_range_code_to_value)
+- Keep API compatibility with older PiPAT code (errq_probe kwarg)
+- Be conservative about CURRENT autorange (5491B only supports autorange on the low-current terminal)
+  unless explicitly enabled.
 
-- The manual describes a stateful SCPI "path pointer" where omitting the leading ':'
-  makes a command relative to the current path, and the path pointer only moves down.
-  To avoid BUS:BAD COMMAND from accidentally sending a higher-level command in a
-  lower-level context, this driver *always* sends subsystem commands as root commands
-  by prefixing ':' (unless the command already begins with ':' or '*'). (See the
-  5491B/2831E user manual SCPI section.)
+Why CURRENT autorange is guarded:
+The 5491B only supports autoranging for current readings under 500 mA (low-current terminal).
+For higher current ranges (5 A / 20 A), only manual range is available. If the fixture is wired
+to the high-current terminal and we force ':CURR:DC:RANG:AUTO ON', the meter can throw an
+error even though the command is valid SCPI.
 
-- Error queue query is :SYSTem:ERRor? (short form :SYST:ERR? is also accepted on most
-  firmwares). When enabled, errq probing allows us to try alternate spellings without
-  leaving persistent front-panel "BUS:BAD COMMAND" warnings.
-
-PiPAT CAN modes:
-- 0: VDC
-- 1: IDC
-- 2: FREQ
-- 3: OHM (2-wire resistance)
-
-Range control:
-- range_value <= 0 or None => AUTO range
-- otherwise sets manual range (units depend on mode)
+Set env var MULTI_METER_ALLOW_CURRENT_AUTORANGE=1 if your setup uses the low-current terminal
+and you want current autoranging over SCPI.
 """
 
 from __future__ import annotations
 
+import os
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -72,8 +69,7 @@ _FLOAT_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?")
 
 
 def _parse_float(s: str) -> Optional[float]:
-    """Extract the first float from a string."""
-    m = _FLOAT_RE.search(s)
+    m = _FLOAT_RE.search(s or "")
     if not m:
         return None
     try:
@@ -82,90 +78,127 @@ def _parse_float(s: str) -> Optional[float]:
         return None
 
 
-def _normalize_scpi(cmd: str) -> str:
-    """Return a SCPI command rooted at ':' unless it's a common command."""
-    c = cmd.strip()
-    if not c:
-        return c
-    if c.startswith("*") or c.startswith(":"):
-        return c
-    # Root subsystem command to avoid path-pointer surprises.
-    return ":" + c
+def _env_bool(name: str, default: bool) -> bool:
+    v = os.getenv(name, "")
+    if v == "":
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _env_float(name: str, default: float) -> float:
+    v = os.getenv(name, "")
+    if v == "":
+        return default
+    try:
+        return float(v.strip())
+    except Exception:
+        return default
 
 
 class Dmm5491B:
-    def __init__(self, ser: serial.Serial, *, errq_probe: bool = False):
+    """
+    Minimal SCPI driver.
+
+    Notes:
+    - This meter implements a SCPI path-pointer; sending commands without a leading ':'
+      can make subsequent commands be interpreted relative to the last subsystem.
+      Always root non-* commands with ':'.
+    - Serial access must be serialized. Even if PiPAT uses mmeter_lock, making the
+      driver itself thread-safe avoids future regressions.
+    """
+
+    def __init__(self, ser: serial.Serial, errq_probe: Optional[bool] = None):
         self.ser = ser
-        self._enable_errq_probe = bool(errq_probe)
-        # Resolved lazily. Empty string sentinel means "unsupported".
+        self._io_lock = threading.RLock()
+
+        # Optional (usually OFF): probe error queue after writes.
+        if errq_probe is None:
+            self._probe_errq = _env_bool("MULTI_METER_ERRQ_PROBE", False)
+        else:
+            self._probe_errq = bool(errq_probe)
+
+        # Guard current autorange unless explicitly enabled.
+        self._allow_current_autorange = _env_bool("MULTI_METER_ALLOW_CURRENT_AUTORANGE", False)
+
+        # Small settle delay after function change so we don't immediately hit it with range/read.
+        # (This keeps mode switch + first range/read from tripping front-panel errors.)
+        self._mode_settle_s = _env_float("MULTI_METER_MODE_SETTLE_S", 0.25)
+
+        # Which error query works, resolved lazily if probing is enabled
         self._errq_cmd: Optional[str] = None
 
-        # Small gaps help when the instrument is busy switching functions/ranges.
-        self._post_write_sleep_s = 0.01
-        self._post_func_sleep_s = 0.05
+    @staticmethod
+    def _root_cmd(cmd: str) -> str:
+        cmd = (cmd or "").strip()
+        if not cmd:
+            return cmd
+        if cmd.startswith("*"):
+            return cmd
+        if cmd.startswith(":"):
+            return cmd
+        return ":" + cmd
 
     def write(self, cmd: str) -> None:
-        c = _normalize_scpi(cmd)
-        if not c.endswith("\n"):
-            c += "\n"
-        self.ser.write(c.encode("ascii", errors="replace"))
-        self.ser.flush()
-        if self._post_write_sleep_s > 0:
-            time.sleep(self._post_write_sleep_s)
+        cmd_to_send = self._root_cmd(cmd)
+        if not cmd_to_send.endswith("\n"):
+            cmd_to_send += "\n"
+        with self._io_lock:
+            self.ser.write(cmd_to_send.encode("ascii", errors="replace"))
+            self.ser.flush()
 
-    def query(self, cmd: str, *, max_lines: int = 8, settle_s: float = 0.02) -> str:
-        """Send a query and return the first non-echo response line.
-
+    def query(self, cmd: str, *, max_lines: int = 6, settle_s: float = 0.02) -> str:
+        """
+        Send a query and return the first non-echo response line.
         Many 5491B units echo the command line back before returning the response.
         """
-        cmd_norm = _normalize_scpi(cmd)
-        cmd_stripped = cmd_norm.strip()
-        self.write(cmd_stripped)
+        original = (cmd or "").strip()
+        sent = self._root_cmd(original)
 
-        if settle_s > 0:
-            time.sleep(settle_s)
+        with self._io_lock:
+            self.write(sent)  # write() is already locked, but RLock makes this safe
+            if settle_s > 0:
+                time.sleep(settle_s)
 
-        best = ""
-        for _ in range(max_lines):
-            raw = self.ser.readline()
-            if not raw:
-                continue
-            line = raw.decode("ascii", errors="replace").strip()
-            if not line:
-                continue
+            best = ""
+            for _ in range(max_lines):
+                raw = self.ser.readline()
+                if not raw:
+                    continue
+                line = raw.decode("ascii", errors="replace").strip()
+                if not line:
+                    continue
 
-            # Ignore exact echoes (e.g. ":*IDN?" or ":FETCh?")
-            if line == cmd_stripped:
-                continue
+                # Skip echoes (either the rooted or original form)
+                if line == sent or line == original:
+                    continue
+                if line.replace(" ", "") == sent.replace(" ", ""):
+                    continue
+                if original and line.replace(" ", "") == original.replace(" ", ""):
+                    continue
 
-            # Some firmwares echo with whitespace differences.
-            if line.replace(" ", "") == cmd_stripped.replace(" ", ""):
-                continue
+                best = line
+                break
 
-            best = line
-            break
-
-        return best
+            return best
 
     def identify(self) -> str:
         return self.query("*IDN?")
 
-    # -----------------------
-    # Error queue (optional)
-    # -----------------------
-    def _ensure_errq_cmd(self) -> bool:
-        """Detect which error-queue query works (if any)."""
-        if not self._enable_errq_probe:
-            if self._errq_cmd is None:
-                self._errq_cmd = ""  # sentinel
-            return False
+    # ---- Optional error probing (disabled by default) ----
 
+    def _clear_status_best_effort(self) -> None:
+        for cmd in ("*CLS", "SYST:CLE", "SYSTEM:CLEAR"):
+            try:
+                self.write(cmd)
+                time.sleep(0.005)
+            except Exception:
+                pass
+
+    def _ensure_errq_cmd(self) -> bool:
         if self._errq_cmd is not None:
             return bool(self._errq_cmd)
 
-        # The 5491B manual documents :SYSTem:ERRor? as the error queue query.
-        # We still try a couple of common alternates for safety.
-        for cand in (":SYSTem:ERRor?", ":SYST:ERR?", "SYST:ERR?", "SYSTEM:ERROR?"):
+        for cand in (":SYST:ERR?", ":SYSTEM:ERROR?"):
             try:
                 resp = self.query(cand, settle_s=0.02)
                 if self._parse_err(resp) is not None:
@@ -174,23 +207,20 @@ class Dmm5491B:
             except Exception:
                 continue
 
-        self._errq_cmd = ""
+        self._errq_cmd = ""  # unsupported
         return False
 
     def _read_err(self) -> Optional[tuple[int, str]]:
         if not self._ensure_errq_cmd():
             return None
         try:
-            resp = self.query(self._errq_cmd, settle_s=0.02)  # type: ignore[arg-type]
+            resp = self.query(self._errq_cmd, settle_s=0.02)
         except Exception:
             return None
         return self._parse_err(resp)
 
     @staticmethod
     def _parse_err(resp: str) -> Optional[tuple[int, str]]:
-        # Typical forms:
-        #   0,"NO ERROR!"
-        #  -113,"Undefined header"
         if not resp:
             return None
         m = re.match(r"^\s*([+-]?\d+)\s*(?:,\s*(.*))?$", resp)
@@ -205,95 +235,88 @@ class Dmm5491B:
             msg = msg[1:-1]
         return code, msg
 
-    def _clear_status_best_effort(self) -> None:
-        # Keep this minimal to avoid creating errors on firmwares that implement
-        # only a subset of common/status commands.
+    def _safe_write(self, cmd: str) -> None:
+        """
+        Write a command, optionally probe error queue if enabled.
+        """
+        if not self._probe_errq:
+            self.write(cmd)
+            return
+
         try:
-            self.write("*CLS")
+            self._clear_status_best_effort()
         except Exception:
             pass
 
-    def _try_write_sequence(self, cmds: list[str]) -> None:
-        """Try alternate SCPI spellings safely.
+        self.write(cmd)
 
-        - If error queue probing is disabled, send only the first candidate.
-        - If enabled and supported, send candidates until the error queue returns 0.
-        """
-        if not self._ensure_errq_cmd():
-            if cmds:
-                try:
-                    self.write(cmds[0])
-                except Exception:
-                    pass
+        err = self._read_err()
+        if err is None:
             return
+        code, msg = err
+        if code != 0:
+            print(f"[5491B] SCPI error after '{cmd}': {code}, {msg}")
 
-        for c in cmds:
-            try:
-                self._clear_status_best_effort()
-                self.write(c)
-                err = self._read_err()
-                if err is None:
-                    return
-                code, _msg = err
-                if code == 0:
-                    return
-            except Exception:
-                continue
+    # ---- Mode / range ----
 
-    # -----------------------
-    # Mode / range control
-    # -----------------------
     def set_mode(self, mode: int) -> None:
-        """Select measurement function."""
+        """
+        Change function and allow the meter time to settle before any follow-on commands.
+        """
         if mode == MeterMode.VDC:
-            self._try_write_sequence(["FUNCtion VOLTage:DC"])
+            self._safe_write("FUNC VOLT:DC")
         elif mode == MeterMode.IDC:
-            self._try_write_sequence(["FUNCtion CURRent:DC"])
+            self._safe_write("FUNC CURR:DC")
         elif mode == MeterMode.FREQ:
-            self._try_write_sequence(["FUNCtion FREQuency"])
+            self._safe_write("FUNC FREQ")
         elif mode == MeterMode.OHM:
-            self._try_write_sequence(["FUNCtion RESistance"])
-        # Give the meter a moment to settle after a function switch.
-        if self._post_func_sleep_s > 0:
-            time.sleep(self._post_func_sleep_s)
+            self._safe_write("FUNC RES")
+
+        # Give the instrument time to complete the internal mode transition.
+        # This prevents the very next command (range/read) from being rejected.
+        if self._mode_settle_s > 0:
+            time.sleep(self._mode_settle_s)
+
+    def _set_autorange(self, mode: int, enable: bool) -> None:
+        e = "ON" if enable else "OFF"
+        if mode == MeterMode.VDC:
+            self._safe_write(f"VOLT:DC:RANG:AUTO {e}")
+        elif mode == MeterMode.IDC:
+            # Guarded: see module docstring.
+            if not self._allow_current_autorange:
+                return
+            self._safe_write(f"CURR:DC:RANG:AUTO {e}")
+        elif mode == MeterMode.OHM:
+            self._safe_write(f"RES:RANG:AUTO {e}")
+        elif mode == MeterMode.FREQ:
+            pass
 
     def set_range(self, mode: int, range_value: Optional[float]) -> None:
-        """Set manual range when range_value > 0, else enable autorange."""
+        """
+        range_value:
+          - None or <= 0 => AUTO (if supported)
+          - otherwise => manual range by specifying expected reading absolute value
+        """
         if range_value is None or range_value <= 0:
             self._set_autorange(mode, True)
             return
 
+        self._set_autorange(mode, False)
         v = float(range_value)
 
         if mode == MeterMode.VDC:
-            # Manual specifies :VOLTage:DC:RANGe <n>
-            self._try_write_sequence([f"VOLTage:DC:RANGe {v}"])
+            self._safe_write(f"VOLT:DC:RANG {v}")
         elif mode == MeterMode.IDC:
-            self._try_write_sequence([f"CURRent:DC:RANGe {v}"])
+            self._safe_write(f"CURR:DC:RANG {v}")
         elif mode == MeterMode.OHM:
-            self._try_write_sequence([f"RESistance:RANGe {v}"])
+            self._safe_write(f"RES:RANG {v}")
         elif mode == MeterMode.FREQ:
-            # No explicit range command is documented for FREQ in many DMMs; ignore.
-            return
+            pass
 
-    def _set_autorange(self, mode: int, enable: bool) -> None:
-        onoff = "ON" if enable else "OFF"
-        if mode == MeterMode.VDC:
-            self._try_write_sequence([f"VOLTage:DC:RANGe:AUTO {onoff}"])
-        elif mode == MeterMode.IDC:
-            self._try_write_sequence([f"CURRent:DC:RANGe:AUTO {onoff}"])
-        elif mode == MeterMode.OHM:
-            self._try_write_sequence([f"RESistance:RANGe:AUTO {onoff}"])
-        elif mode == MeterMode.FREQ:
-            return
+    # ---- Reading ----
 
-    # -----------------------
-    # Reading
-    # -----------------------
     def read(self) -> Optional[float]:
-        """Read the current function's measurement as a float."""
-        # Fast path per manual: :FETCh? returns last available reading without triggering.
-        resp = self.query("FETCh?")
+        resp = self.query("FETC?")
         if not resp:
             resp = self.query("READ?")
         if not resp:
@@ -303,7 +326,9 @@ class Dmm5491B:
     def read_reading(self, mode: int) -> MeterReading:
         raw = self.read()
         if raw is None:
-            return MeterReading(mode=mode, unit=MeterUnit.UNKNOWN, value=0.0, valid=False)
+            return MeterReading(mode=mode, unit=MeterUnit.UNKNOWN, value=0.0, valid=False, overrange=False)
+
+        overrange = abs(raw) > 1e20
 
         unit = MeterUnit.UNKNOWN
         if mode == MeterMode.VDC:
@@ -315,6 +340,38 @@ class Dmm5491B:
         elif mode == MeterMode.OHM:
             unit = MeterUnit.OHM
 
-        # Heuristic: treat very large values as overrange (typical DMM behavior).
-        overrange = abs(raw) >= 9.0e36
-        return MeterReading(mode=mode, unit=unit, value=float(raw), valid=not overrange, overrange=overrange)
+        return MeterReading(mode=mode, unit=unit, value=float(raw), valid=True, overrange=overrange)
+
+
+def legacy_range_code_to_value(mode: int, code: int) -> Optional[float]:
+    """
+    Back-compat range code mapping (byte1 in MMETER_CTRL_ID).
+    code==0 => AUTO (returns None)
+
+    NOTE: range_value float override (bytes2..5) is preferred if you need exact behavior.
+
+    5491B-specific notes:
+    - Current ranges are 5 mA, 50 mA, 500 mA, 5 A, 20 A.
+    - Auto range for current is only available on the low-current terminal (<500 mA).
+    """
+    code = int(code) & 0xFF
+    if code == 0:
+        return None
+
+    if mode == MeterMode.VDC:
+        # Expected reading values that select typical ranges
+        table = [0.1, 1.0, 10.0, 100.0, 1000.0]
+    elif mode == MeterMode.IDC:
+        # Expected reading values that map to 5 mA / 50 mA / 500 mA / 5 A / 20 A
+        table = [0.003, 0.03, 0.3, 3.0, 15.0]
+    elif mode == MeterMode.OHM:
+        table = [300.0, 3e3, 30e3, 300e3, 3e6, 30e6]
+    elif mode == MeterMode.FREQ:
+        return None
+    else:
+        return None
+
+    idx = code - 1
+    if 0 <= idx < len(table):
+        return float(table[idx])
+    return None
