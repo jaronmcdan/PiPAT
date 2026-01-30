@@ -248,6 +248,63 @@ class HardwareManager:
         except Exception as e:
             print(f"Critical VISA Error: {e}")
 
+    def _initialize_mrsignal(self) -> None:
+        """Initialize MrSignal (LANYI MR2.0) Modbus RTU device if enabled.
+
+        MrSignal is controlled via Modbus RTU over a USB-serial adapter and
+        driven by CAN control frames handled by the receiver thread.
+        """
+
+        if not bool(getattr(config, "MRSIGNAL_ENABLE", False)):
+            self.mrsignal = None
+            return
+
+        port = str(getattr(config, "MRSIGNAL_PORT", "") or "").strip()
+        if not port:
+            print("MrSignal disabled: MRSIGNAL_PORT is empty")
+            self.mrsignal = None
+            return
+
+        try:
+            client = MrSignalClient(
+                port=port,
+                slave_id=int(getattr(config, "MRSIGNAL_SLAVE_ID", 1)),
+                baud=int(getattr(config, "MRSIGNAL_BAUD", 9600)),
+                parity=str(getattr(config, "MRSIGNAL_PARITY", "N")),
+                stopbits=int(getattr(config, "MRSIGNAL_STOPBITS", 1)),
+                timeout_s=float(getattr(config, "MRSIGNAL_TIMEOUT", 0.5)),
+                float_byteorder=(str(getattr(config, "MRSIGNAL_FLOAT_BYTEORDER", "") or "").strip() or None),
+                float_byteorder_auto=bool(getattr(config, "MRSIGNAL_FLOAT_BYTEORDER_AUTO", True)),
+            )
+            client.connect()
+
+            # Best-effort initial read so we can surface status immediately.
+            st = client.read_status()
+
+            self.mrsignal = client
+            self.mrsignal_id = st.device_id
+            self.mrsignal_output_on = bool(st.output_on) if st.output_on is not None else False
+            self.mrsignal_output_select = int(st.output_select or 0)
+            if st.output_value is not None:
+                self.mrsignal_output_value = float(st.output_value)
+            if st.input_value is not None:
+                self.mrsignal_input_value = float(st.input_value)
+            self.mrsignal_float_byteorder = str(st.float_byteorder or "DEFAULT")
+
+            print(
+                f"MrSignal FOUND: port={port} slave={getattr(client, 'slave_id', '?')} "
+                f"id={self.mrsignal_id} mode={st.mode_label} bo={self.mrsignal_float_byteorder}"
+            )
+
+        except Exception as e:
+            print(f"MrSignal connection failed ({port}): {e}")
+            try:
+                if self.mrsignal:
+                    self.mrsignal.close()
+            except Exception:
+                pass
+            self.mrsignal = None
+
     # --- Idle / shutdown helpers (used by watchdog) ---
     def apply_idle_eload(self) -> None:
         if not self.e_load:
