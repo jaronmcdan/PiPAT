@@ -81,6 +81,10 @@ def _is_all_zero(bs: bytes) -> bool:
 class Dmm5491B:
     def __init__(self, ser: serial.Serial):
         self.ser = ser
+        # Some units implement an SCPI error queue (SYST:ERR? / SYSTEM:ERROR?).
+        # When available, we can safely probe alternate command spellings without
+        # leaving the front panel in a persistent "bad bus command" state.
+        self._errq_cmd: Optional[str] = None  # resolved lazily
 
     def write(self, cmd: str) -> None:
         if not cmd.endswith("\n"):
@@ -125,43 +129,134 @@ class Dmm5491B:
         return self.query("*IDN?")
 
     def _try_write_sequence(self, cmds: list[str]) -> None:
+        """Try alternate SCPI spellings *safely*.
+
+        Previous versions would blindly write every candidate spelling.
+        On some 5491B firmwares, an unsupported spelling triggers a front-panel
+        "bad bus command" warning. If the meter supports an SCPI error queue,
+        we can probe candidates and stop after the first that produces no error.
+
+        If no error queue is available, we conservatively send only the first
+        candidate (the most likely to work) to avoid spurious errors.
         """
-        Try a list of SCPI commands for compatibility.
-        We do not have reliable error reporting, so we just write them in order.
-        """
+
+        # If we can't query an error queue, do *not* blast multiple candidates.
+        if not self._ensure_errq_cmd():
+            if cmds:
+                try:
+                    self.write(cmds[0])
+                    time.sleep(0.01)
+                except Exception:
+                    pass
+            return
+
+        # With an error queue, probe until one succeeds.
         for c in cmds:
             try:
+                self._clear_status_best_effort()
                 self.write(c)
-                time.sleep(0.01)
+                time.sleep(0.02)
+                err = self._read_err()
+                if err is None:
+                    # Unexpected: we previously detected error queue support.
+                    # Fail closed: stop probing to avoid spamming.
+                    return
+                code, _msg = err
+                if code == 0:
+                    return
             except Exception:
                 # ignore and continue
+                continue
+
+    def _clear_status_best_effort(self) -> None:
+        """Clear error/status queues without assuming any single dialect."""
+        for cmd in ("*CLS", "SYST:CLE", "SYSTEM:CLEAR"):
+            try:
+                self.write(cmd)
+                time.sleep(0.005)
+            except Exception:
                 pass
+
+    def _ensure_errq_cmd(self) -> bool:
+        """Detect which error-queue query works (if any)."""
+        if self._errq_cmd is not None:
+            return bool(self._errq_cmd)
+
+        # Try common spellings.
+        for cand in ("SYST:ERR?", "SYSTEM:ERROR?"):
+            try:
+                resp = self.query(cand, settle_s=0.02)
+                if self._parse_err(resp) is not None:
+                    self._errq_cmd = cand
+                    return True
+            except Exception:
+                continue
+
+        self._errq_cmd = ""  # sentinel = unsupported
+        return False
+
+    def _read_err(self) -> Optional[tuple[int, str]]:
+        """Return (code, message) from the SCPI error queue, or None if unsupported."""
+        if not self._ensure_errq_cmd():
+            return None
+        try:
+            resp = self.query(self._errq_cmd, settle_s=0.02)
+        except Exception:
+            return None
+        return self._parse_err(resp)
+
+    @staticmethod
+    def _parse_err(resp: str) -> Optional[tuple[int, str]]:
+        # Typical forms:
+        #   0,"No error"
+        #   +0,"No error"
+        #  -113,"Undefined header"
+        # Some firmwares omit quotes.
+        if not resp:
+            return None
+        m = re.match(r"^\s*([+-]?\d+)\s*(?:,\s*(.*))?$", resp)
+        if not m:
+            return None
+        try:
+            code = int(m.group(1))
+        except Exception:
+            return None
+        msg = (m.group(2) or "").strip()
+        # Strip optional surrounding quotes
+        if len(msg) >= 2 and ((msg[0] == '"' and msg[-1] == '"') or (msg[0] == "'" and msg[-1] == "'")):
+            msg = msg[1:-1]
+        return code, msg
 
     def set_mode(self, mode: int) -> None:
         if mode == MeterMode.VDC:
             self._try_write_sequence([
+                # Most SCPI DMMs accept either FUNC or CONF; some require quotes.
                 "FUNC VOLT:DC",
+                "FUNC \"VOLT:DC\"",
                 "CONF:VOLT:DC",
-                "SENS:FUNC 'VOLT:DC'",
+                "SENS:FUNC \"VOLT:DC\"",
             ])
         elif mode == MeterMode.IDC:
             self._try_write_sequence([
                 "FUNC CURR:DC",
+                "FUNC \"CURR:DC\"",
                 "CONF:CURR:DC",
-                "SENS:FUNC 'CURR:DC'",
+                "SENS:FUNC \"CURR:DC\"",
             ])
         elif mode == MeterMode.FREQ:
             self._try_write_sequence([
                 "FUNC FREQ",
+                "FUNC \"FREQ\"",
                 "CONF:FREQ",
-                "SENS:FUNC 'FREQ'",
+                "SENS:FUNC \"FREQ\"",
             ])
         elif mode == MeterMode.OHM:
             # 2-wire resistance
             self._try_write_sequence([
                 "FUNC RES",
+                "FUNC \"RES\"",
                 "CONF:RES",
-                "SENS:FUNC 'RES'",
+                "SENS:FUNC \"RES\"",
             ])
 
     def set_range(self, mode: int, range_value: Optional[float]) -> None:
@@ -207,22 +302,30 @@ class Dmm5491B:
         if mode == MeterMode.VDC:
             self._try_write_sequence([
                 f"VOLT:DC:RANG:AUTO {e}",
+                f"VOLT:DC:RANG:AUTO {'ON' if e else 'OFF'}",
                 f"SENS:VOLT:DC:RANG:AUTO {e}",
+                f"SENS:VOLT:DC:RANG:AUTO {'ON' if e else 'OFF'}",
             ])
         elif mode == MeterMode.IDC:
             self._try_write_sequence([
                 f"CURR:DC:RANG:AUTO {e}",
+                f"CURR:DC:RANG:AUTO {'ON' if e else 'OFF'}",
                 f"SENS:CURR:DC:RANG:AUTO {e}",
+                f"SENS:CURR:DC:RANG:AUTO {'ON' if e else 'OFF'}",
             ])
         elif mode == MeterMode.OHM:
             self._try_write_sequence([
                 f"RES:RANG:AUTO {e}",
+                f"RES:RANG:AUTO {'ON' if e else 'OFF'}",
                 f"SENS:RES:RANG:AUTO {e}",
+                f"SENS:RES:RANG:AUTO {'ON' if e else 'OFF'}",
             ])
         elif mode == MeterMode.FREQ:
             self._try_write_sequence([
                 f"FREQ:RANG:AUTO {e}",
+                f"FREQ:RANG:AUTO {'ON' if e else 'OFF'}",
                 f"SENS:FREQ:RANG:AUTO {e}",
+                f"SENS:FREQ:RANG:AUTO {'ON' if e else 'OFF'}",
             ])
 
     def read(self) -> Optional[float]:

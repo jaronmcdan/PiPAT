@@ -32,3 +32,14 @@ Files touched: `main.py`, `dashboard.py`, `can_metrics.py`, `config.py`.
 - Dashboard now shows meter Mode/Value/Range (+ legacy current).
 - README updated with meter CAN payload definitions.
 Files touched: `main.py`, `hardware.py`, `dashboard.py`, `config.py`, `README.md`, new `dmm_5491b.py`.
+
+
+### 5491B "bad bus command" when switching to IDC (amps)
+- Root cause: the original driver would **blindly send every candidate SCPI spelling** for mode/range.
+  On some 5491B firmwares, any unsupported spelling triggers a persistent front-panel **"bad bus command"**.
+- Fix:
+  - Detect whether the meter supports an SCPI error queue (`SYST:ERR?` / `SYSTEM:ERROR?`).
+  - If supported, probe candidates and **stop after the first that returns no error**.
+  - If not supported, **send only the first** (most likely) command to avoid spurious errors.
+  - Use **double quotes** for string args (`FUNC "CURR:DC"`, `SENS:FUNC "CURR:DC"`), and clear status with `*CLS`/`SYST:CLE` best-effort.
+Files touched: `dmm_5491b.py`.
