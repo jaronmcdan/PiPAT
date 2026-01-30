@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import math
 import threading
 import time
 from typing import Optional
@@ -12,6 +13,7 @@ import serial
 from gpiozero import LED
 
 import config
+from mrsignal import MrSignalClient, MrSignalStatus
 
 
 class _NullRelay:
@@ -76,6 +78,20 @@ class HardwareManager:
         self.afg_offset: int = 0  # mV
         self.afg_duty: int = 50  # %
 
+        # MrSignal (MR2.0) via Modbus RTU over USB-serial
+        self.mrsignal: MrSignalClient | None = None
+        self.mrsignal_id: Optional[int] = None
+        self.mrsignal_output_on: bool = False
+        self.mrsignal_output_select: int = 1  # default V
+        self.mrsignal_output_value: float = 0.0
+        self.mrsignal_input_value: float = 0.0
+        self.mrsignal_float_byteorder: str = "DEFAULT"
+
+        # Last commanded values (to suppress redundant Modbus writes)
+        self._mrs_last_enable: Optional[bool] = None
+        self._mrs_last_select: Optional[int] = None
+        self._mrs_last_value: Optional[float] = None
+
         # VISA
         self.resource_manager = None
         self.e_load = None
@@ -84,6 +100,8 @@ class HardwareManager:
         self.eload_lock = threading.Lock()
         self.mmeter_lock = threading.Lock()
         self.afg_lock = threading.Lock()
+
+        self.mrsignal_lock = threading.Lock()
 
         # --- GPIO Relay (K1) ---
         # K1 is treated as a direct drive output. We intentionally do not infer "DUT power"
@@ -150,6 +168,7 @@ class HardwareManager:
         """Initializes the multi-meter, e-load, and AFG."""
         self._initialize_multimeter()
         self._initialize_visa_devices()
+        self._initialize_mrsignal()
 
     def _initialize_multimeter(self) -> None:
         try:
@@ -253,6 +272,68 @@ class HardwareManager:
         except Exception:
             pass
 
+
+    def apply_idle_mrsignal(self) -> None:
+        if not self.mrsignal:
+            return
+        try:
+            with self.mrsignal_lock:
+                # Output enable is the safety-critical part.
+                self.mrsignal.set_enable(bool(getattr(config, "MRSIGNAL_IDLE_OUTPUT_ON", False)))
+            self.mrsignal_output_on = bool(getattr(config, "MRSIGNAL_IDLE_OUTPUT_ON", False))
+        except Exception:
+            pass
+
+
+    def set_mrsignal(self, *, enable: bool, output_select: int, value: float,
+                     max_v: float | None = None, max_ma: float | None = None) -> None:
+        """Apply MrSignal control with safety clamps and redundant-write suppression."""
+        if not self.mrsignal:
+            return
+
+        # Clamp setpoint based on mode (0=mA, 1=V, 4=mV, 6=24V)
+        v = float(value)
+        sel = int(output_select)
+
+        if sel == 0:  # mA
+            lim = float(max_ma if max_ma is not None else getattr(config, "MRSIGNAL_MAX_MA", 24.0))
+            if v < 0.0:
+                v = 0.0
+            if v > lim:
+                v = lim
+        elif sel in (1, 6):  # V / 24V
+            lim = float(max_v if max_v is not None else getattr(config, "MRSIGNAL_MAX_V", 24.0))
+            if v < 0.0:
+                v = 0.0
+            if v > lim:
+                v = lim
+        elif sel == 4:  # mV
+            lim = float(max_v if max_v is not None else getattr(config, "MRSIGNAL_MAX_V", 24.0)) * 1000.0
+            if v < 0.0:
+                v = 0.0
+            if v > lim:
+                v = lim
+        # else: unknown mode, do minimal clamping
+        if not math.isfinite(v):
+            v = 0.0
+
+        # Redundant suppression
+        if (self._mrs_last_enable is not None and self._mrs_last_select is not None and self._mrs_last_value is not None):
+            if (bool(enable) == bool(self._mrs_last_enable)) and (int(sel) == int(self._mrs_last_select)) and (abs(float(v) - float(self._mrs_last_value)) < 1e-6):
+                return
+
+        with self.mrsignal_lock:
+            self.mrsignal.set_output(enable=bool(enable), output_select=int(sel), value=float(v))
+
+        self._mrs_last_enable = bool(enable)
+        self._mrs_last_select = int(sel)
+        self._mrs_last_value = float(v)
+
+        # Update last-known commanded state (dashboard uses polled values too)
+        self.mrsignal_output_on = bool(enable)
+        self.mrsignal_output_select = int(sel)
+        self.mrsignal_output_value = float(v)
+
     def apply_idle_all(self) -> None:
         # Relay is always present
         try:
@@ -261,6 +342,7 @@ class HardwareManager:
             pass
         self.apply_idle_eload()
         self.apply_idle_afg()
+        self.apply_idle_mrsignal()
 
     def close_devices(self) -> None:
         # Best-effort safety shutdown
@@ -272,6 +354,11 @@ class HardwareManager:
         if self.multi_meter:
             try:
                 self.multi_meter.close()
+            except Exception:
+                pass
+        if self.mrsignal:
+            try:
+                self.mrsignal.close()
             except Exception:
                 pass
         if self.e_load:

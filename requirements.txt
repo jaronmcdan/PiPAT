@@ -5,3 +5,4 @@ pyvisa-py>=0.7
 pyusb>=1.2
 gpiozero>=1.6
 rich>=13.7
+minimalmodbus>=2.1
