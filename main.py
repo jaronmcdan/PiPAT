@@ -17,6 +17,7 @@ import config
 from can_metrics import BusLoadMeter
 from dashboard import HAVE_RICH, build_dashboard, console
 from hardware import HardwareManager
+from dmm_5491b import MeterMode, MeterUnit, legacy_range_code_to_value
 
 try:
     from rich.live import Live
@@ -193,17 +194,32 @@ class OutgoingTxState:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._meter_current_mA: Optional[int] = None
+
+        # Multimeter (legacy + extended)
+        self._meter_current_mA: Optional[int] = None  # legacy current-only frame
+        self._meter_ext: Optional[tuple[int, int, float, int]] = None  # (mode, unit, value, flags)
+
+        # E-Load
         self._load_volts_mV: Optional[int] = None
         self._load_current_mA: Optional[int] = None
+
+        # AFG
         self._afg_offset_mV: Optional[int] = None
         self._afg_duty_pct: Optional[int] = None
+
+        # MrSignal
         self._mrs_status: Optional[tuple[int, int, float]] = None  # (on, mode, out_val)
         self._mrs_input: Optional[float] = None
 
     def update_meter_current(self, meter_current_mA: int) -> None:
+        """Update the legacy current-only value (mA)."""
         with self._lock:
             self._meter_current_mA = int(meter_current_mA)
+
+    def update_meter_ext(self, *, mode: int, unit: int, value: float, flags: int) -> None:
+        """Update the extended meter frame (mode/unit/float/flags)."""
+        with self._lock:
+            self._meter_ext = (int(mode) & 0xFF, int(unit) & 0xFF, float(value), int(flags) & 0xFF)
 
     def update_eload(self, load_volts_mV: int, load_current_mA: int) -> None:
         with self._lock:
@@ -215,7 +231,6 @@ class OutgoingTxState:
             self._afg_offset_mV = int(offset_mV)
             self._afg_duty_pct = int(duty_pct)
 
-
     def update_mrsignal_status(self, *, output_on: bool, output_select: int, output_value: float) -> None:
         with self._lock:
             self._mrs_status = (1 if output_on else 0, int(output_select) & 0xFF, float(output_value))
@@ -224,10 +239,20 @@ class OutgoingTxState:
         with self._lock:
             self._mrs_input = float(input_value)
 
-    def snapshot(self) -> tuple[Optional[int], Optional[int], Optional[int], Optional[int], Optional[int], Optional[tuple[int,int,float]], Optional[float]]:
+    def snapshot(self) -> tuple[
+        Optional[int],
+        Optional[tuple[int, int, float, int]],
+        Optional[int],
+        Optional[int],
+        Optional[int],
+        Optional[int],
+        Optional[tuple[int, int, float]],
+        Optional[float],
+    ]:
         with self._lock:
             return (
                 self._meter_current_mA,
+                self._meter_ext,
                 self._load_volts_mV,
                 self._load_current_mA,
                 self._afg_offset_mV,
@@ -235,6 +260,9 @@ class OutgoingTxState:
                 self._mrs_status,
                 self._mrs_input,
             )
+
+
+
 
 
 def can_tx_loop(
@@ -272,7 +300,7 @@ def can_tx_loop(
         if next_t < now - (10.0 * period_s):
             next_t = now + period_s
 
-        meter_current_mA, load_volts_mV, load_current_mA, afg_offset_mV, afg_duty_pct, mrs_status, mrs_input = tx_state.snapshot()
+        meter_current_mA, meter_ext, load_volts_mV, load_current_mA, afg_offset_mV, afg_duty_pct, mrs_status, mrs_input = tx_state.snapshot()
 
         # Send each frame independently; one failure should not block others.
         if meter_current_mA is not None:
@@ -293,6 +321,27 @@ def can_tx_loop(
                 err_count += 1
                 if err_count in (1, 10, 100):
                     _log(f"TX MMETER send error (count={err_count}): {e}")
+
+        if meter_ext is not None:
+            try:
+                mode_b, unit_b, value_f, flags_b = meter_ext
+                payload = [int(mode_b) & 0xFF, int(unit_b) & 0xFF] + list(struct.pack("<f", float(value_f))) + [int(flags_b) & 0xFF, 0]
+                msg = can.Message(
+                    arbitration_id=int(getattr(config, "MMETER_READ_EXT_ID", 0x0CFF0009)),
+                    data=payload,
+                    is_extended_id=True,
+                )
+                cbus.send(msg)
+                if busload:
+                    try:
+                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
+                    except Exception:
+                        pass
+            except Exception as e:
+                err_count += 1
+                if err_count in (1, 10, 100):
+                    _log(f"TX MMETER_EXT send error (count={err_count}): {e}")
+
 
         if (load_volts_mV is not None) and (load_current_mA is not None):
             try:
@@ -385,7 +434,11 @@ class TelemetryState:
         self._lock = threading.Lock()
 
         # Fast measurements (updated at MEAS_POLL_PERIOD)
+        # meter_current_mA is legacy (current-only). Extended meter fields are below.
         self.meter_current_mA: int = 0
+        self.meter_mode_str: str = ""
+        self.meter_value_str: str = ""
+        self.meter_range_str: str = ""
         self.load_volts_mV: int = 0
         self.load_current_mA: int = 0
 
@@ -416,12 +469,21 @@ class TelemetryState:
         self.last_status_ts: float = 0.0
 
     def update_meas(self, *, meter_current_mA: int | None = None,
+                    meter_mode_str: str | None = None,
+                    meter_value_str: str | None = None,
+                    meter_range_str: str | None = None,
                     load_volts_mV: int | None = None,
                     load_current_mA: int | None = None,
                     ts: float | None = None) -> None:
         with self._lock:
             if meter_current_mA is not None:
                 self.meter_current_mA = int(meter_current_mA)
+            if meter_mode_str is not None:
+                self.meter_mode_str = str(meter_mode_str)
+            if meter_value_str is not None:
+                self.meter_value_str = str(meter_value_str)
+            if meter_range_str is not None:
+                self.meter_range_str = str(meter_range_str)
             if load_volts_mV is not None:
                 self.load_volts_mV = int(load_volts_mV)
             if load_current_mA is not None:
@@ -490,6 +552,9 @@ class TelemetryState:
         with self._lock:
             return {
                 "meter_current_mA": int(self.meter_current_mA),
+                "meter_mode_str": str(self.meter_mode_str),
+                "meter_value_str": str(self.meter_value_str),
+                "meter_range_str": str(self.meter_range_str),
                 "load_volts_mV": int(self.load_volts_mV),
                 "load_current_mA": int(self.load_current_mA),
                 "load_stat_func": str(self.load_stat_func),
@@ -558,21 +623,87 @@ def instrument_poll_loop(
             load_volts_mV = None
             load_current_mA = None
 
-            # Multimeter read
+            # Multimeter read (5491B: VDC / IDC / FREQ / OHM)
             if hardware.multi_meter:
                 try:
+                    mode = int(getattr(hardware, "multi_meter_mode", 0)) & 0xFF
+
                     with hardware.mmeter_lock:
-                        hardware.multi_meter.write(b"FETC?\n")
-                        raw = hardware.multi_meter.readline()
-                    resp = raw.decode("ascii", errors="replace").strip()
-                    if resp:
-                        val = float(resp)
-                        meter_current_mA = int(round(val * 1000))
+                        if getattr(hardware, "dmm", None) is not None:
+                            reading = hardware.dmm.read_reading(mode)
+                        else:
+                            # Best-effort fallback (no echo filtering, no range support)
+                            hardware.multi_meter.write(b"FETC?\n")
+                            raw = hardware.multi_meter.readline()
+                            resp = raw.decode("ascii", errors="replace").strip()
+                            if resp:
+                                v = float(resp)
+                                # Assume the unit from mode
+                                unit = MeterUnit.VOLT if mode == MeterMode.VDC else (
+                                    MeterUnit.AMP if mode == MeterMode.IDC else (
+                                        MeterUnit.HZ if mode == MeterMode.FREQ else (
+                                            MeterUnit.OHM if mode == MeterMode.OHM else MeterUnit.UNKNOWN
+                                        )
+                                    )
+                                )
+                                reading = type("R", (), {"mode": mode, "unit": unit, "value": v, "flags_byte": 0x01})()
+                            else:
+                                reading = None
+
+                    if reading is not None:
+                        # Extended CAN readback (mode/unit/float/flags)
+                        tx_state.update_meter_ext(
+                            mode=int(getattr(reading, "mode", mode)),
+                            unit=int(getattr(reading, "unit", MeterUnit.UNKNOWN)),
+                            value=float(getattr(reading, "value", 0.0)),
+                            flags=int(getattr(reading, "flags_byte", 0)) & 0xFF,
+                        )
+
+                        # Legacy current-only readback (mA) stays meaningful for IDC only.
+                        meter_current_mA = 0
+                        if int(getattr(reading, "mode", mode)) == MeterMode.IDC and bool(getattr(reading, "valid", True)):
+                            meter_current_mA = int(round(float(getattr(reading, "value", 0.0)) * 1000.0))
                         tx_state.update_meter_current(meter_current_mA)
+
+                        # Dashboard strings
+                        mode_name = {0: "VDC", 1: "IDC", 2: "FREQ", 3: "OHM"}.get(int(getattr(reading, "mode", mode)), f"MODE{mode}")
+                        unit_name = {
+                            MeterUnit.VOLT: "V",
+                            MeterUnit.AMP: "A",
+                            MeterUnit.HZ: "Hz",
+                            MeterUnit.OHM: "Ω",
+                        }.get(int(getattr(reading, "unit", MeterUnit.UNKNOWN)), "")
+
+                        val = float(getattr(reading, "value", 0.0))
+                        # Print tighter for ohms and freq, standard for V/A
+                        if int(getattr(reading, "mode", mode)) == MeterMode.FREQ:
+                            meter_value_str = f"{val:.3f} {unit_name}"
+                        elif int(getattr(reading, "mode", mode)) == MeterMode.OHM:
+                            meter_value_str = f"{val:.3f} {unit_name}"
+                        else:
+                            meter_value_str = f"{val:.6f} {unit_name}"
+
+                        rv = float(getattr(hardware, "multi_meter_range_value", 0.0))
+                        rc = int(getattr(hardware, "multi_meter_range", 0)) & 0xFF
+                        if (rc == 0) or (rv <= 0.0):
+                            meter_range_str = "AUTO"
+                        else:
+                            # Range units track mode
+                            r_unit = "V" if mode == MeterMode.VDC else ("A" if mode == MeterMode.IDC else ("Ω" if mode == MeterMode.OHM else ""))
+                            meter_range_str = f"R={rv:g}{r_unit}"
+
+                        telemetry.update_meas(
+                            meter_current_mA=meter_current_mA,
+                            meter_mode_str=mode_name,
+                            meter_value_str=meter_value_str,
+                            meter_range_str=meter_range_str,
+                            ts=now_m,
+                        )
+
                 except Exception:
                     pass
 
-            # E-Load measurement
+# E-Load measurement
             if hardware.e_load:
                 try:
                     with hardware.eload_lock:
@@ -832,31 +963,77 @@ def receive_can_messages(cbus: can.BusABC, hardware: HardwareManager, stop_event
                 _log(f"AFG Ext Error: {e}")
             continue
 
-        # Multimeter control
+        # Multimeter control (5491B)
+        # Control payload (8 bytes):
+        #   byte0: mode  (0=VDC, 1=IDC, 2=FREQ, 3=OHM)
+        #   byte1: legacy range code (0=AUTO, else best-effort table per mode)
+        #   bytes2..5: optional float32 little-endian range value (units depend on mode);
+        #             if non-zero, it overrides byte1.
         if arb == int(config.MMETER_CTRL_ID):
             watchdog.mark("mmeter")
             if len(data) < 2:
                 continue
 
-            meter_mode = int(data[0])
-            meter_range = int(data[1])
+            meter_mode = int(data[0]) & 0xFF
+            meter_range_code = int(data[1]) & 0xFF
 
-            if hardware.multi_meter and (hardware.multi_meter_mode != meter_mode):
+            range_value = None  # None => AUTO
+            if len(data) >= 6:
+                rv = bytes(data[2:6])
+                if any(b != 0 for b in rv):
+                    try:
+                        range_value = float(struct.unpack("<f", rv)[0])
+                    except Exception:
+                        range_value = None
+
+            if range_value is None:
+                range_value = legacy_range_code_to_value(meter_mode, meter_range_code)
+
+            # Apply mode/range to the DMM (preferred path: Dmm5491B driver)
+            if getattr(hardware, "dmm", None) is not None:
                 try:
                     with hardware.mmeter_lock:
-                        if meter_mode == 0:
-                            hardware.multi_meter.write(b"FUNC VOLT:DC\n")
-                        elif meter_mode == 1:
-                            hardware.multi_meter.write(b"FUNC CURR:DC\n")
-                            time.sleep(0.2)
-                            # NOTE: this range is instrument-specific; keep as existing default
-                            hardware.multi_meter.write(b"CURR:DC:RANG 5\n")
-                        hardware.multi_meter_mode = meter_mode
+                        if hardware.multi_meter_mode != meter_mode:
+                            hardware.dmm.set_mode(meter_mode)
+                            hardware.multi_meter_mode = meter_mode
+
+                        # Track the *requested* range for dashboard visibility
+                        prev_code = getattr(hardware, "multi_meter_range", 0)
+                        prev_val = float(getattr(hardware, "multi_meter_range_value", 0.0))
+                        desired_val = float(range_value or 0.0)
+                        if (prev_code != meter_range_code) or (abs(prev_val - desired_val) > 1e-12):
+                            hardware.dmm.set_range(meter_mode, range_value)
+                            hardware.multi_meter_range = meter_range_code
+                            hardware.multi_meter_range_value = desired_val
                 except Exception:
                     pass
 
-            hardware.multi_meter_range = meter_range
+            # Fallback (older/simple SCPI): only VDC/IDC
+            elif hardware.multi_meter:
+                try:
+                    with hardware.mmeter_lock:
+                        if hardware.multi_meter_mode != meter_mode:
+                            if meter_mode == MeterMode.VDC:
+                                hardware.multi_meter.write(b"FUNC VOLT:DC\n")
+                            elif meter_mode == MeterMode.IDC:
+                                hardware.multi_meter.write(b"FUNC CURR:DC\n")
+                            elif meter_mode == MeterMode.FREQ:
+                                hardware.multi_meter.write(b"FUNC FREQ\n")
+                            elif meter_mode == MeterMode.OHM:
+                                hardware.multi_meter.write(b"FUNC RES\n")
+                            hardware.multi_meter_mode = meter_mode
+                except Exception:
+                    pass
+
+            # Legacy current-only readback should never go stale when mode changes away from IDC.
+            if meter_mode != MeterMode.IDC:
+                try:
+                    tx_state.update_meter_current(0)
+                except Exception:
+                    pass
+
             continue
+
 
         # E-load control
         if arb == int(config.LOAD_CTRL_ID):
@@ -1085,6 +1262,9 @@ def main() -> int:
                     renderable = build_dashboard(
                         hardware,
                         meter_current_mA=int(snap.get("meter_current_mA", 0)),
+                        meter_mode_str=str(snap.get("meter_mode_str", "")),
+                        meter_value_str=str(snap.get("meter_value_str", "")),
+                        meter_range_str=str(snap.get("meter_range_str", "")),
                         load_volts_mV=int(snap.get("load_volts_mV", 0)),
                         load_current_mA=int(snap.get("load_current_mA", 0)),
                         load_stat_func=str(snap.get("load_stat_func", "")),

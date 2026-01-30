@@ -13,6 +13,7 @@ import serial
 from gpiozero import LED
 
 import config
+from dmm_5491b import Dmm5491B
 from mrsignal import MrSignalClient, MrSignalStatus
 
 
@@ -64,8 +65,10 @@ class HardwareManager:
 
         # multimeter
         self.multi_meter: Optional[serial.Serial] = None
+        self.dmm: Optional[Dmm5491B] = None
         self.multi_meter_mode: int = 0
         self.multi_meter_range: int = 0
+        self.multi_meter_range_value: float = 0.0  # requested range value (0.0 means AUTO)
         self.mmeter_id: Optional[str] = None
 
         # AFG
@@ -185,15 +188,16 @@ class HardwareManager:
             except Exception:
                 pass
 
-            mmeter.write(b"*IDN?\n")
-            mmeter.flush()
-            raw = mmeter.readline()
-            self.mmeter_id = raw.decode("ascii", errors="replace").strip() or None
+            dmm = Dmm5491B(mmeter)
+            resp = dmm.identify()
+            self.mmeter_id = resp.strip() or None
             print(f"MULTI-METER ID: {self.mmeter_id or 'Unknown'}")
             self.multi_meter = mmeter
+            self.dmm = dmm
         except (serial.SerialException, IOError) as e:
             print(f"Failed to communicate with multi-meter: {e}")
             self.multi_meter = None
+            self.dmm = None
 
     def _initialize_visa_devices(self) -> None:
         """Initializes both E-Load and AFG via PyVISA."""

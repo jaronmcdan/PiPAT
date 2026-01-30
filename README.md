@@ -303,5 +303,45 @@ If `CAN_TX_ENABLE=1` (default), PiPAT also publishes:
 - `MRSIGNAL_READ_INPUT_ID` (default `0x0CFF0008`):
   - `bytes0..3` float32 input value (same units as mode)
 
+
+### Multimeter CAN control frame
+
+**Arbitration ID:** `MMETER_CTRL_ID` (default `0x0CFF0600`, extended)
+
+Payload (8 bytes):
+
+- `byte0`: function/mode
+  - `0` = VDC
+  - `1` = IDC
+  - `2` = FREQ
+  - `3` = OHM (2-wire)
+- `byte1`: legacy range code (best-effort)
+  - `0` = AUTO
+  - `1..N` = a mode-specific table (generic DMM ranges)
+- `bytes2..5`: optional `float32` little-endian **range override**
+  - If this float is **non-zero**, it overrides `byte1`.
+  - Units:
+    - VDC: volts
+    - IDC: amps
+    - OHM: ohms
+    - FREQ: best-effort (instrument-dependent)
+- `bytes6..7`: reserved
+
+### Multimeter CAN readback frames
+
+If `CAN_TX_ENABLE=1` (default), PiPAT publishes:
+
+- `MMETER_READ_ID` (default `0x0CFF0004`): **legacy** current-only (u16 mA)
+  - `bytes0..1`: current in **mA** (only meaningful in IDC mode; otherwise 0)
+- `MMETER_READ_EXT_ID` (default `0x0CFF0009`): **extended** meter reading
+  - `byte0`: mode (same as control)
+  - `byte1`: unit enum
+    - `0`=V, `1`=A, `2`=Hz, `3`=Ω
+  - `bytes2..5`: `float32` little-endian value
+  - `byte6`: flags
+    - bit0 = valid reading
+    - bit1 = overrange (heuristic)
+  - `byte7`: reserved
+
 ---
 

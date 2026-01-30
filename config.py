@@ -63,7 +63,7 @@ MULTI_METER_WRITE_TIMEOUT = _env_float("MULTI_METER_WRITE_TIMEOUT", 1.0)
 
 # VISA Resource IDs (PyVISA)
 ELOAD_VISA_ID = _env_str("ELOAD_VISA_ID", "USB0::11975::34816::*::0::INSTR")
-AFG_VISA_ID = _env_str("AFG_VISA_ID", "ASRL/dev/ttyACM1::INSTR")
+AFG_VISA_ID = _env_str("AFG_VISA_ID", "ASRL/dev/ttyACM0::INSTR")
 
 # --- GPIO / K1 relay drive ---
 K1_ENABLE = _env_bool("K1_ENABLE", True)
@@ -133,7 +133,7 @@ AFG_IDLE_OUTPUT_ON = _env_bool("AFG_IDLE_OUTPUT_ON", False)
 # MrSignal / LANYI MR2.0 (Modbus RTU over USB-serial)
 MRSIGNAL_ENABLE = _env_bool("MRSIGNAL_ENABLE", True)
 # Default is /dev/ttyUSB1 to avoid colliding with the multimeter default (/dev/ttyUSB0).
-MRSIGNAL_PORT = _env_str("MRSIGNAL_PORT", "/dev/ttyACM0")
+MRSIGNAL_PORT = _env_str("MRSIGNAL_PORT", "/dev/ttyACM1")
 MRSIGNAL_BAUD = _env_int("MRSIGNAL_BAUD", 9600)
 MRSIGNAL_SLAVE_ID = _env_int("MRSIGNAL_SLAVE_ID", 1)
 MRSIGNAL_PARITY = _env_str("MRSIGNAL_PARITY", "N")  # N/E/O
@@ -171,7 +171,8 @@ MRSIGNAL_CTRL_ID = 0x0CFF0800
 
 # --- CAN IDs (Readback) ---
 ELOAD_READ_ID = 0x0CFF0003
-MMETER_READ_ID = 0x0CFF0004
+MMETER_READ_ID = 0x0CFF0004  # legacy: u16 current mA in bytes0..1
+MMETER_READ_EXT_ID = 0x0CFF0009  # extended: mode/unit/float value/flags
 AFG_READ_ID = 0x0CFF0005  # Status: Enable, Freq, Ampl
 AFG_READ_EXT_ID = 0x0CFF0006  # Status: Offset, Duty Cycle
 

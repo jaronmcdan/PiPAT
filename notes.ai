@@ -19,3 +19,16 @@ Files touched: `main.py`, `dashboard.py`, `can_metrics.py`, `config.py`.
 - Wired MrSignal into `HardwareManager` for init/idle/shutdown and redundant-write suppression.
 - Added `MRSIGNAL_*` config/env options + CAN IDs + optional CAN readback frames.
 - Dashboard shows MrSignal status (ID, output enable, mode, setpoint, input, float byteorder).
+
+
+### 5491B multimeter expanded support (VDC/IDC/FREQ/OHM)
+- Added `dmm_5491b.py` driver with echo-tolerant SCPI query parsing and mode/range helpers.
+- Extended `MMETER_CTRL_ID` handling:
+  - byte0 selects mode (0=VDC, 1=IDC, 2=FREQ, 3=OHM)
+  - byte1 legacy range code (0=AUTO), plus optional float32 range override in bytes2..5.
+- Added emphasize/compat readback:
+  - `MMETER_READ_ID` remains u16 current mA (only meaningful in IDC; otherwise 0).
+  - New `MMETER_READ_EXT_ID` publishes mode/unit/value/flags (float32).
+- Dashboard now shows meter Mode/Value/Range (+ legacy current).
+- README updated with meter CAN payload definitions.
+Files touched: `main.py`, `hardware.py`, `dashboard.py`, `config.py`, `README.md`, new `dmm_5491b.py`.

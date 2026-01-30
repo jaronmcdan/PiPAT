@@ -21,6 +21,9 @@ def _badge(ok: bool, true_label="ON", false_label="OFF"):
 
 def build_dashboard(hardware, *,
                     meter_current_mA: int,
+                    meter_mode_str: str = "",
+                    meter_value_str: str = "",
+                    meter_range_str: str = "",
                     load_volts_mV: int,
                     load_current_mA: int,
                     load_stat_func: str,
@@ -49,7 +52,7 @@ def build_dashboard(hardware, *,
                     watchdog=None):
     
     if not HAVE_RICH:
-        return f"E-Load V: {load_volts_mV}mV | AFG Freq: {afg_freq_read} | Meter I: {meter_current_mA}mA"
+        return f"E-Load V: {load_volts_mV}mV | AFG Freq: {afg_freq_read} | Meter: {meter_mode_str} {meter_value_str} ({meter_range_str})"
 
     layout = Layout()
     layout.split(
@@ -142,7 +145,15 @@ def build_dashboard(hardware, *,
     meas_meter = Table(title="[bold]Meter Meas[/]", box=box.SIMPLE_HEAVY, expand=True)
     meas_meter.add_column("Metric", style="bold magenta", no_wrap=True)
     meas_meter.add_column("Value", justify="right")
-    meas_meter.add_row("Current", f"[yellow]{meter_current_mA/1000:.3f} A[/]")
+    if meter_mode_str or meter_value_str:
+        meas_meter.add_row("Mode", f"[cyan]{meter_mode_str or ''}[/]")
+        meas_meter.add_row("Value", f"[yellow]{meter_value_str or ''}[/]")
+        if meter_range_str:
+            meas_meter.add_row("Range", f"[magenta]{meter_range_str}[/]")
+        # Keep legacy current visible for sanity when in IDC
+        meas_meter.add_row("Legacy I", f"[yellow]{meter_current_mA/1000:.3f} A[/]")
+    else:
+        meas_meter.add_row("Legacy I", f"[yellow]{meter_current_mA/1000:.3f} A[/]")
 
     # GPIO Status (K1 + GPIO level)
     # We show only: (1) the logical drive state (ON/OFF) and (2) the raw GPIO level (HIGH/LOW).
