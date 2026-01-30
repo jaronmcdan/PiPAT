@@ -133,7 +133,7 @@ AFG_IDLE_OUTPUT_ON = _env_bool("AFG_IDLE_OUTPUT_ON", False)
 # MrSignal / LANYI MR2.0 (Modbus RTU over USB-serial)
 MRSIGNAL_ENABLE = _env_bool("MRSIGNAL_ENABLE", True)
 # Default is /dev/ttyUSB1 to avoid colliding with the multimeter default (/dev/ttyUSB0).
-MRSIGNAL_PORT = _env_str("MRSIGNAL_PORT", "/dev/ttyUSB1")
+MRSIGNAL_PORT = _env_str("MRSIGNAL_PORT", "/dev/ttyACM1")
 MRSIGNAL_BAUD = _env_int("MRSIGNAL_BAUD", 9600)
 MRSIGNAL_SLAVE_ID = _env_int("MRSIGNAL_SLAVE_ID", 1)
 MRSIGNAL_PARITY = _env_str("MRSIGNAL_PARITY", "N")  # N/E/O
