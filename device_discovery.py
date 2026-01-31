@@ -46,6 +46,19 @@ def _contains_any(hay: str, needles: Sequence[str]) -> bool:
     return any(n in h for n in needles)
 
 
+def _asrl_devnode(resource_id: str) -> Optional[str]:
+    """Extract /dev/... from an ASRL resource string when present."""
+    if not (resource_id or "").startswith("ASRL"):
+        return None
+    if "/dev/" not in resource_id:
+        return None
+    start = resource_id.find("/dev/")
+    end = resource_id.find("::", start)
+    if end == -1:
+        end = len(resource_id)
+    return resource_id[start:end] or None
+
+
 def _log(log_fn: Optional[LogFn], msg: str) -> None:
     if log_fn:
         try:
@@ -198,15 +211,13 @@ def _probe_visa_idn(rm: pyvisa.ResourceManager, rid: str) -> Optional[str]:
             inst.write_termination = "\n"
         except Exception:
             pass
-        try:
-            # some serial SCPI devices need baud set
-            if rid.startswith("ASRL"):
-                try:
-                    inst.baud_rate = 115200
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        # Some serial SCPI devices need baud set. This can be risky if the ASRL
+        # resource is not the intended instrument, so we make it configurable.
+        if rid.startswith("ASRL") and bool(getattr(config, "AUTO_DETECT_VISA_PROBE_ASRL", True)):
+            try:
+                inst.baud_rate = int(getattr(config, "AUTO_DETECT_ASRL_BAUD", 115200))
+            except Exception:
+                pass
 
         try:
             txt = str(inst.query("*IDN?")).strip()
@@ -218,8 +229,6 @@ def _probe_visa_idn(rm: pyvisa.ResourceManager, rid: str) -> Optional[str]:
         return txt or None
     except Exception:
         return None
-
-
 @dataclass
 class DiscoveryResult:
     multimeter_path: Optional[str] = None
@@ -312,8 +321,53 @@ def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryR
                 rids = list(rm.list_resources())
             except Exception:
                 rids = []
-            # Narrow to USB + serial instruments
-            cand = [r for r in rids if r.startswith("USB") or r.startswith("ASRL")]
+            # Narrow to USB + serial instruments.
+            # IMPORTANT: probing an ASRL resource sends bytes over a serial port.
+            # If that port belongs to some other device (e.g., the 5491B DMM), it
+            # can show a "bus command error". We therefore exclude:
+            #   - onboard UARTs / console ports (ttyAMA*, ttyS*)
+            #   - serial ports already claimed by discovered devices (multimeter, MrSignal)
+            #   - ASRL probing entirely when AUTO_DETECT_VISA_PROBE_ASRL=0
+            exclude_prefixes = _split_hints(
+                str(getattr(config, "AUTO_DETECT_VISA_ASRL_EXCLUDE_PREFIXES", "") or "")
+            )
+
+            # Build a realpath set for serial devices we must not poke via VISA.
+            skip_serial_realpaths = set()
+            for p in [
+                res.multimeter_path,
+                res.mrsignal_port,
+                str(getattr(config, "MULTI_METER_PATH", "") or "").strip() or None,
+                str(getattr(config, "MRSIGNAL_PORT", "") or "").strip() or None,
+            ]:
+                if not p:
+                    continue
+                try:
+                    skip_serial_realpaths.add(os.path.realpath(p))
+                except Exception:
+                    continue
+
+            cand: List[str] = []
+            for r in rids:
+                if r.startswith("USB"):
+                    cand.append(r)
+                    continue
+                if not r.startswith("ASRL"):
+                    continue
+                if not bool(getattr(config, "AUTO_DETECT_VISA_PROBE_ASRL", True)):
+                    continue
+                devnode = _asrl_devnode(r)
+                if devnode:
+                    # Exclude obvious non-instrument serial ports.
+                    dn_l = devnode.lower()
+                    if exclude_prefixes and any(dn_l.startswith(pfx) for pfx in exclude_prefixes):
+                        continue
+                    try:
+                        if os.path.realpath(devnode) in skip_serial_realpaths:
+                            continue
+                    except Exception:
+                        pass
+                cand.append(r)
             if verbose:
                 _log(log_fn, f"[autodetect] visa resources: {cand}")
 

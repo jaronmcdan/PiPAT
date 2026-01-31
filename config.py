@@ -83,6 +83,22 @@ AUTO_DETECT_VISA = _env_bool("AUTO_DETECT_VISA", True)
 AUTO_DETECT_AFG = _env_bool("AUTO_DETECT_AFG", True)
 AUTO_DETECT_ELOAD = _env_bool("AUTO_DETECT_ELOAD", True)
 
+# VISA/serial probing safety:
+# - Probing ASRL resources sends *IDN? over a serial port. If the baud is wrong
+#   for some attached device, that device may show an error. We therefore:
+#     - allow ASRL probing to be disabled
+#     - use a configurable baud
+#     - skip known serial ports already claimed by other devices
+AUTO_DETECT_VISA_PROBE_ASRL = _env_bool("AUTO_DETECT_VISA_PROBE_ASRL", True)
+AUTO_DETECT_ASRL_BAUD = _env_int("AUTO_DETECT_ASRL_BAUD", 115200)
+
+# Comma-separated device-node prefixes to exclude from ASRL probing.
+# (e.g. the Pi's onboard UARTs or console serial ports)
+AUTO_DETECT_VISA_ASRL_EXCLUDE_PREFIXES = _env_str(
+    "AUTO_DETECT_VISA_ASRL_EXCLUDE_PREFIXES",
+    "/dev/ttyAMA,/dev/ttyS",
+)
+
 # Prefer stable symlinks (when present)
 AUTO_DETECT_PREFER_BY_ID = _env_bool("AUTO_DETECT_PREFER_BY_ID", True)
 
