@@ -23,6 +23,8 @@ from can_comm import (
 )
 from device_comm import device_command_loop
 
+from device_discovery import autodetect_and_patch_config
+
 try:
     from rich.live import Live
 except Exception:
@@ -539,11 +541,20 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="ROI Instrument Bridge")
     p.add_argument("--headless", action="store_true", help="Disable Rich TUI (better for systemd)")
     p.add_argument("--no-can-setup", action="store_true", help="Do not run 'ip link set ... up type can ...'")
+    p.add_argument("--no-auto-detect", action="store_true", help="Disable USB/VISA auto-detection at startup")
     return p.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+
+    # Optional: auto-detect device connection paths on Raspberry Pi so we
+    # don't depend on /dev/ttyUSB0 style numbering.
+    if (not bool(getattr(args, "no_auto_detect", False))) and bool(getattr(config, "AUTO_DETECT_ENABLE", True)):
+        try:
+            autodetect_and_patch_config(log_fn=_log)
+        except Exception as e:
+            _log(f"[autodetect] warning: {e}")
 
     hardware = HardwareManager()
     stop_event = threading.Event()

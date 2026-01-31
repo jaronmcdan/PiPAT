@@ -61,6 +61,34 @@ MULTI_METER_BAUD = _env_int("MULTI_METER_BAUD", 38400)
 MULTI_METER_TIMEOUT = _env_float("MULTI_METER_TIMEOUT", 1.0)
 MULTI_METER_WRITE_TIMEOUT = _env_float("MULTI_METER_WRITE_TIMEOUT", 1.0)
 
+# --- Optional USB auto-detection (Raspberry Pi) ---
+# When enabled, main.py will scan /dev/serial/by-id + PyVISA resources at startup
+# and patch these config values at runtime:
+#   - MULTI_METER_PATH
+#   - MRSIGNAL_PORT
+#   - AFG_VISA_ID
+#   - ELOAD_VISA_ID
+AUTO_DETECT_ENABLE = _env_bool("AUTO_DETECT_ENABLE", True)
+AUTO_DETECT_VERBOSE = _env_bool("AUTO_DETECT_VERBOSE", True)
+
+# Sub-features
+AUTO_DETECT_MMETER = _env_bool("AUTO_DETECT_MMETER", True)
+AUTO_DETECT_MRSIGNAL = _env_bool("AUTO_DETECT_MRSIGNAL", True)
+AUTO_DETECT_VISA = _env_bool("AUTO_DETECT_VISA", True)
+AUTO_DETECT_AFG = _env_bool("AUTO_DETECT_AFG", True)
+AUTO_DETECT_ELOAD = _env_bool("AUTO_DETECT_ELOAD", True)
+
+# Prefer stable symlinks (when present)
+AUTO_DETECT_PREFER_BY_ID = _env_bool("AUTO_DETECT_PREFER_BY_ID", True)
+
+# Optional: force a PyVISA backend ("@py" for pyvisa-py). Empty => default.
+AUTO_DETECT_VISA_BACKEND = _env_str("AUTO_DETECT_VISA_BACKEND", "")
+
+# IDN matching hints (comma-separated, case-insensitive)
+AUTO_DETECT_MMETER_IDN_HINTS = _env_str("AUTO_DETECT_MMETER_IDN_HINTS", "multimeter,5491b")
+AUTO_DETECT_AFG_IDN_HINTS = _env_str("AUTO_DETECT_AFG_IDN_HINTS", "afg,function,generator,arb")
+AUTO_DETECT_ELOAD_IDN_HINTS = _env_str("AUTO_DETECT_ELOAD_IDN_HINTS", "load,eload,electronic load,dl,it,bk")
+
 # VISA Resource IDs (PyVISA)
 ELOAD_VISA_ID = _env_str("ELOAD_VISA_ID", "USB0::11975::34816::*::0::INSTR")
 AFG_VISA_ID = _env_str("AFG_VISA_ID", "ASRL/dev/ttyACM1::INSTR")

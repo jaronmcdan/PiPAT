@@ -79,6 +79,35 @@ The most common settings:
 - `ELOAD_VISA_ID`, `AFG_VISA_ID`
 - `MRSIGNAL_ENABLE`, `MRSIGNAL_PORT`, `MRSIGNAL_BAUD`, `MRSIGNAL_SLAVE_ID`, `MRSIGNAL_PARITY`, `MRSIGNAL_STOPBITS`
 
+### USB / VISA auto-detection (recommended on Pi)
+
+On Raspberry Pi, USB serial devices can renumber (`/dev/ttyUSB0` becomes `/dev/ttyUSB1`, etc).
+PiPAT includes **best-effort auto-detection** that runs at startup and patches:
+
+- `MULTI_METER_PATH`
+- `MRSIGNAL_PORT`
+- `AFG_VISA_ID`
+- `ELOAD_VISA_ID`
+
+How it works:
+- Prefers stable symlinks like `/dev/serial/by-id/...` when available
+- Uses short timeouts and only does safe identification reads (`*IDN?` for SCPI; a quick Modbus status read for MrSignal)
+
+Controls:
+- Disable detection: `python3 main.py --no-auto-detect`
+- Or via env: `AUTO_DETECT_ENABLE=0`
+
+Hint tuning (comma-separated, optional):
+- `AUTO_DETECT_MMETER_IDN_HINTS` (default: `multimeter,5491b`)
+- `AUTO_DETECT_AFG_IDN_HINTS` (default: `afg,function,generator,arb`)
+- `AUTO_DETECT_ELOAD_IDN_HINTS` (default: `load,eload,electronic load,dl,it,bk`)
+
+If you want to hard-pin ports anyway (for example in systemd), set these explicitly in `/etc/roi/roi.env`:
+- `MULTI_METER_PATH=/dev/serial/by-id/...`
+- `MRSIGNAL_PORT=/dev/serial/by-id/...`
+- `AFG_VISA_ID=ASRL/dev/ttyACM0::INSTR`
+- `ELOAD_VISA_ID=USB0::...::INSTR`
+
 ### 4) Run
 
 ```bash
