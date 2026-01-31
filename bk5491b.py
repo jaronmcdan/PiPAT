@@ -84,8 +84,15 @@ FUNC_TO_SCPI_FUNC = {
 }
 
 
-# CONF-style (dual-display configure) function selection
-# For the 5491/5492 dual-display SCPI, diode + continuity is combined as DIOCtest.
+# CONF-style (legacy/alternate) function selection.
+#
+# IMPORTANT:
+#   For the 2831E/5491B family, the official manual documents a :FUNCtion tree,
+#   and B&K's "Added Commands" doc extends that with :FUNCtion2 for the secondary
+#   display. That dialect is what PiPAT uses by default.
+#
+#   We keep this mapping as an escape hatch for odd firmware variants, but it is
+#   NOT used unless you explicitly set MMETER_SCPI_STYLE=conf.
 FUNC_TO_SCPI_CONF = {
     MmeterFunc.VDC: ":CONF:VOLT:DC",
     MmeterFunc.VAC: ":CONF:VOLT:AC",
@@ -93,10 +100,19 @@ FUNC_TO_SCPI_CONF = {
     MmeterFunc.IAC: ":CONF:CURR:AC",
     MmeterFunc.RES: ":CONF:RES",
     MmeterFunc.FREQ: ":CONF:FREQ",
-    # PERIOD is not documented in the dual-display manual excerpt; leave undefined
-    # unless you know your firmware supports it.
-    MmeterFunc.DIODE: ":CONF:DIOCtest",
-    MmeterFunc.CONT: ":CONF:DIOCtest",
+}
+
+
+# Secondary display function selection for FUNC-style firmware.
+# Per B&K "Added Commands" doc, the secondary display supports:
+#   VOLTage:AC/DC, CURRent:AC/DC, FREQuency, dB, dBm.
+# We only expose the subset we have enums for.
+FUNC_TO_SCPI_FUNC2 = {
+    MmeterFunc.VDC: ":FUNCtion2 VOLTage:DC",
+    MmeterFunc.VAC: ":FUNCtion2 VOLTage:AC",
+    MmeterFunc.IDC: ":FUNCtion2 CURRent:DC",
+    MmeterFunc.IAC: ":FUNCtion2 CURRent:AC",
+    MmeterFunc.FREQ: ":FUNCtion2 FREQuency",
 }
 
 
@@ -112,9 +128,12 @@ FUNC_TO_RANGE_PREFIX_FUNC = {
 
 
 FUNC_TO_NPLC_PREFIX_FUNC = {
-    # NPLC is typically meaningful for DC measurements and resistance.
+    # Integration rate (NPLC) is supported for most basic measurement functions
+    # except frequency/period/continuity/diode (see the 2831E/5491B manual).
     MmeterFunc.VDC: ":VOLTage:DC",
+    MmeterFunc.VAC: ":VOLTage:AC",
     MmeterFunc.IDC: ":CURRent:DC",
+    MmeterFunc.IAC: ":CURRent:AC",
     MmeterFunc.RES: ":RESistance",
 }
 
@@ -234,6 +253,40 @@ class BK5491B:
                 continue
             return line
         return ""
+
+    def system_error(self) -> str:
+        """Query one entry from the instrument error queue.
+
+        The 2831E/5491B manual documents :SYSTem:ERRor? for reading and clearing
+        errors from the queue.
+        """
+
+        return self.query_line(":SYSTem:ERRor?", delay_s=0.0, read_lines=6, clear_input=True)
+
+    def drain_errors(self, *, max_n: int = 16, log: bool = True) -> list[str]:
+        """Drain the error queue (best-effort).
+
+        Returns the collected error strings. Stops when a "no error" response
+        is observed or after max_n reads.
+        """
+
+        out: list[str] = []
+        for _ in range(max(1, int(max_n))):
+            line = (self.system_error() or "").strip()
+            if not line:
+                break
+            out.append(line)
+            u = line.upper()
+            # Typical SCPI: "0,No error"
+            if u.startswith("0") or ("NO ERROR" in u):
+                break
+
+        if log and out:
+            preview = " | ".join(out[:4])
+            if len(out) > 4:
+                preview += " | ..."
+            self.log(f"[mmeter] SYST:ERR? -> {preview}")
+        return out
 
     def fetch_values(
         self,

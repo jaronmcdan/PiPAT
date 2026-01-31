@@ -11,16 +11,28 @@ from typing import Callable, Optional
 import config
 from hardware import HardwareManager
 from bk5491b import (
-    FUNC_TO_SCPI_CONF,
     FUNC_TO_SCPI_FUNC,
+    FUNC_TO_SCPI_FUNC2,
     FUNC_TO_RANGE_PREFIX_FUNC,
     FUNC_TO_NPLC_PREFIX_FUNC,
     FUNC_TO_REF_PREFIX_FUNC,
     MmeterFunc,
-    SCPI_STYLE_CONF,
-    SCPI_STYLE_FUNC,
     func_name,
 )
+
+
+def _quantize_nplc(v: float) -> float:
+    """Quantize NPLC to the supported set for 2831E/5491B.
+
+    The user manual documents NPLC values of 0.1, 1, or 10.
+    """
+
+    try:
+        x = float(v)
+    except Exception:
+        return 1.0
+    choices = (0.1, 1.0, 10.0)
+    return min(choices, key=lambda c: abs(x - c))
 
 
 class DeviceCommandProcessor:
@@ -35,6 +47,9 @@ class DeviceCommandProcessor:
     def __init__(self, hardware: HardwareManager, *, log_fn: Callable[[str], None] = print):
         self.hardware = hardware
         self.log = log_fn
+
+        # De-bounce SCPI writes for legacy CAN frames that may be repeated.
+        self._mmeter_last_autorange_cmd: tuple[int, bool] | None = None
 
         # Cached MrSignal arbitration id with a fallback.
         self._mrsignal_ctrl_id = int(getattr(config, "MRSIGNAL_CTRL_ID", 0x0CFF0800))
@@ -72,15 +87,14 @@ class DeviceCommandProcessor:
 
     def _mmeter_set_func(self, func: int) -> None:
         func_i = int(func) & 0xFF
-        style = str(getattr(self.hardware, "mmeter_scpi_style", SCPI_STYLE_CONF) or SCPI_STYLE_CONF).strip().lower()
-        if style == SCPI_STYLE_FUNC:
-            cmd = FUNC_TO_SCPI_FUNC.get(func_i)
-        else:
-            # Default to CONF-style for 5491B dual-display command set.
-            cmd = FUNC_TO_SCPI_CONF.get(func_i)
+        # PiPAT defaults to the documented 2831E/5491B SCPI dialect rooted at
+        # :FUNCtion (plus :FUNCtion2 for secondary display).
+        # Treat any legacy "conf" selection as "func" to avoid spamming the
+        # instrument with unsupported :CONFigure commands.
+        cmd = FUNC_TO_SCPI_FUNC.get(func_i)
 
         if not cmd:
-            self.log(f"MMETER: unsupported function enum {func_i} for style='{style}'")
+            self.log(f"MMETER: unsupported function enum {func_i}")
             return
 
         self._mmeter_write(cmd, delay_s=0.10, clear_input=True)
@@ -179,17 +193,21 @@ class DeviceCommandProcessor:
             try:
                 with self.hardware.mmeter_lock:
                     if int(meter_range) == 0:
-                        style = str(getattr(self.hardware, "mmeter_scpi_style", SCPI_STYLE_CONF) or SCPI_STYLE_CONF).strip().lower()
-                        if style == SCPI_STYLE_FUNC:
-                            prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(int(self.hardware.mmeter_func))
-                            if prefix:
-                                self._mmeter_write(f"{prefix}:RANGe:AUTO ON")
-                                self.hardware.mmeter_autorange = True
-                        else:
-                            # CONF-style global autorange (primary display)
-                            self._mmeter_write(":CONFigure:RANGe:AUTO 1")
-                            self.hardware.mmeter_autorange = True
+                        func_i = int(getattr(self.hardware, "mmeter_func", int(MmeterFunc.VDC))) & 0xFF
+                        prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(func_i)
+                        key = (func_i, True)
+                        if prefix and self._mmeter_last_autorange_cmd != key:
+                            self._mmeter_write(f"{prefix}:RANGe:AUTO ON")
+                            self._mmeter_last_autorange_cmd = key
+                        self.hardware.mmeter_autorange = True
                     else:
+                        # Disable autorange (freeze at the currently selected range)
+                        func_i = int(getattr(self.hardware, "mmeter_func", int(MmeterFunc.VDC))) & 0xFF
+                        prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(func_i)
+                        key = (func_i, False)
+                        if prefix and self._mmeter_last_autorange_cmd != key:
+                            self._mmeter_write(f"{prefix}:RANGe:AUTO OFF")
+                            self._mmeter_last_autorange_cmd = key
                         self.hardware.mmeter_autorange = False
             except Exception:
                 pass
@@ -224,133 +242,99 @@ class DeviceCommandProcessor:
 
             try:
                 with self.hardware.mmeter_lock:
-                    style = str(getattr(self.hardware, "mmeter_scpi_style", SCPI_STYLE_CONF) or SCPI_STYLE_CONF).strip().lower()
-                    is_secondary = (int(arg2) & 0xFF) == 1
+                    # Use the documented 2831E/5491B SCPI tree (FUNC-style).
+                    # B&K's "Added Commands" doc extends this with :FUNCtion2 for
+                    # the secondary display.
 
-                    # Helpers for CONF-style @2 channel list formatting.
-                    # If a numeric parameter is omitted, @2 must be sent as the *first* parameter,
-                    # which means we need a leading space before ',@2'.
-                    conf_no_value = " ,@2" if is_secondary else ""
-                    conf_with_value = ",@2" if is_secondary else ""
-
-                    if op == 0x01:  # SET_FUNCTION
-                        # Always sets the *primary* function.
+                    if op == 0x01:  # SET_FUNCTION (primary)
                         self._mmeter_set_func(tgt_func)
                         self.log(f"MMETER func -> {func_name(int(self.hardware.mmeter_func))}")
 
                     elif op == 0x02:  # SET_AUTORANGE (arg1=0/1)
                         on = bool(arg1)
-                        if style == SCPI_STYLE_FUNC:
+                        if bool(getattr(self.hardware, "mmeter_autorange", True)) != on:
                             prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(tgt_func)
                             if prefix:
                                 self._mmeter_write(f"{prefix}:RANGe:AUTO {'ON' if on else 'OFF'}")
-                                self.hardware.mmeter_autorange = on
-                        else:
-                            # CONF-style global autorange for primary/secondary display.
-                            self._mmeter_write(f":CONFigure:RANGe:AUTO {1 if on else 0}{conf_no_value}")
-                            self.hardware.mmeter_autorange = on
+                        self.hardware.mmeter_autorange = on
 
-                    elif op == 0x03:  # SET_RANGE (float)
+                    elif op == 0x03:  # SET_RANGE (float = expected reading)
                         if not math.isfinite(float(fval)):
                             return
-                        if style == SCPI_STYLE_FUNC:
-                            prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(tgt_func)
-                            if prefix:
-                                self._mmeter_write(f"{prefix}:RANGe {float(fval):g}")
-                                self.hardware.mmeter_autorange = False
-                                self.hardware.mmeter_range_value = float(fval)
-                        else:
-                            # CONF-style has no documented direct CONF:RANG <n> setter; range is part
-                            # of the CONF:<FUNC> command (numeric value is the range).
-                            base = FUNC_TO_SCPI_CONF.get(tgt_func)
-                            if base:
-                                # Disable autorange first (best-effort) so the range sticks.
-                                self._mmeter_write(f":CONFigure:RANGe:AUTO 0{conf_no_value}")
-                                self._mmeter_write(f"{base} {float(fval):g}{conf_with_value}")
-                                self.hardware.mmeter_autorange = False
-                                self.hardware.mmeter_range_value = float(fval)
+                        prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(tgt_func)
+                        if prefix:
+                            fv = float(fval)
+                            # Avoid redundant writes.
+                            if (not bool(getattr(self.hardware, "mmeter_autorange", True))) and abs(float(getattr(self.hardware, "mmeter_range_value", 0.0)) - fv) < 1e-12:
+                                pass
+                            else:
+                                self._mmeter_write(f"{prefix}:RANGe {fv:g}")
+                            self.hardware.mmeter_autorange = False
+                            self.hardware.mmeter_range_value = fv
 
-                    elif op == 0x04:  # SET_NPLC (float)
-                        # Clamp to sane values; 0.01 .. 100 is typical.
-                        nplc = max(0.01, min(100.0, float(fval)))
-                        if style == SCPI_STYLE_FUNC:
-                            prefix = FUNC_TO_NPLC_PREFIX_FUNC.get(tgt_func)
-                            if prefix:
-                                # Manual shows :NPLCycles; NPLC is its abbreviation.
+                    elif op == 0x04:  # SET_NPLC (float -> quantized)
+                        prefix = FUNC_TO_NPLC_PREFIX_FUNC.get(tgt_func)
+                        if prefix:
+                            nplc = _quantize_nplc(float(fval))
+                            if abs(float(getattr(self.hardware, "mmeter_nplc", 1.0)) - nplc) > 1e-12:
                                 self._mmeter_write(f"{prefix}:NPLCycles {nplc:g}")
-                                self.hardware.mmeter_nplc = float(nplc)
-                        else:
-                            # CONF-style exposes measurement rate as SLOW|MED|FAST.
-                            rate = "FAST" if nplc <= 0.1 else ("MED" if nplc <= 1.0 else "SLOW")
-                            self._mmeter_write(f":CONFigure:DISPlay:RATE {rate}")
                             self.hardware.mmeter_nplc = float(nplc)
 
                     elif op == 0x05:  # SECONDARY_ENABLE (arg0=0/1)
                         on = bool(arg0)
-                        if style == SCPI_STYLE_CONF:
-                            if not on:
-                                self._mmeter_write(":CONFigure:OFFDual")
-                                self.hardware.mmeter_func2_enabled = False
+                        if bool(getattr(self.hardware, "mmeter_func2_enabled", False)) != on:
+                            self._mmeter_write(f":FUNCtion2:STATe {1 if on else 0}")
+                        self.hardware.mmeter_func2_enabled = on
+
+                        # If enabling, (re)apply the currently selected secondary function.
+                        if on:
+                            func2 = int(getattr(self.hardware, "mmeter_func2", int(MmeterFunc.VDC))) & 0xFF
+                            cmd2 = FUNC_TO_SCPI_FUNC2.get(func2)
+                            if cmd2:
+                                self._mmeter_write(cmd2)
                             else:
-                                # Enabling secondary is implicit when you configure @2.
-                                # If we already know the desired secondary function, apply it now.
-                                base2 = FUNC_TO_SCPI_CONF.get(int(getattr(self.hardware, "mmeter_func2", int(MmeterFunc.VDC))))
-                                if base2:
-                                    self._mmeter_write(base2 + " ,@2")
-                                    self.hardware.mmeter_func2_enabled = True
-                                else:
-                                    self.hardware.mmeter_func2_enabled = True
-                        else:
-                            # FUNC-style secondary display isn't standardized across firmware; ignore.
-                            self.hardware.mmeter_func2_enabled = bool(on)
+                                self.log(f"MMETER secondary: unsupported func {func2}")
 
                     elif op == 0x06:  # SECONDARY_FUNCTION
-                        func_i = tgt_func
-                        if style == SCPI_STYLE_CONF:
-                            base = FUNC_TO_SCPI_CONF.get(func_i)
-                            if base:
-                                self._mmeter_write(base + " ,@2")
-                                self.hardware.mmeter_func2 = func_i
-                                self.hardware.mmeter_func2_enabled = True
-                        else:
-                            # FUNC-style secondary display isn't standardized across firmware; ignore.
-                            self.hardware.mmeter_func2 = func_i
+                        func_i = int(tgt_func) & 0xFF
+                        cmd2 = FUNC_TO_SCPI_FUNC2.get(func_i)
+                        if not cmd2:
+                            self.log(f"MMETER secondary: unsupported func {func_i}")
+                            return
+
+                        # Per B&K doc, secondary display must be enabled before FUNC2 is set.
+                        if not bool(getattr(self.hardware, "mmeter_func2_enabled", False)):
+                            self._mmeter_write(":FUNCtion2:STATe 1")
+                            self.hardware.mmeter_func2_enabled = True
+
+                        if int(getattr(self.hardware, "mmeter_func2", -1)) != func_i:
+                            self._mmeter_write(cmd2)
+                        self.hardware.mmeter_func2 = func_i
 
                     elif op == 0x07:  # TRIG_SOURCE (arg0=0 IMM,1 BUS,2 MAN)
-                        if style == SCPI_STYLE_FUNC:
+                        if int(getattr(self.hardware, "mmeter_trig_source", -1)) != (int(arg0) & 0xFF):
                             src_map = {0: "IMM", 1: "BUS", 2: "MAN"}
                             src = src_map.get(int(arg0), "IMM")
                             self._mmeter_write(f":TRIGger:SOURce {src}")
-                            self.hardware.mmeter_trig_source = int(arg0) & 0xFF
-                        else:
-                            # Not documented in CONF-style manual excerpt.
-                            self.hardware.mmeter_trig_source = int(arg0) & 0xFF
+                        self.hardware.mmeter_trig_source = int(arg0) & 0xFF
 
                     elif op == 0x08:  # BUS_TRIGGER
                         self._mmeter_write("*TRG")
 
                     elif op == 0x09:  # RELATIVE_ENABLE (arg0=0/1)
                         on = bool(arg0)
-                        if style == SCPI_STYLE_FUNC:
+                        if bool(getattr(self.hardware, "mmeter_rel_enabled", False)) != on:
                             prefix = FUNC_TO_REF_PREFIX_FUNC.get(tgt_func)
                             if prefix:
                                 self._mmeter_write(f"{prefix}:REFerence:STATe {'ON' if on else 'OFF'}")
-                                self.hardware.mmeter_rel_enabled = on
-                        else:
-                            # Not documented in CONF-style manual excerpt.
-                            self.hardware.mmeter_rel_enabled = on
+                        self.hardware.mmeter_rel_enabled = on
 
                     elif op == 0x0A:  # RELATIVE_ACQUIRE
-                        if style == SCPI_STYLE_FUNC:
-                            prefix = FUNC_TO_REF_PREFIX_FUNC.get(tgt_func)
-                            if prefix:
-                                self._mmeter_write(f"{prefix}:REFerence:ACQuire")
-                        else:
-                            # Not documented in CONF-style manual excerpt.
-                            pass
+                        prefix = FUNC_TO_REF_PREFIX_FUNC.get(tgt_func)
+                        if prefix:
+                            self._mmeter_write(f"{prefix}:REFerence:ACQuire")
 
                     else:
-                        # Unknown op; ignore.
                         if op != 0:
                             self.log(f"MMETER ext: unknown op=0x{op:02X} arg0={arg0} arg1={arg1} arg2={arg2}")
 

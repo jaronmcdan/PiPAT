@@ -84,13 +84,14 @@ class HardwareManager:
         self.mmeter_trig_source: int = 0  # 0=IMM,1=BUS,2=MAN
 
         # SCPI command dialect for the multimeter.
-        # "conf" = :CONF/:CONFigure... (dual display command set)
-        # "func" = :FUNCtion/:VOLTage:DC... (classic SCPI tree)
-        # "auto" = probe once on startup.
+        #
+        # For the 2831E/5491B family, the documented / recommended dialect is
+        # the classic tree rooted at :FUNCtion (plus :FUNCtion2 for secondary
+        # display on newer firmware). We default to "func".
         try:
-            self.mmeter_scpi_style: str = str(getattr(config, "MMETER_SCPI_STYLE", "conf") or "conf").strip().lower()
+            self.mmeter_scpi_style: str = str(getattr(config, "MMETER_SCPI_STYLE", "func") or "func").strip().lower()
         except Exception:
-            self.mmeter_scpi_style = "conf"
+            self.mmeter_scpi_style = "func"
 
         # AFG
         self.afg = None
@@ -162,9 +163,9 @@ class HardwareManager:
         meter display "BUS: BAD COMMAND".
         """
 
-        style = str(getattr(self, "mmeter_scpi_style", "conf") or "conf").strip().lower()
+        style = str(getattr(self, "mmeter_scpi_style", "func") or "func").strip().lower()
         if style not in ("conf", "func", "auto"):
-            style = "conf"
+            style = "func"
 
         # If explicitly configured, honor it.
         if style != "auto":
@@ -175,23 +176,11 @@ class HardwareManager:
         # Auto-detect
         helper = getattr(self, "mmeter", None)
         if helper is None:
-            self.mmeter_scpi_style = "conf"
+            self.mmeter_scpi_style = "func"
             print(f"MMETER SCPI style: {self.mmeter_scpi_style} (default)")
             return
 
-        # 1) Try CONF-style query (dual-display command set)
-        resp = ""
-        try:
-            resp = helper.query_line(":CONFigure:FUNCtion?", delay_s=0.05, read_lines=6)
-        except Exception:
-            resp = ""
-        r = (resp or "").upper()
-        if any(tok in r for tok in ("DCV", "ACV", "DCA", "ACA", "HZ", "RES", "DIOC", "NONE")):
-            self.mmeter_scpi_style = "conf"
-            print(f"MMETER SCPI style: {self.mmeter_scpi_style} (auto)")
-            return
-
-        # 2) Try FUNC-style query (classic SCPI tree)
+        # 1) Try FUNC-style query (classic SCPI tree) first.
         resp2 = ""
         try:
             resp2 = helper.query_line(":FUNCtion?", delay_s=0.05, read_lines=6)
@@ -203,8 +192,23 @@ class HardwareManager:
             print(f"MMETER SCPI style: {self.mmeter_scpi_style} (auto)")
             return
 
+        # 2) As a fallback, try CONF-style query.
+        # WARNING: Some firmware variants will complain on the front panel when
+        # they receive an unknown command. Only attempt this when the user
+        # explicitly requested auto detection.
+        resp = ""
+        try:
+            resp = helper.query_line(":CONFigure:FUNCtion?", delay_s=0.05, read_lines=6)
+        except Exception:
+            resp = ""
+        r = (resp or "").upper()
+        if any(tok in r for tok in ("DCV", "ACV", "DCA", "ACA", "HZ", "RES", "DIOC", "NONE")):
+            self.mmeter_scpi_style = "conf"
+            print(f"MMETER SCPI style: {self.mmeter_scpi_style} (auto)")
+            return
+
         # Fallback
-        self.mmeter_scpi_style = "conf"
+        self.mmeter_scpi_style = "func"
         print(f"MMETER SCPI style: {self.mmeter_scpi_style} (auto default)")
 
     # --- Relay helpers ---
@@ -281,6 +285,14 @@ class HardwareManager:
                 except Exception:
                     self.mmeter = None
 
+                # Clear any stale error queue entries so the front panel doesn't
+                # keep showing a persistent BUS error after experimentation.
+                try:
+                    if bool(getattr(config, "MMETER_CLEAR_ERRORS_ON_STARTUP", True)) and self.mmeter is not None:
+                        self.mmeter.drain_errors(log=True)
+                except Exception:
+                    pass
+
                 # Optional SCPI dialect detection (one-time) to avoid sending
                 # commands the meter doesn't understand (prevents "BUS: BAD COMMAND").
                 self._maybe_detect_mmeter_scpi_style()
@@ -322,6 +334,12 @@ class HardwareManager:
                 self.mmeter = BK5491B(mmeter, log_fn=print)
             except Exception:
                 self.mmeter = None
+
+            try:
+                if bool(getattr(config, "MMETER_CLEAR_ERRORS_ON_STARTUP", True)) and self.mmeter is not None:
+                    self.mmeter.drain_errors(log=True)
+            except Exception:
+                pass
 
             self._maybe_detect_mmeter_scpi_style()
         except (serial.SerialException, IOError) as e:

@@ -88,10 +88,27 @@ MULTI_METER_FETCH_CMDS = _env_str(
     ":FETC?",
 )
 
-# SCPI dialect for 5491B-style DMM control. "conf" uses :CONF/:CONFigure commands
-# (dual display command set). "func" uses :FUNCtion/:VOLTage:DC... style.
-# "auto" will probe once on startup.
-MMETER_SCPI_STYLE = _env_str("MMETER_SCPI_STYLE", "conf").strip().lower()
+# SCPI dialect for the 2831E/5491B bench multimeters.
+#
+# The official 2831E/5491B user manual documents a classic SCPI tree rooted at
+# :FUNCtion and the per-subsystem configuration commands (:VOLTage, :CURRent,
+# :RESistance, :FREQuency, :PERiod, etc.).
+#
+# There is also an "added commands" document (for firmware after Sep 2010)
+# that adds secondary display control via :FUNCtion2 and :FUNCtion2:STATe.
+#
+# PiPAT primarily uses this "func" dialect.
+#
+# Values:
+#   - "func" (default): :FUNCtion, :VOLTage:DC:RANGe:AUTO, :FUNCtion2...
+#   - "conf": legacy/alternate dialect (not used by default)
+#   - "auto": probe once on startup (tries "func" first)
+MMETER_SCPI_STYLE = _env_str("MMETER_SCPI_STYLE", "func").strip().lower()
+
+# If True, query and drain the multimeter error queue on startup.
+# Useful if you've been experimenting with SCPI and the front panel is showing
+# a persistent "BUS" error message.
+MMETER_CLEAR_ERRORS_ON_STARTUP = _env_bool("MMETER_CLEAR_ERRORS_ON_STARTUP", True)
 
 # If we don't yet know the correct fetch command, we will probe at this
 # interval (seconds) to avoid spamming the meter with unknown commands.
