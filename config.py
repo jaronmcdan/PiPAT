@@ -96,7 +96,19 @@ AUTO_DETECT_ASRL_BAUD = _env_int("AUTO_DETECT_ASRL_BAUD", 115200)
 # (e.g. the Pi's onboard UARTs or console serial ports)
 AUTO_DETECT_VISA_ASRL_EXCLUDE_PREFIXES = _env_str(
     "AUTO_DETECT_VISA_ASRL_EXCLUDE_PREFIXES",
-    "/dev/ttyAMA,/dev/ttyS",
+    # NOTE: many USB-serial instruments (like the 5491B DMM) are /dev/ttyUSB*.
+    # Probing those as VISA ASRL at the wrong baud can make them beep and/or
+    # enter an error state. Default: exclude USB-serial ports.
+    "/dev/ttyAMA,/dev/ttyS,/dev/ttyUSB",
+)
+
+# Comma-separated device-node prefixes to *allow* for ASRL probing.
+# If set, only these serial devices will be probed via VISA. This is the
+# safest way to avoid poking non-SCPI USB-serial devices.
+# Default: only probe CDC-ACM devices (many bench instruments show up as ttyACM*).
+AUTO_DETECT_VISA_ASRL_ALLOW_PREFIXES = _env_str(
+    "AUTO_DETECT_VISA_ASRL_ALLOW_PREFIXES",
+    "/dev/ttyACM",
 )
 
 # Prefer stable symlinks (when present)

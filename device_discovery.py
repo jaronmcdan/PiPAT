@@ -331,6 +331,9 @@ def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryR
             exclude_prefixes = _split_hints(
                 str(getattr(config, "AUTO_DETECT_VISA_ASRL_EXCLUDE_PREFIXES", "") or "")
             )
+            allow_prefixes = _split_hints(
+                str(getattr(config, "AUTO_DETECT_VISA_ASRL_ALLOW_PREFIXES", "") or "")
+            )
 
             # Build a realpath set for serial devices we must not poke via VISA.
             skip_serial_realpaths = set()
@@ -359,11 +362,23 @@ def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryR
                 devnode = _asrl_devnode(r)
                 if devnode:
                     # Exclude obvious non-instrument serial ports.
-                    dn_l = devnode.lower()
+                    dn_real = None
+                    try:
+                        dn_real = os.path.realpath(devnode)
+                    except Exception:
+                        dn_real = devnode
+
+                    dn_l = (dn_real or devnode).lower()
+
+                    # Allow-list (if configured): only probe these.
+                    if allow_prefixes and not any(dn_l.startswith(pfx) for pfx in allow_prefixes):
+                        continue
+
+                    # Exclude-list: never probe these.
                     if exclude_prefixes and any(dn_l.startswith(pfx) for pfx in exclude_prefixes):
                         continue
                     try:
-                        if os.path.realpath(devnode) in skip_serial_realpaths:
+                        if (dn_real or os.path.realpath(devnode)) in skip_serial_realpaths:
                             continue
                     except Exception:
                         pass
