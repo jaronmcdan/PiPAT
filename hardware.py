@@ -171,6 +171,12 @@ class HardwareManager:
         self._initialize_mrsignal()
 
     def _initialize_multimeter(self) -> None:
+        """Initialize the serial multimeter.
+
+        Many USB-serial instruments will *echo* the command you send before
+        replying with the actual IDN string. Also, some respond a beat later.
+        We therefore read a few lines and skip obvious echoes.
+        """
         try:
             mmeter = serial.Serial(
                 config.MULTI_METER_PATH,
@@ -185,10 +191,36 @@ class HardwareManager:
             except Exception:
                 pass
 
-            mmeter.write(b"*IDN?\n")
-            mmeter.flush()
-            raw = mmeter.readline()
-            self.mmeter_id = raw.decode("ascii", errors="replace").strip() or None
+            # Query IDN and tolerate command echo.
+            try:
+                mmeter.write(b"*IDN?\n")
+                mmeter.flush()
+            except Exception:
+                pass
+
+            # Give the device a moment; many respond ~10-100ms later.
+            time.sleep(float(getattr(config, 'MULTI_METER_IDN_DELAY', 0.05)))
+
+            idn: Optional[str] = None
+            for _ in range(int(getattr(config, 'MULTI_METER_IDN_READ_LINES', 4))):
+                raw = mmeter.readline()
+                if not raw:
+                    continue
+                line = raw.decode("ascii", errors="replace").strip()
+                if not line:
+                    continue
+                # Ignore the common echo patterns.
+                if line.upper().startswith("*IDN?"):
+                    continue
+                # Some devices include stray prompts; prefer lines that look like an IDN.
+                if ("," in line) or ("multimeter" in line.lower()) or ("5491" in line.lower()):
+                    idn = line
+                    break
+                # Fallback: accept the first non-empty non-echo line.
+                if idn is None:
+                    idn = line
+
+            self.mmeter_id = idn
             print(f"MULTI-METER ID: {self.mmeter_id or 'Unknown'}")
             self.multi_meter = mmeter
         except (serial.SerialException, IOError) as e:

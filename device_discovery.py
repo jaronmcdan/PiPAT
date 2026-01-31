@@ -123,12 +123,25 @@ def _probe_multimeter_idn(port: str, baud: int) -> Optional[str]:
             s.write(b"*IDN?\n")
             s.flush()
             time.sleep(0.05)
-            raw = s.readline()
-            if not raw:
-                # some devices echo, some respond on second line
+
+            # Some instruments echo the command then return IDN on the next line.
+            idn: Optional[str] = None
+            for _ in range(int(getattr(config, "MULTI_METER_IDN_READ_LINES", 4))):
                 raw = s.readline()
-            txt = raw.decode("ascii", errors="replace").strip()
-            return txt or None
+                if not raw:
+                    continue
+                line = raw.decode("ascii", errors="replace").strip()
+                if not line:
+                    continue
+                if line.upper().startswith("*IDN?"):
+                    continue
+                # Prefer an IDN-like line.
+                if ("," in line) or ("multimeter" in line.lower()) or ("5491" in line.lower()):
+                    idn = line
+                    break
+                if idn is None:
+                    idn = line
+            return idn or None
     except Exception:
         return None
 

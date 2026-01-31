@@ -61,6 +61,11 @@ MULTI_METER_BAUD = _env_int("MULTI_METER_BAUD", 38400)
 MULTI_METER_TIMEOUT = _env_float("MULTI_METER_TIMEOUT", 1.0)
 MULTI_METER_WRITE_TIMEOUT = _env_float("MULTI_METER_WRITE_TIMEOUT", 1.0)
 
+# Many USB-serial instruments echo commands and/or respond a moment later.
+# These settings make IDN probing more robust.
+MULTI_METER_IDN_DELAY = _env_float("MULTI_METER_IDN_DELAY", 0.05)
+MULTI_METER_IDN_READ_LINES = _env_int("MULTI_METER_IDN_READ_LINES", 4)
+
 # --- Optional USB auto-detection (Raspberry Pi) ---
 # When enabled, main.py will scan /dev/serial/by-id + PyVISA resources at startup
 # and patch these config values at runtime:
