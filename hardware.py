@@ -67,6 +67,8 @@ class HardwareManager:
         self.multi_meter_mode: int = 0
         self.multi_meter_range: int = 0
         self.mmeter_id: Optional[str] = None
+        # Determined at runtime by the polling thread (see main.py).
+        self.mmeter_fetch_cmd: Optional[str] = None
 
         # AFG
         self.afg = None
@@ -245,25 +247,52 @@ class HardwareManager:
             # --- 1. E-LOAD (Scan for USBTMC / match pattern) ---
             try:
                 available_resources = list(self.resource_manager.list_resources())
-                print(f"Scanning for E-Load in: {available_resources}")
 
-                for resource_id in available_resources:
-                    if fnmatch.fnmatch(resource_id, config.ELOAD_VISA_ID):
+                # CRITICAL SAFETY: Never probe ASRL resources when looking for an E-load.
+                # Many unrelated USB-serial devices show up as ASRL/dev/ttyUSB*::INSTR
+                # (including the 5491B DMM). Touching them via VISA can make them beep
+                # "bus command error" and stop responding. The E-load is USBTMC and
+                # should appear as a USB* resource.
+                usb_resources = [r for r in available_resources if str(r).startswith("USB")]
+                print(f"Scanning for E-Load in (USB only): {usb_resources}")
+
+                eload_pat = str(getattr(config, "ELOAD_VISA_ID", "") or "").strip()
+                eload_hints = [t.strip().lower() for t in str(getattr(config, "AUTO_DETECT_ELOAD_IDN_HINTS", "") or "").split(",") if t.strip()]
+
+                for resource_id in usb_resources:
+                    # Match configured pattern (or match-all if empty)
+                    if eload_pat and (not fnmatch.fnmatch(resource_id, eload_pat)):
+                        continue
+                    try:
+                        dev = self.resource_manager.open_resource(resource_id)
+                        # Bound I/O time so a slow/missing instrument doesn't stall controls.
                         try:
-                            dev = self.resource_manager.open_resource(resource_id)
-                            # Bound I/O time so a slow/missing instrument doesn't stall controls.
-                            try:
-                                dev.timeout = int(getattr(config, "VISA_TIMEOUT_MS", 500))
-                            except Exception:
-                                pass
-                            dev_id = dev.query("*IDN?").strip()
-                            print(f"E-LOAD FOUND: {dev_id}")
+                            dev.timeout = int(getattr(config, "VISA_TIMEOUT_MS", 500))
+                        except Exception:
+                            pass
+                        dev_id = str(dev.query("*IDN?")).strip()
+
+                        # If hints are provided, require a hint match.
+                        if eload_hints:
+                            low = dev_id.lower()
+                            if not any(h in low for h in eload_hints):
+                                try:
+                                    dev.close()
+                                except Exception:
+                                    pass
+                                continue
+
+                        print(f"E-LOAD FOUND: {dev_id}")
+                        # Keep these best-effort; some loads dislike *RST.
+                        try:
                             dev.write("*RST")
                             dev.write("SYST:CLE")
-                            self.e_load = dev
-                            break
-                        except Exception as e:
-                            print(f"Skip E-LOAD ({resource_id}): {e}")
+                        except Exception:
+                            pass
+                        self.e_load = dev
+                        break
+                    except Exception as e:
+                        print(f"Skip E-LOAD ({resource_id}): {e}")
             except Exception as e:
                 print(f"E-Load Scan Error: {e}")
 

@@ -326,6 +326,12 @@ def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryR
                 rids = list(rm.list_resources())
             except Exception:
                 rids = []
+
+            # NOTE: rm.list_resources() may include ASRL/dev/ttyUSB* entries for
+            # generic USB-serial ports (including the 5491B DMM). Seeing them
+            # in this *raw* list is normal. We must never *probe* them.
+            if verbose:
+                _log(log_fn, f"[autodetect] visa resources (raw): {rids}")
             # Narrow to USB + serial instruments.
             # IMPORTANT: probing an ASRL resource sends bytes over a serial port.
             # If that port belongs to some other device (e.g., the 5491B DMM), it
@@ -391,17 +397,25 @@ def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryR
                     # 5491B multimeter). Probing them at the wrong baud can make
                     # them beep / throw a "bus command error" and stop answering.
                     if dn_l.startswith("/dev/ttyusb"):
+                        if verbose:
+                            _log(log_fn, f"[autodetect] skip VISA probe on {r} (unsafe ttyUSB)")
                         continue
 
                     # Allow-list (if configured): only probe these.
                     if allow_prefixes and not any(dn_l.startswith(pfx) for pfx in allow_prefixes):
+                        if verbose:
+                            _log(log_fn, f"[autodetect] skip VISA probe on {r} (not in allow-list)")
                         continue
 
                     # Exclude-list: never probe these.
                     if exclude_prefixes and any(dn_l.startswith(pfx) for pfx in exclude_prefixes):
+                        if verbose:
+                            _log(log_fn, f"[autodetect] skip VISA probe on {r} (in exclude-list)")
                         continue
                     try:
                         if (dn_real or os.path.realpath(devnode)) in skip_serial_realpaths:
+                            if verbose:
+                                _log(log_fn, f"[autodetect] skip VISA probe on {r} (claimed by serial device)")
                             continue
                     except Exception:
                         pass

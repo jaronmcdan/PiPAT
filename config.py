@@ -55,6 +55,11 @@ def _env_bool(name: str, default: bool) -> bool:
     return default
 
 
+# Build / version tag to make it obvious which zip is running.
+# You can override via env var PIPAT_BUILD_TAG.
+BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-01-30-meter-asrl-safe-v3")
+
+
 # --- Hardware Identifiers ---
 MULTI_METER_PATH = _env_str("MULTI_METER_PATH", "/dev/ttyUSB0")
 MULTI_METER_BAUD = _env_int("MULTI_METER_BAUD", 38400)
@@ -74,6 +79,18 @@ MULTI_METER_IDN = _env_str("MULTI_METER_IDN", "")
 # These settings make IDN probing more robust.
 MULTI_METER_IDN_DELAY = _env_float("MULTI_METER_IDN_DELAY", 0.05)
 MULTI_METER_IDN_READ_LINES = _env_int("MULTI_METER_IDN_READ_LINES", 4)
+
+# Measurement query commands to try for the multimeter.
+# Different meters expose different SCPI subsets. We will try these in order
+# until we get a parseable float.
+MULTI_METER_FETCH_CMDS = _env_str(
+    "MULTI_METER_FETCH_CMDS",
+    "FETC?,READ?,MEAS:CURR?,MEAS?",
+)
+
+# If we don't yet know the correct fetch command, we will probe at this
+# interval (seconds) to avoid spamming the meter with unknown commands.
+MULTI_METER_PROBE_BACKOFF_SEC = _env_float("MULTI_METER_PROBE_BACKOFF_SEC", 2.0)
 
 # --- Optional USB auto-detection (Raspberry Pi) ---
 # When enabled, main.py will scan /dev/serial/by-id + PyVISA resources at startup

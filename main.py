@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import threading
 import time
@@ -319,6 +320,20 @@ def instrument_poll_loop(
     last_mrs = 0.0
     next_meas = time.monotonic()
 
+    # Multimeter polling: try to learn which query command works for this meter.
+    # Probing unknown commands too fast can make some meters beep; use backoff.
+    mmeter_cmds = [
+        c.strip() for c in str(getattr(config, "MULTI_METER_FETCH_CMDS", "FETC?"))
+        .split(",")
+        if c.strip()
+    ]
+    if not mmeter_cmds:
+        mmeter_cmds = ["FETC?"]
+    mmeter_probe_idx = 0
+    mmeter_next_probe = 0.0
+    mmeter_backoff_s = float(getattr(config, "MULTI_METER_PROBE_BACKOFF_SEC", 2.0))
+    _num_re = re.compile(r"[-+]?\d+(?:\.\d*)?(?:[eE][-+]?\d+)?")
+
     while not stop_event.is_set():
         now_m = time.monotonic()
 
@@ -336,21 +351,50 @@ def instrument_poll_loop(
             # Multimeter read
             if hardware.multi_meter:
                 try:
-                    # Don't let polling contend with control writes.
-                    if not hardware.mmeter_lock.acquire(timeout=0.0):
-                        raw = b""
+                    # If we don't yet know the right query command, only probe
+                    # occasionally (backoff) so we don't spam/beep the meter.
+                    known_cmd = str(getattr(hardware, "mmeter_fetch_cmd", "") or "").strip()
+                    if known_cmd:
+                        cmds_to_try = [known_cmd]
                     else:
-                        try:
-                            hardware.multi_meter.write(b"FETC?\n")
-                            raw = hardware.multi_meter.readline()
-                        finally:
-                            hardware.mmeter_lock.release()
-                    resp = raw.decode("ascii", errors="replace").strip()
-                    if resp:
-                        val = float(resp)
-                        meter_current_mA = int(round(val * 1000))
-                        tx_state.update_meter_current(meter_current_mA)
+                        if now_m < mmeter_next_probe:
+                            cmds_to_try = []
+                        else:
+                            cmds_to_try = [mmeter_cmds[mmeter_probe_idx % len(mmeter_cmds)]]
+                            mmeter_probe_idx += 1
+
+                    if cmds_to_try:
+                        # Don't let polling contend with control writes.
+                        if hardware.mmeter_lock.acquire(timeout=0.0):
+                            try:
+                                for cmd in cmds_to_try:
+                                    hardware.multi_meter.write((cmd + "\n").encode("ascii", errors="ignore"))
+                                    raw = hardware.multi_meter.readline()
+                                    resp = raw.decode("ascii", errors="replace").strip()
+                                    if not resp:
+                                        continue
+                                    m = _num_re.search(resp)
+                                    if not m:
+                                        continue
+                                    val = float(m.group(0))
+                                    meter_current_mA = int(round(val * 1000))
+                                    tx_state.update_meter_current(meter_current_mA)
+
+                                    # Learn the command that worked.
+                                    if not known_cmd:
+                                        hardware.mmeter_fetch_cmd = cmd
+                                        _log(f"[mmeter] using fetch cmd: {cmd}")
+                                    break
+                            finally:
+                                hardware.mmeter_lock.release()
+
+                        # If we were probing (unknown cmd) and didn't get a value,
+                        # back off before trying the next candidate.
+                        if (not known_cmd) and (meter_current_mA is None):
+                            mmeter_next_probe = now_m + mmeter_backoff_s
                 except Exception:
+                    if not str(getattr(hardware, "mmeter_fetch_cmd", "") or "").strip():
+                        mmeter_next_probe = now_m + mmeter_backoff_s
                     pass
 
             # E-Load measurement
@@ -547,6 +591,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+
+    # Print build tag early so we can verify which zip is actually running.
+    try:
+        _log(f"PiPAT build: {getattr(config, 'BUILD_TAG', 'unknown')}")
+    except Exception:
+        pass
 
     # Optional: auto-detect device connection paths on Raspberry Pi so we
     # don't depend on /dev/ttyUSB0 style numbering.
