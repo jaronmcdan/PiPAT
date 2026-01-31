@@ -191,6 +191,16 @@ class HardwareManager:
             except Exception:
                 pass
 
+            # If device_discovery already identified the meter, avoid sending
+            # another *IDN? immediately on boot unless verification is enabled.
+            cached_idn = str(getattr(config, 'MULTI_METER_IDN', '') or '').strip()
+            verify = bool(getattr(config, 'MULTI_METER_VERIFY_ON_STARTUP', False))
+            if cached_idn and not verify:
+                self.mmeter_id = cached_idn
+                print(f"MULTI-METER ID: {self.mmeter_id}")
+                self.multi_meter = mmeter
+                return
+
             # Query IDN and tolerate command echo.
             try:
                 mmeter.write(b"*IDN?\n")

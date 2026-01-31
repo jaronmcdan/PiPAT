@@ -61,6 +61,15 @@ MULTI_METER_BAUD = _env_int("MULTI_METER_BAUD", 38400)
 MULTI_METER_TIMEOUT = _env_float("MULTI_METER_TIMEOUT", 1.0)
 MULTI_METER_WRITE_TIMEOUT = _env_float("MULTI_METER_WRITE_TIMEOUT", 1.0)
 
+# If True, HardwareManager will send "*IDN?" again on startup to verify the
+# meter is responsive. If False (default), we avoid sending extra commands on
+# boot because some 5491B units will beep/throw a bus error if *anything* else
+# touches the port during early init (e.g., VISA ASRL probing).
+MULTI_METER_VERIFY_ON_STARTUP = _env_bool("MULTI_METER_VERIFY_ON_STARTUP", False)
+
+# Optional cached IDN string (patched at runtime by device_discovery).
+MULTI_METER_IDN = _env_str("MULTI_METER_IDN", "")
+
 # Many USB-serial instruments echo commands and/or respond a moment later.
 # These settings make IDN probing more robust.
 MULTI_METER_IDN_DELAY = _env_float("MULTI_METER_IDN_DELAY", 0.05)

@@ -282,6 +282,11 @@ def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryR
                 break
         if res.multimeter_path:
             setattr(config, "MULTI_METER_PATH", res.multimeter_path)
+            # Cache the IDN so HardwareManager can avoid re-querying during
+            # early boot (some meters beep/throw a bus error if multiple
+            # subsystems touch the port during startup).
+            if res.multimeter_idn:
+                setattr(config, "MULTI_METER_IDN", res.multimeter_idn)
             if verbose:
                 _log(log_fn, f"[autodetect] multimeter: {res.multimeter_path} ({res.multimeter_idn})")
 
@@ -335,6 +340,17 @@ def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryR
                 str(getattr(config, "AUTO_DETECT_VISA_ASRL_ALLOW_PREFIXES", "") or "")
             )
 
+            # Safety defaults: even if env vars are empty/cleared, never probe
+            # generic USB-serial ports (/dev/ttyUSB*) via VISA ASRL. Only probe
+            # CDC-ACM (/dev/ttyACM*) unless the user explicitly changes code.
+            if not allow_prefixes:
+                allow_prefixes = ["/dev/ttyacm"]
+            if not exclude_prefixes:
+                exclude_prefixes = ["/dev/ttyama", "/dev/ttys", "/dev/ttyusb"]
+            else:
+                if "/dev/ttyusb" not in exclude_prefixes:
+                    exclude_prefixes.append("/dev/ttyusb")
+
             # Build a realpath set for serial devices we must not poke via VISA.
             skip_serial_realpaths = set()
             for p in [
@@ -369,6 +385,13 @@ def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryR
                         dn_real = devnode
 
                     dn_l = (dn_real or devnode).lower()
+
+                    # Hard safety: never send *IDN? over VISA ASRL to /dev/ttyUSB*
+                    # devices. These are often USB-serial adapters (including the
+                    # 5491B multimeter). Probing them at the wrong baud can make
+                    # them beep / throw a "bus command error" and stop answering.
+                    if dn_l.startswith("/dev/ttyusb"):
+                        continue
 
                     # Allow-list (if configured): only probe these.
                     if allow_prefixes and not any(dn_l.startswith(pfx) for pfx in allow_prefixes):
