@@ -65,6 +65,10 @@ MULTI_METER_WRITE_TIMEOUT = _env_float("MULTI_METER_WRITE_TIMEOUT", 1.0)
 ELOAD_VISA_ID = _env_str("ELOAD_VISA_ID", "USB0::11975::34816::*::0::INSTR")
 AFG_VISA_ID = _env_str("AFG_VISA_ID", "ASRL/dev/ttyACM1::INSTR")
 
+# PyVISA I/O timeout (milliseconds). Lower values reduce "sluggish" feel when a
+# device is disconnected or slow to respond, at the cost of more timeouts.
+VISA_TIMEOUT_MS = _env_int("VISA_TIMEOUT_MS", 500)
+
 # --- GPIO / K1 relay drive ---
 K1_ENABLE = _env_bool("K1_ENABLE", True)
 K1_PIN_BCM = _env_int("K1_PIN_BCM", 26)

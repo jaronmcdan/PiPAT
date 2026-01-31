@@ -334,9 +334,15 @@ def instrument_poll_loop(
             # Multimeter read
             if hardware.multi_meter:
                 try:
-                    with hardware.mmeter_lock:
-                        hardware.multi_meter.write(b"FETC?\n")
-                        raw = hardware.multi_meter.readline()
+                    # Don't let polling contend with control writes.
+                    if not hardware.mmeter_lock.acquire(timeout=0.0):
+                        raw = b""
+                    else:
+                        try:
+                            hardware.multi_meter.write(b"FETC?\n")
+                            raw = hardware.multi_meter.readline()
+                        finally:
+                            hardware.mmeter_lock.release()
                     resp = raw.decode("ascii", errors="replace").strip()
                     if resp:
                         val = float(resp)
@@ -348,9 +354,15 @@ def instrument_poll_loop(
             # E-Load measurement
             if hardware.e_load:
                 try:
-                    with hardware.eload_lock:
-                        v_str = hardware.e_load.query("MEAS:VOLT?").strip()
-                        i_str = hardware.e_load.query("MEAS:CURR?").strip()
+                    # Don't block controls; if the device thread is writing, skip this poll.
+                    if not hardware.eload_lock.acquire(timeout=0.0):
+                        v_str, i_str = "", ""
+                    else:
+                        try:
+                            v_str = hardware.e_load.query("MEAS:VOLT?").strip()
+                            i_str = hardware.e_load.query("MEAS:CURR?").strip()
+                        finally:
+                            hardware.eload_lock.release()
                     if v_str and i_str:
                         load_volts_mV = int(float(v_str) * 1000)
                         load_current_mA = int(float(i_str) * 1000)
@@ -385,38 +397,44 @@ def instrument_poll_loop(
 
             if hardware.e_load:
                 try:
-                    with hardware.eload_lock:
-                        load_stat_func = hardware.e_load.query("FUNC?").strip()
-                        load_stat_curr = hardware.e_load.query("CURR?").strip()
-                        load_stat_imp = hardware.e_load.query("INP?").strip()
-                        load_stat_res = hardware.e_load.query("RES?").strip()
-                        # Some loads have SHOR?; keep optional
+                    if hardware.eload_lock.acquire(timeout=0.0):
                         try:
-                            load_stat_short = hardware.e_load.query("INP:SHOR?").strip()
-                        except Exception:
-                            load_stat_short = ""
+                            load_stat_func = hardware.e_load.query("FUNC?").strip()
+                            load_stat_curr = hardware.e_load.query("CURR?").strip()
+                            load_stat_imp = hardware.e_load.query("INP?").strip()
+                            load_stat_res = hardware.e_load.query("RES?").strip()
+                            # Some loads have SHOR?; keep optional
+                            try:
+                                load_stat_short = hardware.e_load.query("INP:SHOR?").strip()
+                            except Exception:
+                                load_stat_short = ""
+                        finally:
+                            hardware.eload_lock.release()
                 except Exception:
                     pass
 
             if hardware.afg:
                 try:
-                    with hardware.afg_lock:
-                        afg_freq_str = hardware.afg.query("SOUR1:FREQ?").strip()
-                        afg_ampl_str = hardware.afg.query("SOUR1:AMPL?").strip()
-                        afg_out_str = hardware.afg.query("SOUR1:OUTP?").strip()
+                    if hardware.afg_lock.acquire(timeout=0.0):
+                        try:
+                            afg_freq_str = hardware.afg.query("SOUR1:FREQ?").strip()
+                            afg_ampl_str = hardware.afg.query("SOUR1:AMPL?").strip()
+                            afg_out_str = hardware.afg.query("SOUR1:OUTP?").strip()
 
-                        is_actually_on = str(afg_out_str).strip().upper() in ["ON", "1"]
-                        if hardware.afg_output != is_actually_on:
-                            hardware.afg_output = is_actually_on
+                            is_actually_on = str(afg_out_str).strip().upper() in ["ON", "1"]
+                            if hardware.afg_output != is_actually_on:
+                                hardware.afg_output = is_actually_on
 
-                        afg_shape_str = hardware.afg.query("SOUR1:FUNC?").strip()
-                        afg_offset_str = hardware.afg.query("SOUR1:VOLT:OFFS?").strip()
-                        afg_duty_str = hardware.afg.query("SOUR1:SQU:DCYC?").strip()
+                            afg_shape_str = hardware.afg.query("SOUR1:FUNC?").strip()
+                            afg_offset_str = hardware.afg.query("SOUR1:VOLT:OFFS?").strip()
+                            afg_duty_str = hardware.afg.query("SOUR1:SQU:DCYC?").strip()
 
-                        if afg_offset_str and afg_duty_str:
-                            off_mv = _i16_clamp(int(float(afg_offset_str) * 1000))
-                            duty_pct = max(0, min(100, int(float(afg_duty_str))))
-                            tx_state.update_afg_ext(off_mv, duty_pct)
+                            if afg_offset_str and afg_duty_str:
+                                off_mv = _i16_clamp(int(float(afg_offset_str) * 1000))
+                                duty_pct = max(0, min(100, int(float(afg_duty_str))))
+                                tx_state.update_afg_ext(off_mv, duty_pct)
+                        finally:
+                            hardware.afg_lock.release()
                 except Exception:
                     pass
 
@@ -437,8 +455,17 @@ def instrument_poll_loop(
 
                     if (now_m - last_mrs) >= poll_p:
                         last_mrs = now_m
-                        with hardware.mrsignal_lock:
-                            st = hardware.mrsignal.read_status()
+                        if not hardware.mrsignal_lock.acquire(timeout=0.0):
+                            st = None
+                        else:
+                            try:
+                                st = hardware.mrsignal.read_status()
+                            finally:
+                                hardware.mrsignal_lock.release()
+
+                        if st is None:
+                            # Device thread is busy with writes; skip this poll.
+                            raise RuntimeError("mrsignal busy")
 
                         # Update hardware cached fields for dashboard
                         hardware.mrsignal_id = st.device_id

@@ -301,6 +301,18 @@ def can_rx_loop(
     log_fn("CAN RX thread started.")
     drop = 0
 
+    # Only control frames should be forwarded to the device thread.
+    # This prevents unrelated bus chatter from filling the bounded queue and
+    # causing control latency (or drops) when the bus is busy.
+    ctrl_ids = {
+        int(getattr(config, "RLY_CTRL_ID", 0)),
+        int(getattr(config, "AFG_CTRL_ID", 0)),
+        int(getattr(config, "AFG_CTRL_EXT_ID", 0)),
+        int(getattr(config, "MMETER_CTRL_ID", 0)),
+        int(getattr(config, "LOAD_CTRL_ID", 0)),
+        int(getattr(config, "MRSIGNAL_CTRL_ID", 0x0CFF0800)),
+    }
+
     while not stop_event.is_set():
         try:
             message = cbus.recv(timeout=1.0)
@@ -323,6 +335,10 @@ def can_rx_loop(
             watchdog.mark("can")
         except Exception:
             pass
+
+        # Ignore non-control frames to keep the control path responsive.
+        if arb not in ctrl_ids:
+            continue
 
         # Non-blocking enqueue; never stall CAN recv due to slow devices.
         try:

@@ -215,34 +215,92 @@ def device_command_loop(
     log_fn("Device command thread started.")
     proc = DeviceCommandProcessor(hardware, log_fn=log_fn)
 
+    # For "knob-like" controls where only the *latest* value matters, we coalesce
+    # bursts of frames to keep the device response snappy.
+    #
+    # This is especially important when the controller transmits at a higher rate
+    # than the physical instruments can accept (SCPI/Modbus/serial writes are
+    # comparatively slow).
+    coalesce_ids = {
+        int(config.RLY_CTRL_ID),
+        int(config.AFG_CTRL_ID),
+        int(config.AFG_CTRL_EXT_ID),
+        int(config.MMETER_CTRL_ID),
+        int(config.LOAD_CTRL_ID),
+        int(getattr(config, "MRSIGNAL_CTRL_ID", 0x0CFF0800)),
+    }
+
+    # Apply in a stable order so dependent frames behave predictably.
+    apply_order = [
+        int(config.RLY_CTRL_ID),
+        int(config.LOAD_CTRL_ID),
+        int(config.AFG_CTRL_ID),
+        int(config.AFG_CTRL_EXT_ID),
+        int(config.MMETER_CTRL_ID),
+        int(getattr(config, "MRSIGNAL_CTRL_ID", 0x0CFF0800)),
+    ]
+
     while not stop_event.is_set():
+        # Block for at least one command, then drain a small burst and coalesce.
         try:
-            arb, data = cmd_queue.get(timeout=0.5)
+            first_arb, first_data = cmd_queue.get(timeout=0.5)
         except queue.Empty:
             continue
         except Exception:
             continue
 
-        try:
-            # Update freshness *when we actually start processing* the command.
-            if watchdog_mark_fn:
-                try:
-                    if int(arb) == int(config.RLY_CTRL_ID):
-                        watchdog_mark_fn("k1")
-                    elif int(arb) in (int(config.AFG_CTRL_ID), int(config.AFG_CTRL_EXT_ID)):
-                        watchdog_mark_fn("afg")
-                    elif int(arb) == int(config.MMETER_CTRL_ID):
-                        watchdog_mark_fn("mmeter")
-                    elif int(arb) == int(config.LOAD_CTRL_ID):
-                        watchdog_mark_fn("eload")
-                    elif int(arb) == int(getattr(config, "MRSIGNAL_CTRL_ID", 0x0CFF0800)):
-                        watchdog_mark_fn("mrsignal")
-                except Exception:
-                    pass
+        latest: dict[int, bytes] = {}
 
-            proc.handle(int(arb), bytes(data))
-        except Exception as e:
-            log_fn(f"Device command error: {e}")
+        def _record(a: int, d: bytes) -> None:
+            a_i = int(a)
+            if a_i in coalesce_ids:
+                latest[a_i] = bytes(d)
+            else:
+                # Non-coalesced frames are processed immediately.
+                latest[a_i] = bytes(d)
+
+        _record(int(first_arb), bytes(first_data))
+
+        # Drain anything currently queued without blocking.
+        # This keeps latency low while still allowing bursts to be collapsed.
+        for _ in range(1024):
+            try:
+                a, d = cmd_queue.get_nowait()
+                _record(int(a), bytes(d))
+            except queue.Empty:
+                break
+            except Exception:
+                break
+
+        # Apply in deterministic order; then apply any other IDs (unlikely).
+        applied = set()
+        for a in apply_order:
+            if a in latest:
+                try:
+                    if watchdog_mark_fn:
+                        if a == int(config.RLY_CTRL_ID):
+                            watchdog_mark_fn("k1")
+                        elif a in (int(config.AFG_CTRL_ID), int(config.AFG_CTRL_EXT_ID)):
+                            watchdog_mark_fn("afg")
+                        elif a == int(config.MMETER_CTRL_ID):
+                            watchdog_mark_fn("mmeter")
+                        elif a == int(config.LOAD_CTRL_ID):
+                            watchdog_mark_fn("eload")
+                        elif a == int(getattr(config, "MRSIGNAL_CTRL_ID", 0x0CFF0800)):
+                            watchdog_mark_fn("mrsignal")
+                    proc.handle(int(a), bytes(latest[a]))
+                except Exception as e:
+                    log_fn(f"Device command error: {e}")
+                applied.add(a)
+
+        # Any other IDs (future extensions) are applied last.
+        for a, d in latest.items():
+            if a in applied:
+                continue
+            try:
+                proc.handle(int(a), bytes(d))
+            except Exception as e:
+                log_fn(f"Device command error: {e}")
 
     if idle_on_stop:
         try:

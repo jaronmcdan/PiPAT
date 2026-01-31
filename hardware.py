@@ -209,6 +209,11 @@ class HardwareManager:
                     if fnmatch.fnmatch(resource_id, config.ELOAD_VISA_ID):
                         try:
                             dev = self.resource_manager.open_resource(resource_id)
+                            # Bound I/O time so a slow/missing instrument doesn't stall controls.
+                            try:
+                                dev.timeout = int(getattr(config, "VISA_TIMEOUT_MS", 500))
+                            except Exception:
+                                pass
                             dev_id = dev.query("*IDN?").strip()
                             print(f"E-LOAD FOUND: {dev_id}")
                             dev.write("*RST")
@@ -224,6 +229,11 @@ class HardwareManager:
             try:
                 print(f"Attempting AFG connection at {config.AFG_VISA_ID}...")
                 afg_dev = self.resource_manager.open_resource(config.AFG_VISA_ID)
+                # Bound I/O time so polling doesn't block control writes for long.
+                try:
+                    afg_dev.timeout = int(getattr(config, "VISA_TIMEOUT_MS", 500))
+                except Exception:
+                    pass
                 # Some VISA backends expose serial config fields
                 try:
                     afg_dev.baud_rate = 115200
