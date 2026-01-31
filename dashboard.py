@@ -7,6 +7,8 @@ from rich.text import Text
 from rich.align import Align
 from rich import box
 
+from bk5491b import func_name
+
 # Try to initialize Rich Console
 try:
     console = Console(highlight=False)
@@ -21,6 +23,9 @@ def _badge(ok: bool, true_label="ON", false_label="OFF"):
 
 def build_dashboard(hardware, *,
                     meter_current_mA: int,
+                    mmeter_func_str: str = "",
+                    mmeter_primary_str: str = "",
+                    mmeter_secondary_str: str = "",
                     load_volts_mV: int,
                     load_current_mA: int,
                     load_stat_func: str,
@@ -49,7 +54,8 @@ def build_dashboard(hardware, *,
                     watchdog=None):
     
     if not HAVE_RICH:
-        return f"E-Load V: {load_volts_mV}mV | AFG Freq: {afg_freq_read} | Meter I: {meter_current_mA}mA"
+        mm = mmeter_primary_str or f"{meter_current_mA}mA"
+        return f"E-Load V: {load_volts_mV}mV | AFG Freq: {afg_freq_read} | Meter: {mm}"
 
     layout = Layout()
     layout.split(
@@ -102,7 +108,29 @@ def build_dashboard(hardware, *,
     meter_table.add_column(justify="right", style="bold magenta")
     meter_table.add_column()
     meter_table.add_row("ID", f"[white]{hardware.mmeter_id or '—'}[/]")
-    meter_table.add_row("Range", f"[white]{hardware.multi_meter_range}[/]")
+
+    try:
+        f_i = int(getattr(hardware, 'mmeter_func', 0)) & 0xFF
+        f2_i = int(getattr(hardware, 'mmeter_func2', f_i)) & 0xFF
+        f2_en = bool(getattr(hardware, 'mmeter_func2_enabled', False))
+        auto = bool(getattr(hardware, 'mmeter_autorange', True))
+        rng_val = float(getattr(hardware, 'mmeter_range_value', 0.0) or 0.0)
+        nplc = float(getattr(hardware, 'mmeter_nplc', 1.0) or 1.0)
+        rel = bool(getattr(hardware, 'mmeter_rel_enabled', False))
+        trig = int(getattr(hardware, 'mmeter_trig_source', 0)) & 0xFF
+    except Exception:
+        f_i, f2_i, f2_en, auto, rng_val, nplc, rel, trig = 0, 0, False, True, 0.0, 1.0, False, 0
+
+    meter_table.add_row("Func", f"[yellow]{func_name(f_i)}[/]")
+    meter_table.add_row("Auto", _badge(auto, 'ON', 'OFF'))
+    meter_table.add_row("Range", f"[white]{'AUTO' if auto else (f'{rng_val:g}' if rng_val else '--')}[/]")
+    meter_table.add_row("NPLC", f"[white]{nplc:g}[/]")
+    meter_table.add_row("Rel", _badge(rel, 'ON', 'OFF'))
+
+    trig_name = {0: 'IMM', 1: 'BUS', 2: 'MAN'}.get(trig, str(trig))
+    meter_table.add_row("Trig", f"[white]{trig_name}[/]")
+
+    meter_table.add_row("2nd", f"[white]{func_name(f2_i) if f2_en else 'OFF'}[/]")
 
     # MrSignal Panel
     mrs_table = Table.grid(padding=(0, 1))
@@ -142,7 +170,13 @@ def build_dashboard(hardware, *,
     meas_meter = Table(title="[bold]Meter Meas[/]", box=box.SIMPLE_HEAVY, expand=True)
     meas_meter.add_column("Metric", style="bold magenta", no_wrap=True)
     meas_meter.add_column("Value", justify="right")
-    meas_meter.add_row("Current", f"[yellow]{meter_current_mA/1000:.3f} A[/]")
+    if mmeter_primary_str:
+        meas_meter.add_row("Function", f"[yellow]{mmeter_func_str or '--'}[/]")
+        meas_meter.add_row("Primary", f"[yellow]{mmeter_primary_str}[/]")
+        if mmeter_secondary_str:
+            meas_meter.add_row("Secondary", f"[yellow]{mmeter_secondary_str}[/]")
+    else:
+        meas_meter.add_row("Current", f"[yellow]{meter_current_mA/1000:.3f} A[/]")
 
     # GPIO Status (K1 + GPIO level)
     # We show only: (1) the logical drive state (ON/OFF) and (2) the raw GPIO level (HIGH/LOW).

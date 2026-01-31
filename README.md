@@ -3,7 +3,7 @@
 This project runs on a Raspberry Pi and bridges **SocketCAN** control messages to lab instruments and local GPIO:
 
 - **E-load** via PyVISA (SCPI)
-- **Multimeter** (e.g., Keysight 5491B) via USB-serial
+- **Multimeter** (e.g., B&K Precision 5491B) via USB-serial
 - **AFG** via PyVISA (SCPI)
 - **MrSignal / LANYI MR2.0** via Modbus RTU (USB-serial)
 - **K1 Relay** (GPIO) for DUT power control
@@ -78,6 +78,110 @@ The most common settings:
 - `MULTI_METER_PATH`, `MULTI_METER_BAUD`
 - `ELOAD_VISA_ID`, `AFG_VISA_ID`
 - `MRSIGNAL_ENABLE`, `MRSIGNAL_PORT`, `MRSIGNAL_BAUD`, `MRSIGNAL_SLAVE_ID`, `MRSIGNAL_PARITY`, `MRSIGNAL_STOPBITS`
+
+---
+
+## 5491B multimeter control over CAN
+
+PiPAT supports controlling a connected bench DMM (tested with a **B&K Precision 5491B**) via CAN, just like the other devices.
+
+### CAN IDs
+
+- Control (legacy): `MMETER_CTRL_ID = 0x0CFF0600`
+- Control (extended): `MMETER_CTRL_EXT_ID = 0x0CFF0601`
+- Readback (legacy current): `MMETER_READ_ID = 0x0CFF0004`
+- Readback (extended floats): `MMETER_READ_EXT_ID = 0x0CFF0009`
+- Status: `MMETER_STATUS_ID = 0x0CFF000A`
+
+### Legacy control `MMETER_CTRL_ID` (2 bytes)
+
+Payload: `mode, range, 0,0,0,0,0,0`
+
+- `mode=0` → DC Voltage (`VDC`)
+- `mode=1` → DC Current (`IDC`)
+- `range=0` → autorange ON for the selected function
+- any other `range` value is currently stored for UI display (extended control gives full range control)
+
+Example:
+
+```bash
+# Set DC current mode with autorange
+cansend can0 0CFF0600#0100000000000000
+```
+
+### Extended control `MMETER_CTRL_EXT_ID` (op-code protocol)
+
+Payload format (8 bytes):
+
+```
+[0] op
+[1] arg0
+[2] arg1
+[3] arg2
+[4..7] value_f32_le   (IEEE754 float32, little-endian)
+```
+
+#### Function enums
+
+| Enum | Function |
+|---:|---|
+| 0 | VDC |
+| 1 | VAC |
+| 2 | IDC |
+| 3 | IAC |
+| 4 | RES (2W) |
+| 5 | FREQ |
+| 6 | PERIOD |
+| 7 | DIODE |
+| 8 | CONT |
+
+#### Ops
+
+| Op (hex) | Meaning | args | value |
+|---:|---|---|---|
+| `0x01` | Set primary function | `arg0=function_enum` | ignored |
+| `0x02` | Set autorange | `arg0=function_enum or 0xFF=current`, `arg1=0/1` | ignored |
+| `0x03` | Set range | `arg0=function_enum or 0xFF=current` | `value=<range>` |
+| `0x04` | Set NPLC | `arg0=function_enum or 0xFF=current` | `value=<nplc>` |
+| `0x05` | Enable/disable secondary display | `arg0=0/1` | ignored |
+| `0x06` | Set secondary function | `arg0=function_enum` | ignored |
+| `0x07` | Set trigger source | `arg0=0=IMM, 1=BUS, 2=MAN` | ignored |
+| `0x08` | BUS trigger | none | ignored |
+| `0x09` | Relative mode enable | `arg0=0/1` | ignored |
+| `0x0A` | Relative acquire | none | ignored |
+
+Examples:
+
+```bash
+# Set primary function to IDC
+cansend can0 0CFF0601#0102000000000000
+
+# Enable autorange for the *current* function (arg0=0xFF)
+cansend can0 0CFF0601#02FF010000000000
+
+# Set DC voltage range to 6.0 V (float32 little-endian = 00 00 C0 40)
+cansend can0 0CFF0601#03FF00000000C040
+
+# Set NPLC to 10.0 (float32 little-endian = 00 00 20 41)
+cansend can0 0CFF0601#04FF000000002041
+
+# Enable secondary display + set it to RES
+cansend can0 0CFF0601#0501000000000000
+cansend can0 0CFF0601#0604000000000000
+```
+
+### Readback
+
+- `MMETER_READ_EXT_ID` (`0x0CFF0009`): `float32 primary`, `float32 secondary`.
+  - If no secondary display is active, secondary is transmitted as **NaN**.
+- `MMETER_STATUS_ID` (`0x0CFF000A`):
+  - byte0: `function_enum`
+  - byte1: flags
+    - bit0: secondary enabled
+    - bit1: autorange enabled
+    - bit2: relative mode enabled
+
+> Compatibility: `MMETER_READ_ID` (legacy current mA) is only transmitted when the meter is in `IDC/IAC`.
 
 ### USB / VISA auto-detection (recommended on Pi)
 

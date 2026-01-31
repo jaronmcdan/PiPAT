@@ -24,6 +24,8 @@ from can_comm import (
 )
 from device_comm import device_command_loop
 
+from bk5491b import MmeterFunc, func_name, func_unit
+
 from device_discovery import autodetect_and_patch_config
 
 try:
@@ -162,6 +164,10 @@ class TelemetryState:
 
         # Fast measurements (updated at MEAS_POLL_PERIOD)
         self.meter_current_mA: int = 0
+        # Extended multimeter view (always valid even when not in current mode)
+        self.mmeter_func_str: str = ""
+        self.mmeter_primary_str: str = ""
+        self.mmeter_secondary_str: str = ""
         self.load_volts_mV: int = 0
         self.load_current_mA: int = 0
 
@@ -191,13 +197,23 @@ class TelemetryState:
         self.last_meas_ts: float = 0.0
         self.last_status_ts: float = 0.0
 
-    def update_meas(self, *, meter_current_mA: int | None = None,
+    def update_meas(self, *,
+                    meter_current_mA: int | None = None,
+                    mmeter_func_str: str | None = None,
+                    mmeter_primary_str: str | None = None,
+                    mmeter_secondary_str: str | None = None,
                     load_volts_mV: int | None = None,
                     load_current_mA: int | None = None,
                     ts: float | None = None) -> None:
         with self._lock:
             if meter_current_mA is not None:
                 self.meter_current_mA = int(meter_current_mA)
+            if mmeter_func_str is not None:
+                self.mmeter_func_str = mmeter_func_str
+            if mmeter_primary_str is not None:
+                self.mmeter_primary_str = mmeter_primary_str
+            if mmeter_secondary_str is not None:
+                self.mmeter_secondary_str = mmeter_secondary_str
             if load_volts_mV is not None:
                 self.load_volts_mV = int(load_volts_mV)
             if load_current_mA is not None:
@@ -266,6 +282,9 @@ class TelemetryState:
         with self._lock:
             return {
                 "meter_current_mA": int(self.meter_current_mA),
+                "mmeter_func_str": str(self.mmeter_func_str),
+                "mmeter_primary_str": str(self.mmeter_primary_str),
+                "mmeter_secondary_str": str(self.mmeter_secondary_str),
                 "load_volts_mV": int(self.load_volts_mV),
                 "load_current_mA": int(self.load_current_mA),
                 "load_stat_func": str(self.load_stat_func),
@@ -345,10 +364,13 @@ def instrument_poll_loop(
                 next_meas = now_m + meas_period_s
 
             meter_current_mA = None
+            mmeter_func_str = None
+            mmeter_primary_str = None
+            mmeter_secondary_str = None
             load_volts_mV = None
             load_current_mA = None
 
-            # Multimeter read
+            # Multimeter read (supports dual display + non-current functions)
             if hardware.multi_meter:
                 try:
                     # If we don't yet know the right query command, only probe
@@ -364,21 +386,30 @@ def instrument_poll_loop(
                             mmeter_probe_idx += 1
 
                     if cmds_to_try:
+                        mm_primary = None
+                        mm_secondary = None
+                        mm_raw = ""
+
                         # Don't let polling contend with control writes.
                         if hardware.mmeter_lock.acquire(timeout=0.0):
                             try:
                                 for cmd in cmds_to_try:
-                                    hardware.multi_meter.write((cmd + "\n").encode("ascii", errors="ignore"))
-                                    raw = hardware.multi_meter.readline()
-                                    resp = raw.decode("ascii", errors="replace").strip()
-                                    if not resp:
+                                    if getattr(hardware, "mmeter", None) is not None:
+                                        mm_primary, mm_secondary, mm_raw = hardware.mmeter.query_values(cmd, delay_s=0.01)
+                                    else:
+                                        # Fallback: do a very small/robust parse
+                                        hardware.multi_meter.write((cmd + "\n").encode("ascii", errors="ignore"))
+                                        raw = hardware.multi_meter.readline()
+                                        resp = raw.decode("ascii", errors="replace").strip()
+                                        mm_raw = resp
+                                        nums = _num_re.findall(resp)
+                                        if nums:
+                                            mm_primary = float(nums[0])
+                                            if len(nums) > 1:
+                                                mm_secondary = float(nums[1])
+
+                                    if mm_primary is None:
                                         continue
-                                    m = _num_re.search(resp)
-                                    if not m:
-                                        continue
-                                    val = float(m.group(0))
-                                    meter_current_mA = int(round(val * 1000))
-                                    tx_state.update_meter_current(meter_current_mA)
 
                                     # Learn the command that worked.
                                     if not known_cmd:
@@ -388,10 +419,42 @@ def instrument_poll_loop(
                             finally:
                                 hardware.mmeter_lock.release()
 
-                        # If we were probing (unknown cmd) and didn't get a value,
-                        # back off before trying the next candidate.
-                        if (not known_cmd) and (meter_current_mA is None):
-                            mmeter_next_probe = now_m + mmeter_backoff_s
+                        if mm_primary is not None:
+                            # Status packing for CAN
+                            func_i = int(getattr(hardware, "mmeter_func", int(MmeterFunc.VDC))) & 0xFF
+                            flags = 0
+                            if bool(getattr(hardware, "mmeter_func2_enabled", False)):
+                                flags |= 0x01
+                            if bool(getattr(hardware, "mmeter_autorange", True)):
+                                flags |= 0x02
+                            if bool(getattr(hardware, "mmeter_rel_enabled", False)):
+                                flags |= 0x04
+                            tx_state.update_mmeter_values(mm_primary, mm_secondary)
+                            tx_state.update_mmeter_status(func=func_i, flags=flags)
+
+                            # Legacy current readback (only valid in current modes)
+                            if func_i in (int(MmeterFunc.IDC), int(MmeterFunc.IAC)):
+                                meter_current_mA = int(round(float(mm_primary) * 1000.0))
+                                tx_state.update_meter_current(meter_current_mA)
+                            else:
+                                meter_current_mA = 0
+                                tx_state.clear_meter_current()
+
+                            # Format for dashboard/logs
+                            p_unit = func_unit(func_i)
+                            mmeter_func_str = func_name(func_i)
+                            mmeter_primary_str = f"{mm_primary:g} {p_unit}".strip()
+                            mmeter_secondary_str = ""
+                            if mm_secondary is not None:
+                                s_func = int(getattr(hardware, "mmeter_func2", func_i)) & 0xFF
+                                s_unit = func_unit(s_func)
+                                mmeter_secondary_str = f"{mm_secondary:g} {s_unit}".strip()
+                        else:
+                            # If we were probing (unknown cmd) and didn't get a value,
+                            # back off before trying the next candidate.
+                            if not known_cmd:
+                                mmeter_next_probe = now_m + mmeter_backoff_s
+
                 except Exception:
                     if not str(getattr(hardware, "mmeter_fetch_cmd", "") or "").strip():
                         mmeter_next_probe = now_m + mmeter_backoff_s
@@ -416,9 +479,17 @@ def instrument_poll_loop(
                 except Exception:
                     pass
 
-            if (meter_current_mA is not None) or (load_volts_mV is not None) or (load_current_mA is not None):
+            if (
+                (meter_current_mA is not None)
+                or (mmeter_primary_str is not None)
+                or (load_volts_mV is not None)
+                or (load_current_mA is not None)
+            ):
                 telemetry.update_meas(
                     meter_current_mA=meter_current_mA,
+                    mmeter_func_str=mmeter_func_str,
+                    mmeter_primary_str=mmeter_primary_str,
+                    mmeter_secondary_str=mmeter_secondary_str,
                     load_volts_mV=load_volts_mV,
                     load_current_mA=load_current_mA,
                     ts=now_m,
@@ -765,6 +836,9 @@ def main() -> int:
                     renderable = build_dashboard(
                         hardware,
                         meter_current_mA=int(snap.get("meter_current_mA", 0)),
+                        mmeter_func_str=str(snap.get("mmeter_func_str", "")),
+                        mmeter_primary_str=str(snap.get("mmeter_primary_str", "")),
+                        mmeter_secondary_str=str(snap.get("mmeter_secondary_str", "")),
                         load_volts_mV=int(snap.get("load_volts_mV", 0)),
                         load_current_mA=int(snap.get("load_current_mA", 0)),
                         load_stat_func=str(snap.get("load_stat_func", "")),

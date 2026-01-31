@@ -13,6 +13,7 @@ import serial
 from gpiozero import LED
 
 import config
+from bk5491b import BK5491B, MmeterFunc
 from mrsignal import MrSignalClient, MrSignalStatus
 
 
@@ -64,11 +65,32 @@ class HardwareManager:
 
         # multimeter
         self.multi_meter: Optional[serial.Serial] = None
+        # Higher-level helper (preferred)
+        self.mmeter: BK5491B | None = None
         self.multi_meter_mode: int = 0
         self.multi_meter_range: int = 0
         self.mmeter_id: Optional[str] = None
         # Determined at runtime by the polling thread (see main.py).
         self.mmeter_fetch_cmd: Optional[str] = None
+
+        # Expanded DMM state (used for CAN status/readback)
+        self.mmeter_func: int = int(MmeterFunc.VDC)
+        self.mmeter_autorange: bool = True
+        self.mmeter_range_value: float = 0.0
+        self.mmeter_nplc: float = 1.0
+        self.mmeter_func2: int = int(MmeterFunc.VDC)
+        self.mmeter_func2_enabled: bool = False
+        self.mmeter_rel_enabled: bool = False
+        self.mmeter_trig_source: int = 0  # 0=IMM,1=BUS,2=MAN
+
+        # SCPI command dialect for the multimeter.
+        # "conf" = :CONF/:CONFigure... (dual display command set)
+        # "func" = :FUNCtion/:VOLTage:DC... (classic SCPI tree)
+        # "auto" = probe once on startup.
+        try:
+            self.mmeter_scpi_style: str = str(getattr(config, "MMETER_SCPI_STYLE", "conf") or "conf").strip().lower()
+        except Exception:
+            self.mmeter_scpi_style = "conf"
 
         # AFG
         self.afg = None
@@ -131,6 +153,59 @@ class HardwareManager:
         else:
             self.relay = _NullRelay(initial_drive)
             self.relay_backend = "disabled"
+
+    def _maybe_detect_mmeter_scpi_style(self) -> None:
+        """One-time SCPI dialect detection for the 5491B.
+
+        Some 5491/5492 command sets use :CONFigure (CONF:...) while others use
+        :FUNCtion + per-subsystem trees. Sending the wrong style can make the
+        meter display "BUS: BAD COMMAND".
+        """
+
+        style = str(getattr(self, "mmeter_scpi_style", "conf") or "conf").strip().lower()
+        if style not in ("conf", "func", "auto"):
+            style = "conf"
+
+        # If explicitly configured, honor it.
+        if style != "auto":
+            self.mmeter_scpi_style = style
+            print(f"MMETER SCPI style: {self.mmeter_scpi_style}")
+            return
+
+        # Auto-detect
+        helper = getattr(self, "mmeter", None)
+        if helper is None:
+            self.mmeter_scpi_style = "conf"
+            print(f"MMETER SCPI style: {self.mmeter_scpi_style} (default)")
+            return
+
+        # 1) Try CONF-style query (dual-display command set)
+        resp = ""
+        try:
+            resp = helper.query_line(":CONFigure:FUNCtion?", delay_s=0.05, read_lines=6)
+        except Exception:
+            resp = ""
+        r = (resp or "").upper()
+        if any(tok in r for tok in ("DCV", "ACV", "DCA", "ACA", "HZ", "RES", "DIOC", "NONE")):
+            self.mmeter_scpi_style = "conf"
+            print(f"MMETER SCPI style: {self.mmeter_scpi_style} (auto)")
+            return
+
+        # 2) Try FUNC-style query (classic SCPI tree)
+        resp2 = ""
+        try:
+            resp2 = helper.query_line(":FUNCtion?", delay_s=0.05, read_lines=6)
+        except Exception:
+            resp2 = ""
+        r2 = (resp2 or "").upper()
+        if any(tok in r2 for tok in ("VOLT", "CURR", "RES", "FREQ", "PER", "DIO", "CONT")):
+            self.mmeter_scpi_style = "func"
+            print(f"MMETER SCPI style: {self.mmeter_scpi_style} (auto)")
+            return
+
+        # Fallback
+        self.mmeter_scpi_style = "conf"
+        print(f"MMETER SCPI style: {self.mmeter_scpi_style} (auto default)")
 
     # --- Relay helpers ---
     def get_k1_drive(self) -> bool:
@@ -201,6 +276,14 @@ class HardwareManager:
                 self.mmeter_id = cached_idn
                 print(f"MULTI-METER ID: {self.mmeter_id}")
                 self.multi_meter = mmeter
+                try:
+                    self.mmeter = BK5491B(mmeter, log_fn=print)
+                except Exception:
+                    self.mmeter = None
+
+                # Optional SCPI dialect detection (one-time) to avoid sending
+                # commands the meter doesn't understand (prevents "BUS: BAD COMMAND").
+                self._maybe_detect_mmeter_scpi_style()
                 return
 
             # Query IDN and tolerate command echo.
@@ -235,9 +318,16 @@ class HardwareManager:
             self.mmeter_id = idn
             print(f"MULTI-METER ID: {self.mmeter_id or 'Unknown'}")
             self.multi_meter = mmeter
+            try:
+                self.mmeter = BK5491B(mmeter, log_fn=print)
+            except Exception:
+                self.mmeter = None
+
+            self._maybe_detect_mmeter_scpi_style()
         except (serial.SerialException, IOError) as e:
             print(f"Failed to communicate with multi-meter: {e}")
             self.multi_meter = None
+            self.mmeter = None
 
     def _initialize_visa_devices(self) -> None:
         """Initializes both E-Load and AFG via PyVISA."""

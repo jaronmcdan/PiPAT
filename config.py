@@ -57,7 +57,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 # Build / version tag to make it obvious which zip is running.
 # You can override via env var PIPAT_BUILD_TAG.
-BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-01-30-meter-asrl-safe-v4")
+BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-01-31-mmeter-scpi-conf-v5")
 
 
 # --- Hardware Identifiers ---
@@ -85,8 +85,13 @@ MULTI_METER_IDN_READ_LINES = _env_int("MULTI_METER_IDN_READ_LINES", 4)
 # until we get a parseable float.
 MULTI_METER_FETCH_CMDS = _env_str(
     "MULTI_METER_FETCH_CMDS",
-    "FETC?,READ?,MEAS:CURR?,MEAS?",
+    ":FETC?",
 )
+
+# SCPI dialect for 5491B-style DMM control. "conf" uses :CONF/:CONFigure commands
+# (dual display command set). "func" uses :FUNCtion/:VOLTage:DC... style.
+# "auto" will probe once on startup.
+MMETER_SCPI_STYLE = _env_str("MMETER_SCPI_STYLE", "conf").strip().lower()
 
 # If we don't yet know the correct fetch command, we will probe at this
 # interval (seconds) to avoid spamming the meter with unknown commands.
@@ -259,6 +264,7 @@ MRSIGNAL_POLL_PERIOD = _env_float("MRSIGNAL_POLL_PERIOD", STATUS_POLL_PERIOD)
 LOAD_CTRL_ID = 0x0CFF0400
 RLY_CTRL_ID = 0x0CFF0500
 MMETER_CTRL_ID = 0x0CFF0600
+MMETER_CTRL_EXT_ID = 0x0CFF0601  # Extended multimeter control (op-code based)
 AFG_CTRL_ID = 0x0CFF0700  # Enable, Shape, Freq, Ampl
 AFG_CTRL_EXT_ID = 0x0CFF0701  # Offset, Duty Cycle
 
@@ -268,6 +274,8 @@ MRSIGNAL_CTRL_ID = 0x0CFF0800
 # --- CAN IDs (Readback) ---
 ELOAD_READ_ID = 0x0CFF0003
 MMETER_READ_ID = 0x0CFF0004
+MMETER_READ_EXT_ID = 0x0CFF0009  # Float32 primary + Float32 secondary (NaN if absent)
+MMETER_STATUS_ID = 0x0CFF000A    # Function/flags/status (byte-oriented)
 AFG_READ_ID = 0x0CFF0005  # Status: Enable, Freq, Ampl
 AFG_READ_EXT_ID = 0x0CFF0006  # Status: Offset, Duty Cycle
 

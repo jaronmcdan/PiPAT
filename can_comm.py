@@ -6,6 +6,7 @@ import struct
 import subprocess
 import threading
 import time
+import math
 from typing import Optional
 
 import can
@@ -82,6 +83,11 @@ class OutgoingTxState:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._meter_current_mA: Optional[int] = None
+        # Extended multimeter readback (float32 primary/secondary) + status
+        self._mmeter_primary: Optional[float] = None
+        self._mmeter_secondary: Optional[float] = None
+        self._mmeter_func: Optional[int] = None
+        self._mmeter_flags: Optional[int] = None
         self._load_volts_mV: Optional[int] = None
         self._load_current_mA: Optional[int] = None
         self._afg_offset_mV: Optional[int] = None
@@ -92,6 +98,21 @@ class OutgoingTxState:
     def update_meter_current(self, meter_current_mA: int) -> None:
         with self._lock:
             self._meter_current_mA = int(meter_current_mA)
+
+    def clear_meter_current(self) -> None:
+        """Stop transmitting legacy MMETER_READ_ID (prevents stale values)."""
+        with self._lock:
+            self._meter_current_mA = None
+
+    def update_mmeter_values(self, primary: float | None, secondary: float | None = None) -> None:
+        with self._lock:
+            self._mmeter_primary = None if primary is None else float(primary)
+            self._mmeter_secondary = None if secondary is None else float(secondary)
+
+    def update_mmeter_status(self, *, func: int, flags: int) -> None:
+        with self._lock:
+            self._mmeter_func = int(func) & 0xFF
+            self._mmeter_flags = int(flags) & 0xFF
 
     def update_eload(self, load_volts_mV: int, load_current_mA: int) -> None:
         with self._lock:
@@ -115,6 +136,10 @@ class OutgoingTxState:
         self,
     ) -> tuple[
         Optional[int],
+        Optional[float],
+        Optional[float],
+        Optional[int],
+        Optional[int],
         Optional[int],
         Optional[int],
         Optional[int],
@@ -125,6 +150,10 @@ class OutgoingTxState:
         with self._lock:
             return (
                 self._meter_current_mA,
+                self._mmeter_primary,
+                self._mmeter_secondary,
+                self._mmeter_func,
+                self._mmeter_flags,
                 self._load_volts_mV,
                 self._load_current_mA,
                 self._afg_offset_mV,
@@ -172,6 +201,10 @@ def can_tx_loop(
 
         (
             meter_current_mA,
+            mmeter_primary,
+            mmeter_secondary,
+            mmeter_func,
+            mmeter_flags,
             load_volts_mV,
             load_current_mA,
             afg_offset_mV,
@@ -199,6 +232,50 @@ def can_tx_loop(
                 err_count += 1
                 if err_count in (1, 10, 100):
                     log_fn(f"TX MMETER send error (count={err_count}): {e}")
+
+        # Extended multimeter float readback
+        if mmeter_primary is not None:
+            try:
+                p = float(mmeter_primary)
+                s = float('nan') if (mmeter_secondary is None) else float(mmeter_secondary)
+                payload = bytearray(struct.pack("<ff", p, s))
+                msg = can.Message(
+                    arbitration_id=int(getattr(config, "MMETER_READ_EXT_ID", 0x0CFF0009)),
+                    data=payload,
+                    is_extended_id=True,
+                )
+                cbus.send(msg)
+                if busload:
+                    try:
+                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
+                    except Exception:
+                        pass
+            except Exception as e:
+                err_count += 1
+                if err_count in (1, 10, 100):
+                    log_fn(f"TX MMETER_EXT send error (count={err_count}): {e}")
+
+        # Multimeter status: func + flags
+        if (mmeter_func is not None) and (mmeter_flags is not None):
+            try:
+                payload = bytearray(8)
+                payload[0] = int(mmeter_func) & 0xFF
+                payload[1] = int(mmeter_flags) & 0xFF
+                msg = can.Message(
+                    arbitration_id=int(getattr(config, "MMETER_STATUS_ID", 0x0CFF000A)),
+                    data=payload,
+                    is_extended_id=True,
+                )
+                cbus.send(msg)
+                if busload:
+                    try:
+                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
+                    except Exception:
+                        pass
+            except Exception as e:
+                err_count += 1
+                if err_count in (1, 10, 100):
+                    log_fn(f"TX MMETER_STATUS send error (count={err_count}): {e}")
 
         if (load_volts_mV is not None) and (load_current_mA is not None):
             try:
@@ -309,6 +386,7 @@ def can_rx_loop(
         int(getattr(config, "AFG_CTRL_ID", 0)),
         int(getattr(config, "AFG_CTRL_EXT_ID", 0)),
         int(getattr(config, "MMETER_CTRL_ID", 0)),
+        int(getattr(config, "MMETER_CTRL_EXT_ID", 0)),
         int(getattr(config, "LOAD_CTRL_ID", 0)),
         int(getattr(config, "MRSIGNAL_CTRL_ID", 0x0CFF0800)),
     }

@@ -5,10 +5,22 @@ from __future__ import annotations
 import queue
 import struct
 import time
+import math
 from typing import Callable, Optional
 
 import config
 from hardware import HardwareManager
+from bk5491b import (
+    FUNC_TO_SCPI_CONF,
+    FUNC_TO_SCPI_FUNC,
+    FUNC_TO_RANGE_PREFIX_FUNC,
+    FUNC_TO_NPLC_PREFIX_FUNC,
+    FUNC_TO_REF_PREFIX_FUNC,
+    MmeterFunc,
+    SCPI_STYLE_CONF,
+    SCPI_STYLE_FUNC,
+    func_name,
+)
 
 
 class DeviceCommandProcessor:
@@ -26,6 +38,53 @@ class DeviceCommandProcessor:
 
         # Cached MrSignal arbitration id with a fallback.
         self._mrsignal_ctrl_id = int(getattr(config, "MRSIGNAL_CTRL_ID", 0x0CFF0800))
+
+    def _mmeter_write(self, cmd: str, *, delay_s: float = 0.0, clear_input: bool = False) -> None:
+        """Write a SCPI command to the multimeter.
+
+        Caller should hold hardware.mmeter_lock.
+        """
+        try:
+            if getattr(self.hardware, "mmeter", None) is not None:
+                # Use the robust helper if available.
+                self.hardware.mmeter.write(cmd, delay_s=delay_s, clear_input=clear_input)
+                return
+
+            mm = getattr(self.hardware, "multi_meter", None)
+            if not mm:
+                return
+
+            if clear_input:
+                try:
+                    mm.reset_input_buffer()
+                except Exception:
+                    pass
+
+            mm.write((cmd.strip() + "\n").encode("ascii", errors="ignore"))
+            try:
+                mm.flush()
+            except Exception:
+                pass
+            if delay_s and delay_s > 0:
+                time.sleep(float(delay_s))
+        except Exception as e:
+            self.log(f"MMETER write error: {e}")
+
+    def _mmeter_set_func(self, func: int) -> None:
+        func_i = int(func) & 0xFF
+        style = str(getattr(self.hardware, "mmeter_scpi_style", SCPI_STYLE_CONF) or SCPI_STYLE_CONF).strip().lower()
+        if style == SCPI_STYLE_FUNC:
+            cmd = FUNC_TO_SCPI_FUNC.get(func_i)
+        else:
+            # Default to CONF-style for 5491B dual-display command set.
+            cmd = FUNC_TO_SCPI_CONF.get(func_i)
+
+        if not cmd:
+            self.log(f"MMETER: unsupported function enum {func_i} for style='{style}'")
+            return
+
+        self._mmeter_write(cmd, delay_s=0.10, clear_input=True)
+        self.hardware.mmeter_func = func_i
 
     def handle(self, arb: int, data: bytes) -> None:
         """Handle one control frame."""
@@ -103,22 +162,201 @@ class DeviceCommandProcessor:
             meter_mode = int(data[0])
             meter_range = int(data[1])
 
-            # Mode changes can take time; keep them in the device thread.
+            # Keep legacy semantics but actually drive the instrument.
             if self.hardware.multi_meter and (self.hardware.multi_meter_mode != meter_mode):
                 try:
                     with self.hardware.mmeter_lock:
                         if meter_mode == 0:
-                            self.hardware.multi_meter.write(b"FUNC VOLT:DC\n")
+                            self._mmeter_set_func(int(MmeterFunc.VDC))
                         elif meter_mode == 1:
-                            self.hardware.multi_meter.write(b"FUNC CURR:DC\n")
-                            time.sleep(0.2)
-                            # NOTE: this range is instrument-specific; keep as existing default
-                            self.hardware.multi_meter.write(b"CURR:DC:RANG 5\n")
+                            self._mmeter_set_func(int(MmeterFunc.IDC))
                         self.hardware.multi_meter_mode = meter_mode
                 except Exception:
                     pass
 
-            self.hardware.multi_meter_range = meter_range
+            # Range byte historically wasn't applied; we now interpret 0 as autorange ON.
+            # Non-zero values are stored but not mapped (instrument-specific).
+            try:
+                with self.hardware.mmeter_lock:
+                    if int(meter_range) == 0:
+                        style = str(getattr(self.hardware, "mmeter_scpi_style", SCPI_STYLE_CONF) or SCPI_STYLE_CONF).strip().lower()
+                        if style == SCPI_STYLE_FUNC:
+                            prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(int(self.hardware.mmeter_func))
+                            if prefix:
+                                self._mmeter_write(f"{prefix}:RANGe:AUTO ON")
+                                self.hardware.mmeter_autorange = True
+                        else:
+                            # CONF-style global autorange (primary display)
+                            self._mmeter_write(":CONFigure:RANGe:AUTO 1")
+                            self.hardware.mmeter_autorange = True
+                    else:
+                        self.hardware.mmeter_autorange = False
+            except Exception:
+                pass
+
+            self.hardware.multi_meter_range = int(meter_range)
+            return
+
+        # Multimeter control (Extended)
+        if arb == int(getattr(config, "MMETER_CTRL_EXT_ID", 0x0CFF0601)):
+            if not self.hardware.multi_meter or len(data) < 1:
+                return
+
+            # Payload:
+            #   byte0 = opcode
+            #   byte1 = arg0
+            #   byte2 = arg1
+            #   byte3 = arg2
+            #   bytes4..7 = float32 value (little endian)
+            op = int(data[0]) & 0xFF
+            arg0 = int(data[1]) & 0xFF if len(data) > 1 else 0
+            arg1 = int(data[2]) & 0xFF if len(data) > 2 else 0
+            arg2 = int(data[3]) & 0xFF if len(data) > 3 else 0
+            fval = 0.0
+            if len(data) >= 8:
+                try:
+                    fval = float(struct.unpack("<f", data[4:8])[0])
+                except Exception:
+                    fval = 0.0
+
+            # Convention: arg0 == 0xFF means "apply to current function".
+            tgt_func = int(self.hardware.mmeter_func) if arg0 == 0xFF else int(arg0)
+
+            try:
+                with self.hardware.mmeter_lock:
+                    style = str(getattr(self.hardware, "mmeter_scpi_style", SCPI_STYLE_CONF) or SCPI_STYLE_CONF).strip().lower()
+                    is_secondary = (int(arg2) & 0xFF) == 1
+
+                    # Helpers for CONF-style @2 channel list formatting.
+                    # If a numeric parameter is omitted, @2 must be sent as the *first* parameter,
+                    # which means we need a leading space before ',@2'.
+                    conf_no_value = " ,@2" if is_secondary else ""
+                    conf_with_value = ",@2" if is_secondary else ""
+
+                    if op == 0x01:  # SET_FUNCTION
+                        # Always sets the *primary* function.
+                        self._mmeter_set_func(tgt_func)
+                        self.log(f"MMETER func -> {func_name(int(self.hardware.mmeter_func))}")
+
+                    elif op == 0x02:  # SET_AUTORANGE (arg1=0/1)
+                        on = bool(arg1)
+                        if style == SCPI_STYLE_FUNC:
+                            prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(tgt_func)
+                            if prefix:
+                                self._mmeter_write(f"{prefix}:RANGe:AUTO {'ON' if on else 'OFF'}")
+                                self.hardware.mmeter_autorange = on
+                        else:
+                            # CONF-style global autorange for primary/secondary display.
+                            self._mmeter_write(f":CONFigure:RANGe:AUTO {1 if on else 0}{conf_no_value}")
+                            self.hardware.mmeter_autorange = on
+
+                    elif op == 0x03:  # SET_RANGE (float)
+                        if not math.isfinite(float(fval)):
+                            return
+                        if style == SCPI_STYLE_FUNC:
+                            prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(tgt_func)
+                            if prefix:
+                                self._mmeter_write(f"{prefix}:RANGe {float(fval):g}")
+                                self.hardware.mmeter_autorange = False
+                                self.hardware.mmeter_range_value = float(fval)
+                        else:
+                            # CONF-style has no documented direct CONF:RANG <n> setter; range is part
+                            # of the CONF:<FUNC> command (numeric value is the range).
+                            base = FUNC_TO_SCPI_CONF.get(tgt_func)
+                            if base:
+                                # Disable autorange first (best-effort) so the range sticks.
+                                self._mmeter_write(f":CONFigure:RANGe:AUTO 0{conf_no_value}")
+                                self._mmeter_write(f"{base} {float(fval):g}{conf_with_value}")
+                                self.hardware.mmeter_autorange = False
+                                self.hardware.mmeter_range_value = float(fval)
+
+                    elif op == 0x04:  # SET_NPLC (float)
+                        # Clamp to sane values; 0.01 .. 100 is typical.
+                        nplc = max(0.01, min(100.0, float(fval)))
+                        if style == SCPI_STYLE_FUNC:
+                            prefix = FUNC_TO_NPLC_PREFIX_FUNC.get(tgt_func)
+                            if prefix:
+                                # Manual shows :NPLCycles; NPLC is its abbreviation.
+                                self._mmeter_write(f"{prefix}:NPLCycles {nplc:g}")
+                                self.hardware.mmeter_nplc = float(nplc)
+                        else:
+                            # CONF-style exposes measurement rate as SLOW|MED|FAST.
+                            rate = "FAST" if nplc <= 0.1 else ("MED" if nplc <= 1.0 else "SLOW")
+                            self._mmeter_write(f":CONFigure:DISPlay:RATE {rate}")
+                            self.hardware.mmeter_nplc = float(nplc)
+
+                    elif op == 0x05:  # SECONDARY_ENABLE (arg0=0/1)
+                        on = bool(arg0)
+                        if style == SCPI_STYLE_CONF:
+                            if not on:
+                                self._mmeter_write(":CONFigure:OFFDual")
+                                self.hardware.mmeter_func2_enabled = False
+                            else:
+                                # Enabling secondary is implicit when you configure @2.
+                                # If we already know the desired secondary function, apply it now.
+                                base2 = FUNC_TO_SCPI_CONF.get(int(getattr(self.hardware, "mmeter_func2", int(MmeterFunc.VDC))))
+                                if base2:
+                                    self._mmeter_write(base2 + " ,@2")
+                                    self.hardware.mmeter_func2_enabled = True
+                                else:
+                                    self.hardware.mmeter_func2_enabled = True
+                        else:
+                            # FUNC-style secondary display isn't standardized across firmware; ignore.
+                            self.hardware.mmeter_func2_enabled = bool(on)
+
+                    elif op == 0x06:  # SECONDARY_FUNCTION
+                        func_i = tgt_func
+                        if style == SCPI_STYLE_CONF:
+                            base = FUNC_TO_SCPI_CONF.get(func_i)
+                            if base:
+                                self._mmeter_write(base + " ,@2")
+                                self.hardware.mmeter_func2 = func_i
+                                self.hardware.mmeter_func2_enabled = True
+                        else:
+                            # FUNC-style secondary display isn't standardized across firmware; ignore.
+                            self.hardware.mmeter_func2 = func_i
+
+                    elif op == 0x07:  # TRIG_SOURCE (arg0=0 IMM,1 BUS,2 MAN)
+                        if style == SCPI_STYLE_FUNC:
+                            src_map = {0: "IMM", 1: "BUS", 2: "MAN"}
+                            src = src_map.get(int(arg0), "IMM")
+                            self._mmeter_write(f":TRIGger:SOURce {src}")
+                            self.hardware.mmeter_trig_source = int(arg0) & 0xFF
+                        else:
+                            # Not documented in CONF-style manual excerpt.
+                            self.hardware.mmeter_trig_source = int(arg0) & 0xFF
+
+                    elif op == 0x08:  # BUS_TRIGGER
+                        self._mmeter_write("*TRG")
+
+                    elif op == 0x09:  # RELATIVE_ENABLE (arg0=0/1)
+                        on = bool(arg0)
+                        if style == SCPI_STYLE_FUNC:
+                            prefix = FUNC_TO_REF_PREFIX_FUNC.get(tgt_func)
+                            if prefix:
+                                self._mmeter_write(f"{prefix}:REFerence:STATe {'ON' if on else 'OFF'}")
+                                self.hardware.mmeter_rel_enabled = on
+                        else:
+                            # Not documented in CONF-style manual excerpt.
+                            self.hardware.mmeter_rel_enabled = on
+
+                    elif op == 0x0A:  # RELATIVE_ACQUIRE
+                        if style == SCPI_STYLE_FUNC:
+                            prefix = FUNC_TO_REF_PREFIX_FUNC.get(tgt_func)
+                            if prefix:
+                                self._mmeter_write(f"{prefix}:REFerence:ACQuire")
+                        else:
+                            # Not documented in CONF-style manual excerpt.
+                            pass
+
+                    else:
+                        # Unknown op; ignore.
+                        if op != 0:
+                            self.log(f"MMETER ext: unknown op=0x{op:02X} arg0={arg0} arg1={arg1} arg2={arg2}")
+
+            except Exception as e:
+                self.log(f"MMETER ext control error: {e}")
+
             return
 
         # E-load control
@@ -226,6 +464,7 @@ def device_command_loop(
         int(config.AFG_CTRL_ID),
         int(config.AFG_CTRL_EXT_ID),
         int(config.MMETER_CTRL_ID),
+        int(getattr(config, "MMETER_CTRL_EXT_ID", 0x0CFF0601)),
         int(config.LOAD_CTRL_ID),
         int(getattr(config, "MRSIGNAL_CTRL_ID", 0x0CFF0800)),
     }
@@ -237,6 +476,7 @@ def device_command_loop(
         int(config.AFG_CTRL_ID),
         int(config.AFG_CTRL_EXT_ID),
         int(config.MMETER_CTRL_ID),
+        int(getattr(config, "MMETER_CTRL_EXT_ID", 0x0CFF0601)),
         int(getattr(config, "MRSIGNAL_CTRL_ID", 0x0CFF0800)),
     ]
 
@@ -282,7 +522,7 @@ def device_command_loop(
                             watchdog_mark_fn("k1")
                         elif a in (int(config.AFG_CTRL_ID), int(config.AFG_CTRL_EXT_ID)):
                             watchdog_mark_fn("afg")
-                        elif a == int(config.MMETER_CTRL_ID):
+                        elif a in (int(config.MMETER_CTRL_ID), int(getattr(config, "MMETER_CTRL_EXT_ID", 0x0CFF0601))):
                             watchdog_mark_fn("mmeter")
                         elif a == int(config.LOAD_CTRL_ID):
                             watchdog_mark_fn("eload")
