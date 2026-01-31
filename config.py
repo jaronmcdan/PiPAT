@@ -57,7 +57,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 # Build / version tag to make it obvious which zip is running.
 # You can override via env var PIPAT_BUILD_TAG.
-BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-01-30-meter-asrl-safe-v3")
+BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-01-30-meter-asrl-safe-v4")
 
 
 # --- Hardware Identifiers ---
@@ -146,7 +146,7 @@ AUTO_DETECT_VISA_BACKEND = _env_str("AUTO_DETECT_VISA_BACKEND", "")
 # IDN matching hints (comma-separated, case-insensitive)
 AUTO_DETECT_MMETER_IDN_HINTS = _env_str("AUTO_DETECT_MMETER_IDN_HINTS", "multimeter,5491b")
 AUTO_DETECT_AFG_IDN_HINTS = _env_str("AUTO_DETECT_AFG_IDN_HINTS", "afg,function,generator,arb")
-AUTO_DETECT_ELOAD_IDN_HINTS = _env_str("AUTO_DETECT_ELOAD_IDN_HINTS", "load,eload,electronic load,dl,it,bk")
+AUTO_DETECT_ELOAD_IDN_HINTS = _env_str("AUTO_DETECT_ELOAD_IDN_HINTS", "load,eload,electronic load,dl,it,bk,b&k,b&k precision,bk precision,8600")
 
 # VISA Resource IDs (PyVISA)
 ELOAD_VISA_ID = _env_str("ELOAD_VISA_ID", "USB0::11975::34816::*::0::INSTR")

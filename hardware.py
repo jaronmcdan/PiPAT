@@ -257,12 +257,35 @@ class HardwareManager:
                 print(f"Scanning for E-Load in (USB only): {usb_resources}")
 
                 eload_pat = str(getattr(config, "ELOAD_VISA_ID", "") or "").strip()
-                eload_hints = [t.strip().lower() for t in str(getattr(config, "AUTO_DETECT_ELOAD_IDN_HINTS", "") or "").split(",") if t.strip()]
+                eload_hints = [
+                    t.strip().lower()
+                    for t in str(getattr(config, "AUTO_DETECT_ELOAD_IDN_HINTS", "") or "").split(",")
+                    if t.strip()
+                ]
 
-                for resource_id in usb_resources:
-                    # Match configured pattern (or match-all if empty)
-                    if eload_pat and (not fnmatch.fnmatch(resource_id, eload_pat)):
-                        continue
+                def _is_specific_resource(pat: str) -> bool:
+                    if not pat:
+                        return False
+                    # If there are any glob metacharacters, treat as a pattern.
+                    return not any(ch in pat for ch in ("*", "?", "["))
+
+                eload_specific = _is_specific_resource(eload_pat)
+
+                if eload_specific:
+                    # If config points at a specific VISA resource (e.g. from autodetect),
+                    # trust it and connect directly. Do NOT require IDN hints here.
+                    # Try the specific resource first, even if list_resources() is empty.
+                    candidates = [eload_pat] if eload_pat else []
+                    # Then fall back to scanning any other USB resources we can see.
+                    if usb_resources:
+                        candidates += [r for r in usb_resources if r != eload_pat]
+                    print(f"E-Load target (direct): {eload_pat}")
+                else:
+                    # Pattern scan across all USB resources.
+                    candidates = [r for r in usb_resources if (not eload_pat or fnmatch.fnmatch(r, eload_pat))]
+                    print(f"E-Load scan: pattern={eload_pat or '*'} hints={eload_hints or 'none'}")
+
+                for resource_id in candidates:
                     try:
                         dev = self.resource_manager.open_resource(resource_id)
                         # Bound I/O time so a slow/missing instrument doesn't stall controls.
@@ -270,22 +293,29 @@ class HardwareManager:
                             dev.timeout = int(getattr(config, "VISA_TIMEOUT_MS", 500))
                         except Exception:
                             pass
+                        # USBTMC devices usually speak SCPI with newline termination.
+                        try:
+                            dev.read_termination = "\n"
+                            dev.write_termination = "\n"
+                        except Exception:
+                            pass
+
                         dev_id = str(dev.query("*IDN?")).strip()
 
-                        # If hints are provided, require a hint match.
-                        if eload_hints:
-                            low = dev_id.lower()
+                        # Only enforce hints when doing a broad scan.
+                        if (not eload_specific) and eload_hints:
+                            low = (dev_id or "").lower()
                             if not any(h in low for h in eload_hints):
+                                print(f"E-Load candidate rejected: {resource_id} -> {dev_id}")
                                 try:
                                     dev.close()
                                 except Exception:
                                     pass
                                 continue
 
-                        print(f"E-LOAD FOUND: {dev_id}")
+                        print(f"E-LOAD FOUND: {dev_id} @ {resource_id}")
                         # Keep these best-effort; some loads dislike *RST.
                         try:
-                            dev.write("*RST")
                             dev.write("SYST:CLE")
                         except Exception:
                             pass
