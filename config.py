@@ -57,7 +57,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 # Build / version tag to make it obvious which zip is running.
 # You can override via env var PIPAT_BUILD_TAG.
-BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-02-01-debian-serial-excl-v1")
+BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-01-31-mmeter-scpi-conf-v5")
 
 
 # --- Hardware Identifiers ---
@@ -113,10 +113,6 @@ MMETER_CLEAR_ERRORS_ON_STARTUP = _env_bool("MMETER_CLEAR_ERRORS_ON_STARTUP", Tru
 # If we don't yet know the correct fetch command, we will probe at this
 # interval (seconds) to avoid spamming the meter with unknown commands.
 MULTI_METER_PROBE_BACKOFF_SEC = _env_float("MULTI_METER_PROBE_BACKOFF_SEC", 2.0)
-
-# Delay after changing multimeter function (seconds).
-MMETER_FUNC_CHANGE_DELAY = _env_float("MMETER_FUNC_CHANGE_DELAY", 0.25)
-
 
 # --- Optional USB auto-detection (Raspberry Pi) ---
 # When enabled, main.py will scan /dev/serial/by-id + PyVISA resources at startup
@@ -184,6 +180,31 @@ VISA_TIMEOUT_MS = _env_int("VISA_TIMEOUT_MS", 500)
 
 # --- GPIO / K1 relay drive ---
 K1_ENABLE = _env_bool("K1_ENABLE", True)
+
+# K1 backend selection.
+#
+# Values:
+#   - "auto" (default): On a Raspberry Pi, prefer GPIO. On non-Pi hosts,
+#                        prefer the USB-serial relay backend when configured.
+#   - "gpio":    Force Raspberry Pi GPIO via gpiozero.
+#   - "serial":  Force USB-serial relay backend (e.g. Arduino + relay board).
+#   - "mock":    Always use a mock relay (no hardware).
+#   - "disabled": Disable K1 entirely (same as K1_ENABLE=0).
+K1_BACKEND = _env_str("K1_BACKEND", "auto").strip().lower()
+
+# USB-serial relay backend (Arduino relay controller).
+# Use a stable by-id path when possible, e.g.:
+#   /dev/serial/by-id/usb-Arduino*  (Linux)
+K1_SERIAL_PORT = _env_str("K1_SERIAL_PORT", "")
+K1_SERIAL_BAUD = _env_int("K1_SERIAL_BAUD", 9600)
+K1_SERIAL_RELAY_INDEX = _env_int("K1_SERIAL_RELAY_INDEX", 1)
+K1_SERIAL_BOOT_DELAY_SEC = _env_float("K1_SERIAL_BOOT_DELAY_SEC", 2.0)
+
+# Optional explicit command bytes for the serial backend.
+# If left empty, PiPAT will generate them from K1_SERIAL_RELAY_INDEX using
+# the default protocol: ON = '1'..'4', OFF = 'a'..'d'.
+K1_SERIAL_ON_CHAR = _env_str("K1_SERIAL_ON_CHAR", "")
+K1_SERIAL_OFF_CHAR = _env_str("K1_SERIAL_OFF_CHAR", "")
 K1_PIN_BCM = _env_int("K1_PIN_BCM", 26)
 
 # Relay input polarity:

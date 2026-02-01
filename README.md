@@ -47,24 +47,6 @@ sudo usermod -aG gpio $USER
 # Log out/in (or reboot) for group membership to take effect
 ```
 
-### Serial device permissions (Debian)
-
-To talk to USB-serial instruments (e.g. `/dev/ttyUSB0`, `/dev/ttyACM0`) **without sudo**, your user typically needs to be in the `dialout` group:
-
-```bash
-sudo usermod -aG dialout $USER
-# Log out/in for group membership to take effect
-```
-
-If you still get `Permission denied`, check the device node permissions:
-
-```bash
-ls -l /dev/ttyUSB0 /dev/ttyACM0
-```
-
-For persistent per-device rules, create a udev rule under `/etc/udev/rules.d/`.
-
-
 ### 2) Create a virtualenv and install Python deps
 
 From the project directory:

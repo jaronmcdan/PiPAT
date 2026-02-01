@@ -97,8 +97,7 @@ class DeviceCommandProcessor:
             self.log(f"MMETER: unsupported function enum {func_i}")
             return
 
-        delay = float(getattr(config, "MMETER_FUNC_CHANGE_DELAY", 0.10))
-        self._mmeter_write(cmd, delay_s=delay, clear_input=True)
+        self._mmeter_write(cmd, delay_s=0.10, clear_input=True)
         self.hardware.mmeter_func = func_i
 
     def handle(self, arb: int, data: bytes) -> None:

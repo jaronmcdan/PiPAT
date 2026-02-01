@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import fnmatch
-import os
-import errno
 import math
 import threading
 import time
@@ -12,11 +10,9 @@ from typing import Optional
 
 import pyvisa
 import serial
+import os
 
-try:
-    from gpiozero import LED  # type: ignore
-except Exception:
-    LED = None  # type: ignore
+from gpiozero import LED
 
 import config
 from bk5491b import BK5491B, MmeterFunc
@@ -49,74 +45,112 @@ class _NullRelay:
         return None
 
 
-
 def _is_raspberry_pi() -> bool:
-    """Best-effort host detection to decide whether to attempt GPIO."""
-    # Most Raspberry Pi OS / Debian-based images expose this.
+    """Best-effort detection for whether we're running on a Raspberry Pi."""
+
+    # Fast path: device-tree model (common on Raspberry Pi OS)
     try:
-        with open("/proc/device-tree/model", "rb") as f:
-            model = f.read().decode("ascii", errors="ignore")
-        if "Raspberry Pi" in model:
-            return True
+        with open("/proc/device-tree/model", "r", encoding="ascii", errors="ignore") as f:
+            s = (f.read() or "").lower()
+            if "raspberry pi" in s:
+                return True
     except Exception:
         pass
 
-    # Fallback: /proc/cpuinfo usually contains this string on Pi.
+    # Fallback: cpuinfo
     try:
         with open("/proc/cpuinfo", "r", encoding="ascii", errors="ignore") as f:
-            txt = f.read()
-        if "Raspberry Pi" in txt:
-            return True
+            s = (f.read() or "").lower()
+            if "raspberry pi" in s:
+                return True
+            # Broadcom SoCs commonly used in Pi devices.
+            if "bcm270" in s or "bcm271" in s or "bcm283" in s:
+                return True
     except Exception:
         pass
-
     return False
 
 
-def _is_permission_denied(exc: Exception) -> bool:
-    """Return True if an exception is (or wraps) an EACCES/EPERM."""
-    try:
-        if getattr(exc, "errno", None) in (errno.EACCES, errno.EPERM):
-            return True
-    except Exception:
-        pass
+class _SerialRelay:
+    """Relay backend that toggles a channel via a USB-serial ASCII protocol.
 
-    # pyserial / pyvisa sometimes wrap the underlying OSError in args
-    try:
-        for a in getattr(exc, "args", ()) or ():
-            if isinstance(a, PermissionError):
-                return True
-            if isinstance(a, OSError) and getattr(a, "errno", None) in (errno.EACCES, errno.EPERM):
-                return True
-    except Exception:
-        pass
+    Designed for simple Arduino-based relay controllers that accept a single
+    byte command to turn a relay channel ON/OFF.
 
-    s = str(exc).lower()
-    return ("permission denied" in s) or ("errno 13" in s) or ("eacces" in s)
+    Interface mirrors gpiozero.LED enough for this app: on/off/is_lit/pin.
+    """
 
+    def __init__(
+        self,
+        port: str,
+        *,
+        baud: int = 9600,
+        cmd_on: bytes,
+        cmd_off: bytes,
+        initial_drive: bool = False,
+        boot_delay_s: float = 2.0,
+        timeout_s: float = 0.5,
+    ):
+        self._port = str(port)
+        self._baud = int(baud)
+        self._cmd_on = bytes(cmd_on)
+        self._cmd_off = bytes(cmd_off)
+        self._is_lit = bool(initial_drive)
+        self._lock = threading.Lock()
 
-def _asrl_devnode(resource_id: str) -> Optional[str]:
-    """Extract /dev/... from an ASRL VISA resource string when present."""
-    rid = str(resource_id or "")
-    if not rid.startswith("ASRL") or "/dev/" not in rid:
+        self.ser = serial.Serial(
+            self._port,
+            self._baud,
+            timeout=float(timeout_s),
+            write_timeout=float(timeout_s),
+        )
+
+        # Many Arduino-class boards either reset on open or need a moment to
+        # finish USB enumeration / setup(). Keep it configurable.
+        if boot_delay_s and boot_delay_s > 0:
+            time.sleep(float(boot_delay_s))
+
+        try:
+            self.ser.reset_input_buffer()
+            self.ser.reset_output_buffer()
+        except Exception:
+            pass
+
+        # Apply the initial drive state so the software and hardware match.
+        self._apply(self._is_lit)
+
+    def _write(self, payload: bytes) -> None:
+        if not payload:
+            return
+        with self._lock:
+            self.ser.write(payload)
+            try:
+                self.ser.flush()
+            except Exception:
+                pass
+
+    def _apply(self, drive_on: bool) -> None:
+        try:
+            self._write(self._cmd_on if drive_on else self._cmd_off)
+            self._is_lit = bool(drive_on)
+        except Exception as e:
+            # Keep running; device may be unplugged. Caller will see the log.
+            print(f"WARNING: K1 serial relay write failed ({self._port}): {e}")
+
+    @property
+    def is_lit(self) -> bool:
+        return bool(self._is_lit)
+
+    def on(self) -> None:
+        self._apply(True)
+
+    def off(self) -> None:
+        self._apply(False)
+
+    @property
+    def pin(self):
         return None
-    start = rid.find("/dev/")
-    end = rid.find("::", start)
-    if end == -1:
-        end = len(rid)
-    out = rid[start:end]
-    return out or None
 
-
-def _print_serial_permission_hint(devnode: str) -> None:
-    devnode = str(devnode or "").strip()
-    if not devnode:
-        return
-    # Debian/Ubuntu convention for /dev/tty* access.
-    print(f"HINT: Permission denied opening {devnode}.")
-    print("  Fix: add your user to the dialout group, then log out/in:")
-    print("    sudo usermod -aG dialout $USER")
-    print("  (You can also test quickly with: sudo chmod a+rw <device>, but udev will reset it)")
 
 def _clamp_i16(x: int) -> int:
     if x < -32768:
@@ -203,40 +237,101 @@ class HardwareManager:
 
         self.mrsignal_lock = threading.Lock()
 
-        # --- GPIO Relay (K1) ---
+        # --- K1 Relay ---
         # K1 is treated as a direct drive output. We intentionally do not infer "DUT power"
         # from contact wiring (NC/NO). If you need true DUT power status, measure it.
         initial_drive = bool(getattr(config, "K1_IDLE_DRIVE", False))
 
         self.relay_backend: str = "disabled"
+
+        # Respect the legacy enable switch first.
         if not bool(getattr(config, "K1_ENABLE", True)):
             self.relay = _NullRelay(initial_drive)
             self.relay_backend = "disabled"
-        elif not _is_raspberry_pi():
-            # Avoid gpiozero pin-factory fallback noise on non-Pi hosts.
-            print("WARNING: K1 GPIO unavailable (not a Raspberry Pi); running with a mock relay.")
-            self.relay = _NullRelay(initial_drive)
-            self.relay_backend = "mock"
-        elif LED is None:
-            print("WARNING: gpiozero unavailable; running with a mock relay.")
-            self.relay = _NullRelay(initial_drive)
-            self.relay_backend = "mock"
         else:
-            try:
-                self.relay = LED(
-                    config.K1_PIN_BCM,
-                    # active_high is the *electrical* polarity of the relay input.
-                    # If K1_ACTIVE_LOW=True, then LED.on() drives the pin LOW.
-                    active_high=not bool(getattr(config, "K1_ACTIVE_LOW", False)),
-                    # initial_value is whether LED is "on" (drive asserted).
-                    initial_value=bool(initial_drive),
-                )
-                self.relay_backend = "gpio"
-            except Exception as e:
-                # Typical causes: missing pin factories, insufficient permissions, etc.
-                print(f"WARNING: K1 GPIO unavailable; running with a mock relay. ({e})")
+            backend = str(getattr(config, "K1_BACKEND", "auto") or "auto").strip().lower()
+
+            # Helper: construct the serial relay (Arduino controller)
+            def _try_serial() -> bool:
+                port = str(getattr(config, "K1_SERIAL_PORT", "") or "").strip()
+                if not port:
+                    return False
+
+                idx = int(getattr(config, "K1_SERIAL_RELAY_INDEX", 1) or 1)
+                idx = max(1, min(8, idx))
+
+                on_char = str(getattr(config, "K1_SERIAL_ON_CHAR", "") or "").strip()
+                off_char = str(getattr(config, "K1_SERIAL_OFF_CHAR", "") or "").strip()
+                if not on_char:
+                    # Default protocol: ON = '1'.., OFF = 'a'.. (index 1 -> '1'/'a')
+                    on_char = str(idx)
+                if not off_char:
+                    off_char = chr(ord('a') + idx - 1)
+
+                baud = int(getattr(config, "K1_SERIAL_BAUD", 9600) or 9600)
+                boot_delay = float(getattr(config, "K1_SERIAL_BOOT_DELAY_SEC", 2.0) or 0.0)
+
+                try:
+                    self.relay = _SerialRelay(
+                        port,
+                        baud=baud,
+                        cmd_on=on_char.encode("ascii", errors="ignore"),
+                        cmd_off=off_char.encode("ascii", errors="ignore"),
+                        initial_drive=bool(initial_drive),
+                        boot_delay_s=boot_delay,
+                    )
+                    self.relay_backend = "serial"
+                    print(f"K1 relay: serial backend on {port} (relay {idx}, on='{on_char}', off='{off_char}')")
+                    return True
+                except Exception as e:
+                    print(f"WARNING: K1 serial relay unavailable ({port}); running with a mock relay. ({e})")
+                    return False
+
+            # Helper: construct the Pi GPIO relay
+            def _try_gpio() -> bool:
+                try:
+                    self.relay = LED(
+                        config.K1_PIN_BCM,
+                        # active_high is the *electrical* polarity of the relay input.
+                        # If K1_ACTIVE_LOW=True, then LED.on() drives the pin LOW.
+                        active_high=not bool(getattr(config, "K1_ACTIVE_LOW", False)),
+                        # initial_value is whether LED is "on" (drive asserted).
+                        initial_value=bool(initial_drive),
+                    )
+                    self.relay_backend = "gpio"
+                    return True
+                except Exception as e:
+                    print(f"WARNING: K1 GPIO unavailable; {e}")
+                    return False
+
+            # Backend selection
+            if backend == "disabled":
+                self.relay = _NullRelay(initial_drive)
+                self.relay_backend = "disabled"
+            elif backend == "mock":
                 self.relay = _NullRelay(initial_drive)
                 self.relay_backend = "mock"
+            elif backend == "serial":
+                if not _try_serial():
+                    self.relay = _NullRelay(initial_drive)
+                    self.relay_backend = "mock"
+            elif backend == "gpio":
+                if not _try_gpio():
+                    self.relay = _NullRelay(initial_drive)
+                    self.relay_backend = "mock"
+            else:
+                # auto
+                if _is_raspberry_pi():
+                    if not _try_gpio():
+                        if not _try_serial():
+                            self.relay = _NullRelay(initial_drive)
+                            self.relay_backend = "mock"
+                else:
+                    # Non-Pi: don't spam pin-factory fallbacks. Prefer serial if configured.
+                    if not _try_serial():
+                        print("WARNING: K1 GPIO unavailable (not a Raspberry Pi); set K1_SERIAL_PORT or use a mock relay.")
+                        self.relay = _NullRelay(initial_drive)
+                        self.relay_backend = "mock"
 
     def _maybe_detect_mmeter_scpi_style(self) -> None:
         """One-time SCPI dialect detection for the 5491B.
@@ -342,24 +437,12 @@ class HardwareManager:
         We therefore read a few lines and skip obvious echoes.
         """
         try:
-            # Use an exclusive lock where supported (prevents other services like ModemManager
-            # from briefly probing the port and making the meter show a BUS command error).
-            try:
-                mmeter = serial.Serial(
-                    config.MULTI_METER_PATH,
-                    int(config.MULTI_METER_BAUD),
-                    timeout=float(getattr(config, 'MULTI_METER_TIMEOUT', 1.0)),
-                    write_timeout=float(getattr(config, 'MULTI_METER_WRITE_TIMEOUT', 1.0)),
-                    exclusive=True,
-                )
-            except TypeError:
-                # Older pyserial versions don't support the 'exclusive' kwarg.
-                mmeter = serial.Serial(
-                    config.MULTI_METER_PATH,
-                    int(config.MULTI_METER_BAUD),
-                    timeout=float(getattr(config, 'MULTI_METER_TIMEOUT', 1.0)),
-                    write_timeout=float(getattr(config, 'MULTI_METER_WRITE_TIMEOUT', 1.0)),
-                )
+            mmeter = serial.Serial(
+                config.MULTI_METER_PATH,
+                int(config.MULTI_METER_BAUD),
+                timeout=float(getattr(config, 'MULTI_METER_TIMEOUT', 1.0)),
+                write_timeout=float(getattr(config, 'MULTI_METER_WRITE_TIMEOUT', 1.0)),
+            )
             # Clear any garbage that could cause decode issues.
             try:
                 mmeter.reset_input_buffer()
@@ -437,10 +520,8 @@ class HardwareManager:
                 pass
 
             self._maybe_detect_mmeter_scpi_style()
-        except (serial.SerialException, IOError, OSError) as e:
+        except (serial.SerialException, IOError) as e:
             print(f"Failed to communicate with multi-meter: {e}")
-            if _is_permission_denied(e):
-                _print_serial_permission_hint(str(getattr(config, "MULTI_METER_PATH", "") or ""))
             self.multi_meter = None
             self.mmeter = None
 
@@ -555,10 +636,6 @@ class HardwareManager:
 
             except Exception as e:
                 print(f"AFG Connection Failed ({config.AFG_VISA_ID}): {e}")
-                if _is_permission_denied(e):
-                    dev = _asrl_devnode(str(getattr(config, "AFG_VISA_ID", "") or ""))
-                    if dev:
-                        _print_serial_permission_hint(dev)
 
             if not self.e_load:
                 print("WARNING: E-LOAD not found.")
@@ -618,8 +695,6 @@ class HardwareManager:
 
         except Exception as e:
             print(f"MrSignal connection failed ({port}): {e}")
-            if _is_permission_denied(e):
-                _print_serial_permission_hint(port)
             try:
                 if self.mrsignal:
                     self.mrsignal.close()

@@ -178,7 +178,7 @@ def build_dashboard(hardware, *,
     else:
         meas_meter.add_row("Current", f"[yellow]{meter_current_mA/1000:.3f} A[/]")
 
-    # GPIO Status (K1 + GPIO level)
+    # K1 relay status (drive + raw GPIO level when applicable)
     # We show only: (1) the logical drive state (ON/OFF) and (2) the raw GPIO level (HIGH/LOW).
     try:
         drive_on = bool(hardware.get_k1_drive())
@@ -190,6 +190,8 @@ def build_dashboard(hardware, *,
     except Exception:
         pin_level = None
 
+    backend = str(getattr(hardware, 'relay_backend', '') or '').strip() or 'unknown'
+
     drive_badge = Text.from_markup(_badge(drive_on, 'ON', 'OFF'))
     if pin_level is None:
         level_badge = Text.from_markup('[bold dim]--[/]')
@@ -200,6 +202,7 @@ def build_dashboard(hardware, *,
         Align.center(
             Text.assemble(
                 ("K1 Relay\n", "bold"),
+                ("Backend: ", "bold"), (f"{backend}\n", "dim"),
                 ("Drive: ", "bold"), drive_badge, ("\n", ""),
                 ("GPIO:  ", "bold"), level_badge,
             ),
@@ -207,7 +210,7 @@ def build_dashboard(hardware, *,
         ),
         border_style='yellow',
         box=box.ROUNDED,
-        title='[bold]GPIO[/]',
+        title='[bold]K1[/]',
     )
 
     mid = Table.grid(expand=True)

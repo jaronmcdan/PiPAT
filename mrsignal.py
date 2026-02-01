@@ -111,59 +111,18 @@ class MrSignalClient:
 
         self.inst: Optional[minimalmodbus.Instrument] = None
         self._last_used_bo: str = "DEFAULT"
-def connect(self) -> None:
-    """Connect to the device.
 
-    On desktop Linux distros, background services (e.g. ModemManager) can
-    briefly open new /dev/tty* ports to probe them. That can break Modbus
-    transactions and can even force some devices to shut off outputs.
+    def connect(self) -> None:
+        inst = minimalmodbus.Instrument(self.port, self.slave_id, mode=minimalmodbus.MODE_RTU)
+        inst.clear_buffers_before_each_transaction = True
 
-    We therefore try to (re)open the serial port with an exclusive lock
-    where supported by pyserial.
-    """
-    inst = minimalmodbus.Instrument(self.port, self.slave_id, mode=minimalmodbus.MODE_RTU)
-    inst.clear_buffers_before_each_transaction = True
-
-    parity_val = {"N": serial.PARITY_NONE, "E": serial.PARITY_EVEN, "O": serial.PARITY_ODD}.get(
-        self.parity, serial.PARITY_NONE
-    )
-    stopbits_val = serial.STOPBITS_ONE if self.stopbits == 1 else serial.STOPBITS_TWO
-
-    # minimalmodbus opens the port in its constructor. Close and reopen with
-    # exclusive access if possible.
-    try:
-        try:
-            inst.serial.close()
-        except Exception:
-            pass
-
-        try:
-            ser = serial.Serial(
-                self.port,
-                baudrate=self.baud,
-                parity=parity_val,
-                stopbits=stopbits_val,
-                timeout=self.timeout_s,
-                exclusive=True,
-            )
-        except TypeError:
-            # Older pyserial versions don't support the 'exclusive' kwarg.
-            ser = serial.Serial(
-                self.port,
-                baudrate=self.baud,
-                parity=parity_val,
-                stopbits=stopbits_val,
-                timeout=self.timeout_s,
-            )
-        inst.serial = ser
-    except Exception:
-        # Fall back to the serial instance created by minimalmodbus.
         inst.serial.baudrate = self.baud
-        inst.serial.parity = parity_val
-        inst.serial.stopbits = stopbits_val
+        inst.serial.parity = {"N": serial.PARITY_NONE, "E": serial.PARITY_EVEN, "O": serial.PARITY_ODD}.get(
+            self.parity, serial.PARITY_NONE
+        )
+        inst.serial.stopbits = serial.STOPBITS_ONE if self.stopbits == 1 else serial.STOPBITS_TWO
         inst.serial.timeout = self.timeout_s
-
-    self.inst = inst
+        self.inst = inst
 
     def close(self) -> None:
         try:
