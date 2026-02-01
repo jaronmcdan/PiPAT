@@ -385,6 +385,11 @@ def instrument_poll_loop(
                             cmds_to_try = [mmeter_cmds[mmeter_probe_idx % len(mmeter_cmds)]]
                             mmeter_probe_idx += 1
 
+                    # Respect post-config settle window (avoid BUS errors during function changes)
+                    pause_until = float(getattr(hardware, "mmeter_pause_until", 0.0) or 0.0)
+                    if now_m < pause_until:
+                        cmds_to_try = []
+
                     if cmds_to_try:
                         mm_primary = None
                         mm_secondary = None
@@ -395,7 +400,7 @@ def instrument_poll_loop(
                             try:
                                 for cmd in cmds_to_try:
                                     if getattr(hardware, "mmeter", None) is not None:
-                                        mm_primary, mm_secondary, mm_raw = hardware.mmeter.query_values(cmd, delay_s=0.01)
+                                        mm_primary, mm_secondary, mm_raw = hardware.mmeter.query_values(cmd, delay_s=float(getattr(config, "MMETER_QUERY_DELAY_SEC", 0.01)))
                                     else:
                                         # Fallback: do a very small/robust parse
                                         hardware.multi_meter.write((cmd + "\n").encode("ascii", errors="ignore"))

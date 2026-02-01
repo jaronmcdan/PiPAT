@@ -85,6 +85,35 @@ class DeviceCommandProcessor:
         except Exception as e:
             self.log(f"MMETER write error: {e}")
 
+
+    def _mmeter_pause(self, seconds: float) -> None:
+        """Ask the polling thread to briefly stop querying the meter."""
+        try:
+            s = float(seconds)
+        except Exception:
+            return
+        if s <= 0:
+            return
+        now = time.monotonic()
+        cur = float(getattr(self.hardware, "mmeter_pause_until", 0.0) or 0.0)
+        self.hardware.mmeter_pause_until = max(cur, now + s)
+
+    def _mmeter_cfg_write(
+        self,
+        cmd: str,
+        *,
+        clear_input: bool = False,
+        delay_s: float | None = None,
+        post_pause_s: float | None = None,
+    ) -> None:
+        """Write a multimeter configuration command with conservative timing."""
+        if delay_s is None:
+            delay_s = float(getattr(config, "MMETER_CFG_WRITE_DELAY_SEC", 0.0))
+        if post_pause_s is None:
+            post_pause_s = float(getattr(config, "MMETER_POST_CFG_PAUSE_SEC", 0.0))
+        self._mmeter_write(cmd, delay_s=float(delay_s), clear_input=bool(clear_input))
+        self._mmeter_pause(float(post_pause_s))
+
     def _mmeter_set_func(self, func: int) -> None:
         func_i = int(func) & 0xFF
         # PiPAT defaults to the documented 2831E/5491B SCPI dialect rooted at
@@ -97,7 +126,9 @@ class DeviceCommandProcessor:
             self.log(f"MMETER: unsupported function enum {func_i}")
             return
 
-        self._mmeter_write(cmd, delay_s=0.10, clear_input=True)
+        func_delay = float(getattr(config, "MMETER_FUNC_SWITCH_DELAY_SEC", 0.10))
+        post_pause = float(getattr(config, "MMETER_POST_FUNC_PAUSE_SEC", 0.0))
+        self._mmeter_cfg_write(cmd, clear_input=True, delay_s=func_delay, post_pause_s=post_pause)
         self.hardware.mmeter_func = func_i
 
     def handle(self, arb: int, data: bytes) -> None:
@@ -197,7 +228,7 @@ class DeviceCommandProcessor:
                         prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(func_i)
                         key = (func_i, True)
                         if prefix and self._mmeter_last_autorange_cmd != key:
-                            self._mmeter_write(f"{prefix}:RANGe:AUTO ON")
+                            self._mmeter_cfg_write(f"{prefix}:RANGe:AUTO ON")
                             self._mmeter_last_autorange_cmd = key
                         self.hardware.mmeter_autorange = True
                     else:
@@ -206,7 +237,7 @@ class DeviceCommandProcessor:
                         prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(func_i)
                         key = (func_i, False)
                         if prefix and self._mmeter_last_autorange_cmd != key:
-                            self._mmeter_write(f"{prefix}:RANGe:AUTO OFF")
+                            self._mmeter_cfg_write(f"{prefix}:RANGe:AUTO OFF")
                             self._mmeter_last_autorange_cmd = key
                         self.hardware.mmeter_autorange = False
             except Exception:
@@ -255,7 +286,7 @@ class DeviceCommandProcessor:
                         if bool(getattr(self.hardware, "mmeter_autorange", True)) != on:
                             prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(tgt_func)
                             if prefix:
-                                self._mmeter_write(f"{prefix}:RANGe:AUTO {'ON' if on else 'OFF'}")
+                                self._mmeter_cfg_write(f"{prefix}:RANGe:AUTO {'ON' if on else 'OFF'}")
                         self.hardware.mmeter_autorange = on
 
                     elif op == 0x03:  # SET_RANGE (float = expected reading)
@@ -268,7 +299,7 @@ class DeviceCommandProcessor:
                             if (not bool(getattr(self.hardware, "mmeter_autorange", True))) and abs(float(getattr(self.hardware, "mmeter_range_value", 0.0)) - fv) < 1e-12:
                                 pass
                             else:
-                                self._mmeter_write(f"{prefix}:RANGe {fv:g}")
+                                self._mmeter_cfg_write(f"{prefix}:RANGe {fv:g}")
                             self.hardware.mmeter_autorange = False
                             self.hardware.mmeter_range_value = fv
 
@@ -277,13 +308,13 @@ class DeviceCommandProcessor:
                         if prefix:
                             nplc = _quantize_nplc(float(fval))
                             if abs(float(getattr(self.hardware, "mmeter_nplc", 1.0)) - nplc) > 1e-12:
-                                self._mmeter_write(f"{prefix}:NPLCycles {nplc:g}")
+                                self._mmeter_cfg_write(f"{prefix}:NPLCycles {nplc:g}")
                             self.hardware.mmeter_nplc = float(nplc)
 
                     elif op == 0x05:  # SECONDARY_ENABLE (arg0=0/1)
                         on = bool(arg0)
                         if bool(getattr(self.hardware, "mmeter_func2_enabled", False)) != on:
-                            self._mmeter_write(f":FUNCtion2:STATe {1 if on else 0}")
+                            self._mmeter_cfg_write(f":FUNCtion2:STATe {1 if on else 0}")
                         self.hardware.mmeter_func2_enabled = on
 
                         # If enabling, (re)apply the currently selected secondary function.
@@ -291,7 +322,7 @@ class DeviceCommandProcessor:
                             func2 = int(getattr(self.hardware, "mmeter_func2", int(MmeterFunc.VDC))) & 0xFF
                             cmd2 = FUNC_TO_SCPI_FUNC2.get(func2)
                             if cmd2:
-                                self._mmeter_write(cmd2)
+                                self._mmeter_cfg_write(cmd2)
                             else:
                                 self.log(f"MMETER secondary: unsupported func {func2}")
 
@@ -304,35 +335,35 @@ class DeviceCommandProcessor:
 
                         # Per B&K doc, secondary display must be enabled before FUNC2 is set.
                         if not bool(getattr(self.hardware, "mmeter_func2_enabled", False)):
-                            self._mmeter_write(":FUNCtion2:STATe 1")
+                            self._mmeter_cfg_write(":FUNCtion2:STATe 1")
                             self.hardware.mmeter_func2_enabled = True
 
                         if int(getattr(self.hardware, "mmeter_func2", -1)) != func_i:
-                            self._mmeter_write(cmd2)
+                            self._mmeter_cfg_write(cmd2)
                         self.hardware.mmeter_func2 = func_i
 
                     elif op == 0x07:  # TRIG_SOURCE (arg0=0 IMM,1 BUS,2 MAN)
                         if int(getattr(self.hardware, "mmeter_trig_source", -1)) != (int(arg0) & 0xFF):
                             src_map = {0: "IMM", 1: "BUS", 2: "MAN"}
                             src = src_map.get(int(arg0), "IMM")
-                            self._mmeter_write(f":TRIGger:SOURce {src}")
+                            self._mmeter_cfg_write(f":TRIGger:SOURce {src}")
                         self.hardware.mmeter_trig_source = int(arg0) & 0xFF
 
                     elif op == 0x08:  # BUS_TRIGGER
-                        self._mmeter_write("*TRG")
+                        self._mmeter_cfg_write("*TRG")
 
                     elif op == 0x09:  # RELATIVE_ENABLE (arg0=0/1)
                         on = bool(arg0)
                         if bool(getattr(self.hardware, "mmeter_rel_enabled", False)) != on:
                             prefix = FUNC_TO_REF_PREFIX_FUNC.get(tgt_func)
                             if prefix:
-                                self._mmeter_write(f"{prefix}:REFerence:STATe {'ON' if on else 'OFF'}")
+                                self._mmeter_cfg_write(f"{prefix}:REFerence:STATe {'ON' if on else 'OFF'}")
                         self.hardware.mmeter_rel_enabled = on
 
                     elif op == 0x0A:  # RELATIVE_ACQUIRE
                         prefix = FUNC_TO_REF_PREFIX_FUNC.get(tgt_func)
                         if prefix:
-                            self._mmeter_write(f"{prefix}:REFerence:ACQuire")
+                            self._mmeter_cfg_write(f"{prefix}:REFerence:ACQuire")
 
                     else:
                         if op != 0:

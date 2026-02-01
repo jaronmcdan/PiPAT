@@ -157,6 +157,9 @@ class HardwareManager:
         self.mmeter_func2_enabled: bool = False
         self.mmeter_rel_enabled: bool = False
         self.mmeter_trig_source: int = 0  # 0=IMM,1=BUS,2=MAN
+        # Poll holdoff after configuration changes (monotonic time)
+        self.mmeter_pause_until: float = 0.0
+
 
         # SCPI command dialect for the multimeter.
         #
