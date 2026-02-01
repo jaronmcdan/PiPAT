@@ -257,10 +257,14 @@ CAN_CHANNEL=/dev/ttyUSB0
 CAN_SERIAL_BAUD=115200
 CAN_BITRATE=250000
 CAN_SETUP=1
+CAN_CLEAR_ERRORS_ON_INIT=1
 ```
 
 If you do **not** want PiPAT to change adapter settings on startup, set `CAN_SETUP=0` and configure the gateway
 separately.
+
+If the gateway's **ERROR** LED stays latched from a previous session, keep `CAN_CLEAR_ERRORS_ON_INIT=1` (default)
+so PiPAT will issue a CAN controller reset on startup.
 
 ---
 

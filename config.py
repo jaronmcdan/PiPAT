@@ -57,7 +57,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 # Build / version tag to make it obvious which zip is running.
 # You can override via env var PIPAT_BUILD_TAG.
-BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-01-31-mmeter-scpi-conf-v5")
+BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-02-01-canview-clearerr-v1")
 
 
 # --- Hardware Identifiers ---
@@ -239,6 +239,10 @@ CAN_BITRATE = _env_int("CAN_BITRATE", 250000)
 #   - socketcan: runs `ip link set <CAN_CHANNEL> up type can bitrate <CAN_BITRATE>`
 #   - rmcanview: configures adapter CAN bitrate + forces active mode
 CAN_SETUP = _env_bool("CAN_SETUP", True)
+
+# If True and CAN_INTERFACE="rmcanview", PiPAT will issue a CAN controller reset
+# on startup to clear any latched error status in the gateway.
+CAN_CLEAR_ERRORS_ON_INIT = _env_bool("CAN_CLEAR_ERRORS_ON_INIT", CAN_SETUP)
 
 # Max number of incoming CAN control frames buffered between the CAN RX thread
 # and the device command worker. Keeping this bounded ensures the CAN RX loop

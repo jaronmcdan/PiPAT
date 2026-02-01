@@ -140,6 +140,7 @@ class RmCanViewBus(can.BusABC):
         serial_baud: int = 115200,
         can_bitrate: int = 250000,
         do_setup: bool = True,
+        clear_errors_on_init: bool = True,
         log_fn: Callable[[str], None] | None = None,
         serial_timeout: float = 0.05,
     ) -> None:
@@ -166,6 +167,12 @@ class RmCanViewBus(can.BusABC):
 
         self._run = threading.Event()
         self._run.set()
+
+        # Optional: clear any latched CAN error state on startup.
+        # Byte Command Manual: CAN controller reset (0x58) resets the error status.
+        if clear_errors_on_init:
+            self._send_cmd_raw(0x58, b"")
+            self._drain_quick(0.25)
 
         # Optional setup (CAN bitrate + active mode)
         if do_setup:

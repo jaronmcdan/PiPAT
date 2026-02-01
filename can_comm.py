@@ -56,11 +56,13 @@ def setup_can_interface(channel: str, bitrate: int, *, do_setup: bool = True, lo
             from rmcanview import RmCanViewBus
 
             serial_baud = int(getattr(config, "CAN_SERIAL_BAUD", 115200))
+            clear_err = bool(getattr(config, "CAN_CLEAR_ERRORS_ON_INIT", True))
             return RmCanViewBus(
                 channel,
                 serial_baud=serial_baud,
                 can_bitrate=int(bitrate),
                 do_setup=bool(do_setup),
+                clear_errors_on_init=clear_err,
                 log_fn=log_fn,
             )
         except Exception as e:
