@@ -57,7 +57,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 # Build / version tag to make it obvious which zip is running.
 # You can override via env var PIPAT_BUILD_TAG.
-BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-01-31-mmeter-scpi-conf-v5")
+BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-02-01-debian-serial-excl-v1")
 
 
 # --- Hardware Identifiers ---
@@ -114,24 +114,8 @@ MMETER_CLEAR_ERRORS_ON_STARTUP = _env_bool("MMETER_CLEAR_ERRORS_ON_STARTUP", Tru
 # interval (seconds) to avoid spamming the meter with unknown commands.
 MULTI_METER_PROBE_BACKOFF_SEC = _env_float("MULTI_METER_PROBE_BACKOFF_SEC", 2.0)
 
-
-# Multimeter timing (stability / bus-error avoidance)
-#
-# Some 2831E/5491B units can momentarily show a front-panel "BUS" error if they
-# are polled while switching functions or if configuration commands are issued
-# back-to-back too quickly. These knobs let you slow down control writes and
-# polling without changing code.
-#
-# - MMETER_QUERY_DELAY_SEC: delay after sending a query (e.g. :FETC?) before reading.
-# - MMETER_FUNC_SWITCH_DELAY_SEC: delay after sending a :FUNCtion change.
-# - MMETER_CFG_WRITE_DELAY_SEC: small delay after config writes (range, NPLC, etc.).
-# - MMETER_POST_FUNC_PAUSE_SEC / MMETER_POST_CFG_PAUSE_SEC: poll hold-off window
-#   after config changes (poll thread will skip queries briefly).
-MMETER_QUERY_DELAY_SEC = _env_float("MMETER_QUERY_DELAY_SEC", 0.02)
-MMETER_FUNC_SWITCH_DELAY_SEC = _env_float("MMETER_FUNC_SWITCH_DELAY_SEC", 0.25)
-MMETER_CFG_WRITE_DELAY_SEC = _env_float("MMETER_CFG_WRITE_DELAY_SEC", 0.05)
-MMETER_POST_FUNC_PAUSE_SEC = _env_float("MMETER_POST_FUNC_PAUSE_SEC", 0.25)
-MMETER_POST_CFG_PAUSE_SEC = _env_float("MMETER_POST_CFG_PAUSE_SEC", 0.05)
+# Delay after changing multimeter function (seconds).
+MMETER_FUNC_CHANGE_DELAY = _env_float("MMETER_FUNC_CHANGE_DELAY", 0.25)
 
 
 # --- Optional USB auto-detection (Raspberry Pi) ---

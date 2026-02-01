@@ -157,9 +157,6 @@ class HardwareManager:
         self.mmeter_func2_enabled: bool = False
         self.mmeter_rel_enabled: bool = False
         self.mmeter_trig_source: int = 0  # 0=IMM,1=BUS,2=MAN
-        # Poll holdoff after configuration changes (monotonic time)
-        self.mmeter_pause_until: float = 0.0
-
 
         # SCPI command dialect for the multimeter.
         #
@@ -345,12 +342,24 @@ class HardwareManager:
         We therefore read a few lines and skip obvious echoes.
         """
         try:
-            mmeter = serial.Serial(
-                config.MULTI_METER_PATH,
-                int(config.MULTI_METER_BAUD),
-                timeout=float(getattr(config, 'MULTI_METER_TIMEOUT', 1.0)),
-                write_timeout=float(getattr(config, 'MULTI_METER_WRITE_TIMEOUT', 1.0)),
-            )
+            # Use an exclusive lock where supported (prevents other services like ModemManager
+            # from briefly probing the port and making the meter show a BUS command error).
+            try:
+                mmeter = serial.Serial(
+                    config.MULTI_METER_PATH,
+                    int(config.MULTI_METER_BAUD),
+                    timeout=float(getattr(config, 'MULTI_METER_TIMEOUT', 1.0)),
+                    write_timeout=float(getattr(config, 'MULTI_METER_WRITE_TIMEOUT', 1.0)),
+                    exclusive=True,
+                )
+            except TypeError:
+                # Older pyserial versions don't support the 'exclusive' kwarg.
+                mmeter = serial.Serial(
+                    config.MULTI_METER_PATH,
+                    int(config.MULTI_METER_BAUD),
+                    timeout=float(getattr(config, 'MULTI_METER_TIMEOUT', 1.0)),
+                    write_timeout=float(getattr(config, 'MULTI_METER_WRITE_TIMEOUT', 1.0)),
+                )
             # Clear any garbage that could cause decode issues.
             try:
                 mmeter.reset_input_buffer()
