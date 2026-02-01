@@ -220,10 +220,24 @@ K1_CAN_INVERT = _env_bool("K1_CAN_INVERT", False)
 K1_IDLE_DRIVE = _env_bool("K1_IDLE_DRIVE", False)
 
 # --- CAN Bus ---
+# CAN backend:
+#   socketcan = Linux SocketCAN netdev (e.g. can0/can1)
+#   rmcanview  = RM/Proemion CANview USB/RS232 gateways via serial (Byte Command Protocol)
+CAN_INTERFACE = _env_str("CAN_INTERFACE", "socketcan").strip().lower()
+
+# Channel identifier used by the selected backend:
+#   - socketcan: "can0", "can1", ...
+#   - rmcanview: "/dev/ttyUSB0", "/dev/serial/by-id/...", ...
 CAN_CHANNEL = _env_str("CAN_CHANNEL", "can1")
+
+# Serial baud rate for CAN_INTERFACE="rmcanview" (USB-serial link baud).
+# This is *not* the CAN bus bitrate; use CAN_BITRATE for that.
+CAN_SERIAL_BAUD = _env_int("CAN_SERIAL_BAUD", 115200)
 CAN_BITRATE = _env_int("CAN_BITRATE", 250000)
 
-# If True, main.py will try to bring the SocketCAN interface up.
+# If True, main.py will try to bring the CAN interface up.
+#   - socketcan: runs `ip link set <CAN_CHANNEL> up type can bitrate <CAN_BITRATE>`
+#   - rmcanview: configures adapter CAN bitrate + forces active mode
 CAN_SETUP = _env_bool("CAN_SETUP", True)
 
 # Max number of incoming CAN control frames buffered between the CAN RX thread
