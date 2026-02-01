@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import fnmatch
+import os
+import errno
 import math
 import threading
 import time
@@ -10,7 +12,11 @@ from typing import Optional
 
 import pyvisa
 import serial
-from gpiozero import LED
+
+try:
+    from gpiozero import LED  # type: ignore
+except Exception:
+    LED = None  # type: ignore
 
 import config
 from bk5491b import BK5491B, MmeterFunc
@@ -42,6 +48,75 @@ class _NullRelay:
     def pin(self):
         return None
 
+
+
+def _is_raspberry_pi() -> bool:
+    """Best-effort host detection to decide whether to attempt GPIO."""
+    # Most Raspberry Pi OS / Debian-based images expose this.
+    try:
+        with open("/proc/device-tree/model", "rb") as f:
+            model = f.read().decode("ascii", errors="ignore")
+        if "Raspberry Pi" in model:
+            return True
+    except Exception:
+        pass
+
+    # Fallback: /proc/cpuinfo usually contains this string on Pi.
+    try:
+        with open("/proc/cpuinfo", "r", encoding="ascii", errors="ignore") as f:
+            txt = f.read()
+        if "Raspberry Pi" in txt:
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _is_permission_denied(exc: Exception) -> bool:
+    """Return True if an exception is (or wraps) an EACCES/EPERM."""
+    try:
+        if getattr(exc, "errno", None) in (errno.EACCES, errno.EPERM):
+            return True
+    except Exception:
+        pass
+
+    # pyserial / pyvisa sometimes wrap the underlying OSError in args
+    try:
+        for a in getattr(exc, "args", ()) or ():
+            if isinstance(a, PermissionError):
+                return True
+            if isinstance(a, OSError) and getattr(a, "errno", None) in (errno.EACCES, errno.EPERM):
+                return True
+    except Exception:
+        pass
+
+    s = str(exc).lower()
+    return ("permission denied" in s) or ("errno 13" in s) or ("eacces" in s)
+
+
+def _asrl_devnode(resource_id: str) -> Optional[str]:
+    """Extract /dev/... from an ASRL VISA resource string when present."""
+    rid = str(resource_id or "")
+    if not rid.startswith("ASRL") or "/dev/" not in rid:
+        return None
+    start = rid.find("/dev/")
+    end = rid.find("::", start)
+    if end == -1:
+        end = len(rid)
+    out = rid[start:end]
+    return out or None
+
+
+def _print_serial_permission_hint(devnode: str) -> None:
+    devnode = str(devnode or "").strip()
+    if not devnode:
+        return
+    # Debian/Ubuntu convention for /dev/tty* access.
+    print(f"HINT: Permission denied opening {devnode}.")
+    print("  Fix: add your user to the dialout group, then log out/in:")
+    print("    sudo usermod -aG dialout $USER")
+    print("  (You can also test quickly with: sudo chmod a+rw <device>, but udev will reset it)")
 
 def _clamp_i16(x: int) -> int:
     if x < -32768:
@@ -134,7 +209,19 @@ class HardwareManager:
         initial_drive = bool(getattr(config, "K1_IDLE_DRIVE", False))
 
         self.relay_backend: str = "disabled"
-        if bool(getattr(config, "K1_ENABLE", True)):
+        if not bool(getattr(config, "K1_ENABLE", True)):
+            self.relay = _NullRelay(initial_drive)
+            self.relay_backend = "disabled"
+        elif not _is_raspberry_pi():
+            # Avoid gpiozero pin-factory fallback noise on non-Pi hosts.
+            print("WARNING: K1 GPIO unavailable (not a Raspberry Pi); running with a mock relay.")
+            self.relay = _NullRelay(initial_drive)
+            self.relay_backend = "mock"
+        elif LED is None:
+            print("WARNING: gpiozero unavailable; running with a mock relay.")
+            self.relay = _NullRelay(initial_drive)
+            self.relay_backend = "mock"
+        else:
             try:
                 self.relay = LED(
                     config.K1_PIN_BCM,
@@ -146,14 +233,10 @@ class HardwareManager:
                 )
                 self.relay_backend = "gpio"
             except Exception as e:
-                # Typical causes: running off-Pi, missing pin factory backends
-                # (lgpio/RPi.GPIO/pigpio), or insufficient permissions for GPIO.
+                # Typical causes: missing pin factories, insufficient permissions, etc.
                 print(f"WARNING: K1 GPIO unavailable; running with a mock relay. ({e})")
                 self.relay = _NullRelay(initial_drive)
                 self.relay_backend = "mock"
-        else:
-            self.relay = _NullRelay(initial_drive)
-            self.relay_backend = "disabled"
 
     def _maybe_detect_mmeter_scpi_style(self) -> None:
         """One-time SCPI dialect detection for the 5491B.
@@ -342,8 +425,10 @@ class HardwareManager:
                 pass
 
             self._maybe_detect_mmeter_scpi_style()
-        except (serial.SerialException, IOError) as e:
+        except (serial.SerialException, IOError, OSError) as e:
             print(f"Failed to communicate with multi-meter: {e}")
+            if _is_permission_denied(e):
+                _print_serial_permission_hint(str(getattr(config, "MULTI_METER_PATH", "") or ""))
             self.multi_meter = None
             self.mmeter = None
 
@@ -458,6 +543,10 @@ class HardwareManager:
 
             except Exception as e:
                 print(f"AFG Connection Failed ({config.AFG_VISA_ID}): {e}")
+                if _is_permission_denied(e):
+                    dev = _asrl_devnode(str(getattr(config, "AFG_VISA_ID", "") or ""))
+                    if dev:
+                        _print_serial_permission_hint(dev)
 
             if not self.e_load:
                 print("WARNING: E-LOAD not found.")
@@ -517,6 +606,8 @@ class HardwareManager:
 
         except Exception as e:
             print(f"MrSignal connection failed ({port}): {e}")
+            if _is_permission_denied(e):
+                _print_serial_permission_hint(port)
             try:
                 if self.mrsignal:
                     self.mrsignal.close()
