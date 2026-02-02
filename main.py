@@ -386,6 +386,11 @@ def instrument_poll_loop(
                             mmeter_probe_idx += 1
 
                     if cmds_to_try:
+                        # If we recently changed meter mode/range, give the instrument
+                        # a brief window to settle before we query it.
+                        quiet_until = float(getattr(hardware, "mmeter_quiet_until", 0.0) or 0.0)
+                        if quiet_until and now_m < quiet_until:
+                            cmds_to_try = []
                         mm_primary = None
                         mm_secondary = None
                         mm_raw = ""

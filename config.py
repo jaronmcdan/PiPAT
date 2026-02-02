@@ -57,7 +57,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 # Build / version tag to make it obvious which zip is running.
 # You can override via env var PIPAT_BUILD_TAG.
-BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-02-01-canview-clearerr-v1")
+BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-02-02-mmeter-fallback-v2")
 
 
 # --- Hardware Identifiers ---
@@ -85,7 +85,7 @@ MULTI_METER_IDN_READ_LINES = _env_int("MULTI_METER_IDN_READ_LINES", 4)
 # until we get a parseable float.
 MULTI_METER_FETCH_CMDS = _env_str(
     "MULTI_METER_FETCH_CMDS",
-    ":FETC?",
+    ":FETC?,:FETCh?,READ?,READ??",
 )
 
 # SCPI dialect for the 2831E/5491B bench multimeters.
@@ -100,10 +100,17 @@ MULTI_METER_FETCH_CMDS = _env_str(
 # PiPAT primarily uses this "func" dialect.
 #
 # Values:
-#   - "func" (default): :FUNCtion, :VOLTage:DC:RANGe:AUTO, :FUNCtion2...
-#   - "conf": legacy/alternate dialect (not used by default)
-#   - "auto": probe once on startup (tries "func" first)
-MMETER_SCPI_STYLE = _env_str("MMETER_SCPI_STYLE", "func").strip().lower()
+#   - "auto" (default): choose a working dialect (tries "conf" then "func")
+#   - "func": force :FUNCtion / :VOLTage/:CURRent... dialect
+#   - "conf": force CONF:... / CONFigure:... dialect
+MMETER_SCPI_STYLE = _env_str("MMETER_SCPI_STYLE", "auto").strip().lower()
+
+# After any control command that changes measurement mode/range/etc, PiPAT
+# pauses background meter polling briefly so the instrument can settle.
+MMETER_CONTROL_SETTLE_SEC = _env_float("MMETER_CONTROL_SETTLE_SEC", 0.30)
+
+# Enable extra multimeter SCPI logging (useful for diagnosing "BUS" errors).
+MMETER_DEBUG = _env_bool("MMETER_DEBUG", False)
 
 # Legacy CAN frame compatibility: the original MMETER_CTRL_ID frame includes a
 # 2nd byte often called "range". Historically PiPAT did **not** apply it to the
