@@ -228,7 +228,7 @@ CAN_INTERFACE = _env_str("CAN_INTERFACE", "socketcan").strip().lower()
 # Channel identifier used by the selected backend:
 #   - socketcan: "can0", "can1", ...
 #   - rmcanview: "/dev/ttyUSB0", "/dev/serial/by-id/...", ...
-CAN_CHANNEL = _env_str("CAN_CHANNEL", "can1")
+CAN_CHANNEL = _env_str("CAN_CHANNEL", "can0")
 
 # Serial baud rate for CAN_INTERFACE="rmcanview" (USB-serial link baud).
 # This is *not* the CAN bus bitrate; use CAN_BITRATE for that.
