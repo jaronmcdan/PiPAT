@@ -32,6 +32,93 @@ from mrsignal import MrSignalClient
 LogFn = Callable[[str], None]
 
 
+# -------- by-id helpers --------
+
+
+def _serial_by_id_entries() -> List[Tuple[str, str, str]]:
+    """List /dev/serial/by-id entries as (name, path, realpath)."""
+
+    out: List[Tuple[str, str, str]] = []
+    base = "/dev/serial/by-id"
+    if not os.path.isdir(base):
+        return out
+    try:
+        for name in sorted(os.listdir(base)):
+            p = os.path.join(base, name)
+            try:
+                real = os.path.realpath(p)
+            except Exception:
+                real = ""
+            out.append((name, p, real))
+    except Exception:
+        return []
+    return out
+
+
+def _match_hint(name_l: str, hint_l: str) -> bool:
+    """Return True if the hint matches the by-id name.
+
+    - If hint contains glob metacharacters, use fnmatch.
+    - Otherwise do a simple substring match.
+    """
+
+    if not hint_l:
+        return False
+    try:
+        if any(ch in hint_l for ch in ("*", "?", "[")):
+            import fnmatch
+
+            return bool(fnmatch.fnmatch(name_l, hint_l))
+    except Exception:
+        pass
+    return hint_l in name_l
+
+
+def _pick_by_id(entries: Sequence[Tuple[str, str, str]], hints: Sequence[str]) -> Optional[str]:
+    """Pick the best /dev/serial/by-id path matching the hints.
+
+    Returns the by-id *symlink path* (not the real /dev/tty* node).
+    """
+
+    hs = [h.strip().lower() for h in (hints or []) if (h or "").strip()]
+    if not entries or not hs:
+        return None
+
+    best_path: Optional[str] = None
+    best_score = 0
+
+    for name, path, _real in entries:
+        nl = (name or "").lower()
+        score = 0
+        for h in hs:
+            if _match_hint(nl, h):
+                score += 1
+        if score > best_score:
+            best_score = score
+            best_path = path
+
+    return best_path if best_score > 0 else None
+
+
+def _stable_asrl_resource_id(rid: str, *, prefer_by_id: bool = True) -> str:
+    """If rid is ASRL/dev/ttyX::INSTR, rewrite to ASRL/dev/serial/by-id/...::INSTR when available."""
+
+    dn = _asrl_devnode(rid)
+    if not dn:
+        return rid
+    stable = _stable_serial_path(dn, prefer_by_id=prefer_by_id)
+    if not stable or stable == dn:
+        return rid
+    try:
+        i = rid.find(dn)
+        if i >= 0:
+            return rid[:i] + stable + rid[i + len(dn) :]
+    except Exception:
+        pass
+    # Fallback: typical ASRL resource format
+    return f"ASRL{stable}::INSTR"
+
+
 def _split_hints(s: str) -> List[str]:
     toks = []
     for t in (s or "").split(","):
@@ -239,6 +326,9 @@ class DiscoveryResult:
     afg_idn: Optional[str] = None
     eload_visa_id: Optional[str] = None
     eload_idn: Optional[str] = None
+    # Optional extras (not strictly required by PiPAT core, but useful on a closed system)
+    can_channel: Optional[str] = None
+    k1_serial_port: Optional[str] = None
 
 
 def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryResult:
@@ -251,28 +341,135 @@ def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryR
 
     verbose = bool(getattr(config, "AUTO_DETECT_VERBOSE", True))
     prefer_by_id = bool(getattr(config, "AUTO_DETECT_PREFER_BY_ID", True))
+    byid_only = bool(getattr(config, "AUTO_DETECT_BYID_ONLY", False))
+
+    byid_entries = _serial_by_id_entries()
+    if verbose:
+        _log(log_fn, f"[autodetect] /dev/serial/by-id: {[n for (n, _p, _r) in byid_entries]}")
 
     mm_hints = _split_hints(str(getattr(config, "AUTO_DETECT_MMETER_IDN_HINTS", "") or ""))
+    mm_byid_hints = _split_hints(
+        str(getattr(config, "AUTO_DETECT_MMETER_BYID_HINTS", getattr(config, "AUTO_DETECT_MMETER_IDN_HINTS", "")) or "")
+    )
     mrs_enabled = bool(getattr(config, "MRSIGNAL_ENABLE", False))
+    mrs_byid_hints = _split_hints(str(getattr(config, "AUTO_DETECT_MRSIGNAL_BYID_HINTS", "") or ""))
     afg_hints = _split_hints(str(getattr(config, "AUTO_DETECT_AFG_IDN_HINTS", "") or ""))
+    afg_byid_hints = _split_hints(str(getattr(config, "AUTO_DETECT_AFG_BYID_HINTS", "") or ""))
     eload_hints = _split_hints(str(getattr(config, "AUTO_DETECT_ELOAD_IDN_HINTS", "") or ""))
+
+    # ---- Closed-system helpers: map by-id names to config *without* probing ----
+    # CANview serial gateway (rmcanview)
+    if bool(getattr(config, "AUTO_DETECT_CANVIEW", True)):
+        iface = str(getattr(config, "CAN_INTERFACE", "socketcan") or "socketcan").strip().lower()
+        if iface in ("rmcanview", "rm-canview", "proemion"):
+            cur = str(getattr(config, "CAN_CHANNEL", "") or "").strip()
+            # Normalize an existing path to a stable symlink if possible
+            if cur.startswith("/dev/"):
+                stable = _stable_serial_path(cur, prefer_by_id=prefer_by_id)
+                if stable and stable != cur:
+                    setattr(config, "CAN_CHANNEL", stable)
+                    res.can_channel = stable
+                    if verbose:
+                        _log(log_fn, f"[autodetect] canview: {stable} (from {cur})")
+
+            # If empty or still a volatile /dev/tty* node, try by-id matching
+            cur2 = str(getattr(config, "CAN_CHANNEL", "") or "").strip()
+            if (not cur2) or cur2.startswith("/dev/tty"):
+                can_hints = _split_hints(str(getattr(config, "AUTO_DETECT_CANVIEW_BYID_HINTS", "") or ""))
+                cand = _pick_by_id(byid_entries, can_hints)
+                if cand:
+                    setattr(config, "CAN_CHANNEL", cand)
+                    res.can_channel = cand
+                    if verbose:
+                        _log(log_fn, f"[autodetect] canview: {cand}")
+
+    # Arduino relay controller (K1 serial backend)
+    if bool(getattr(config, "AUTO_DETECT_K1_SERIAL", True)) and bool(getattr(config, "K1_ENABLE", True)):
+        cur = str(getattr(config, "K1_SERIAL_PORT", "") or "").strip()
+        if cur:
+            stable = _stable_serial_path(cur, prefer_by_id=prefer_by_id)
+            if stable and stable != cur:
+                setattr(config, "K1_SERIAL_PORT", stable)
+                res.k1_serial_port = stable
+                if verbose:
+                    _log(log_fn, f"[autodetect] k1 serial: {stable} (from {cur})")
+        cur2 = str(getattr(config, "K1_SERIAL_PORT", "") or "").strip()
+        if not cur2:
+            k1_hints = _split_hints(str(getattr(config, "AUTO_DETECT_K1_BYID_HINTS", "") or ""))
+            cand = _pick_by_id(byid_entries, k1_hints)
+            if cand:
+                setattr(config, "K1_SERIAL_PORT", cand)
+                res.k1_serial_port = cand
+                if verbose:
+                    _log(log_fn, f"[autodetect] k1 serial: {cand}")
 
     # --- Serial discovery (multimeter + MrSignal) ---
     ports = _serial_candidates()
     if verbose:
         _log(log_fn, f"[autodetect] serial ports: {ports}")
 
-    # Multimeter: keep current if it answers with expected IDN
+    # Build a skip list for *serial probing* so we don't spam unrelated ports.
+    reserved_realpaths = set()
+    for p in (
+        str(getattr(config, "CAN_CHANNEL", "") or "").strip(),
+        str(getattr(config, "K1_SERIAL_PORT", "") or "").strip(),
+        str(getattr(config, "MULTI_METER_PATH", "") or "").strip(),
+        str(getattr(config, "MRSIGNAL_PORT", "") or "").strip(),
+    ):
+        if not p or not p.startswith("/dev/"):
+            continue
+        try:
+            reserved_realpaths.add(os.path.realpath(p))
+        except Exception:
+            reserved_realpaths.add(p)
+
+    def _is_reserved(dev: str) -> bool:
+        try:
+            return os.path.realpath(dev) in reserved_realpaths
+        except Exception:
+            return dev in reserved_realpaths
+
+    # Multimeter
     if bool(getattr(config, "AUTO_DETECT_MMETER", True)):
+        baud = int(getattr(config, "MULTI_METER_BAUD", 38400))
+
+        # 0) If config points at a volatile /dev/tty*, rewrite to a stable by-id symlink.
         cur = str(getattr(config, "MULTI_METER_PATH", "") or "").strip()
-        if cur:
-            idn = _probe_multimeter_idn(cur, int(getattr(config, "MULTI_METER_BAUD", 38400)))
+        if cur and cur.startswith("/dev/tty"):
+            stable = _stable_serial_path(cur, prefer_by_id=prefer_by_id)
+            if stable and stable != cur:
+                setattr(config, "MULTI_METER_PATH", stable)
+                cur = stable
+
+        # 1) Try by-id name matching first (closed system = safest).
+        if not res.multimeter_path and byid_entries and mm_byid_hints:
+            cand = _pick_by_id(byid_entries, mm_byid_hints)
+            if cand:
+                idn = _probe_multimeter_idn(cand, baud)
+                if idn and (not mm_hints or _contains_any(idn, mm_hints)):
+                    res.multimeter_path = _stable_serial_path(cand, prefer_by_id=prefer_by_id)
+                    res.multimeter_idn = idn
+                elif byid_only:
+                    # Trust the by-id mapping even if *IDN? doesn't respond.
+                    res.multimeter_path = _stable_serial_path(cand, prefer_by_id=prefer_by_id)
+                    res.multimeter_idn = idn
+
+        # 2) Keep current if it answers with expected IDN
+        if (not res.multimeter_path) and cur:
+            idn = _probe_multimeter_idn(cur, baud)
             if idn and (not mm_hints or _contains_any(idn, mm_hints)):
                 res.multimeter_path = _stable_serial_path(cur, prefer_by_id=prefer_by_id)
                 res.multimeter_idn = idn
-        if not res.multimeter_path:
+
+        # 3) As a fallback, probe other serial ports (unless by-id-only mode is set).
+        if (not res.multimeter_path) and (not byid_only):
             for dev in ports:
-                idn = _probe_multimeter_idn(dev, int(getattr(config, "MULTI_METER_BAUD", 38400)))
+                if cur and os.path.realpath(dev) == os.path.realpath(cur):
+                    continue
+                # Skip ports we already know are used by other roles.
+                if _is_reserved(dev):
+                    continue
+                idn = _probe_multimeter_idn(dev, baud)
                 if not idn:
                     continue
                 if mm_hints and not _contains_any(idn, mm_hints):
@@ -280,6 +477,7 @@ def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryR
                 res.multimeter_path = _stable_serial_path(dev, prefer_by_id=prefer_by_id)
                 res.multimeter_idn = idn
                 break
+
         if res.multimeter_path:
             setattr(config, "MULTI_METER_PATH", res.multimeter_path)
             # Cache the IDN so HardwareManager can avoid re-querying during
@@ -292,17 +490,44 @@ def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryR
 
     # MrSignal: only if enabled
     if mrs_enabled and bool(getattr(config, "AUTO_DETECT_MRSIGNAL", True)):
-        # Keep current if it works
+        # 0) If config points at a volatile /dev/tty*, rewrite to stable by-id.
         cur = str(getattr(config, "MRSIGNAL_PORT", "") or "").strip()
-        if cur:
+        if cur and cur.startswith("/dev/tty"):
+            stable = _stable_serial_path(cur, prefer_by_id=prefer_by_id)
+            if stable and stable != cur:
+                setattr(config, "MRSIGNAL_PORT", stable)
+                cur = stable
+
+        # 1) Try by-id matching first.
+        if not res.mrsignal_port and byid_entries and mrs_byid_hints:
+            cand = _pick_by_id(byid_entries, mrs_byid_hints)
+            if cand:
+                ok, dev_id = _try_mrsignal_on_port(cand)
+                if ok:
+                    res.mrsignal_port = _stable_serial_path(cand, prefer_by_id=prefer_by_id)
+                    res.mrsignal_id = dev_id
+                elif byid_only:
+                    res.mrsignal_port = _stable_serial_path(cand, prefer_by_id=prefer_by_id)
+                    res.mrsignal_id = dev_id
+
+        # 2) Keep current if it works
+        if (not res.mrsignal_port) and cur:
             ok, dev_id = _try_mrsignal_on_port(cur)
             if ok:
                 res.mrsignal_port = _stable_serial_path(cur, prefer_by_id=prefer_by_id)
                 res.mrsignal_id = dev_id
-        if not res.mrsignal_port:
+
+        # 3) Fallback scan across serial ports (unless by-id-only mode).
+        if (not res.mrsignal_port) and (not byid_only):
             for dev in ports:
                 # Avoid probing the same port chosen for the multimeter
-                if res.multimeter_path and os.path.realpath(dev) == os.path.realpath(res.multimeter_path):
+                try:
+                    if res.multimeter_path and os.path.realpath(dev) == os.path.realpath(res.multimeter_path):
+                        continue
+                except Exception:
+                    pass
+                # Skip ports we already know are used by other roles.
+                if _is_reserved(dev):
                     continue
                 ok, dev_id = _try_mrsignal_on_port(dev)
                 if not ok:
@@ -310,6 +535,7 @@ def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryR
                 res.mrsignal_port = _stable_serial_path(dev, prefer_by_id=prefer_by_id)
                 res.mrsignal_id = dev_id
                 break
+
         if res.mrsignal_port:
             setattr(config, "MRSIGNAL_PORT", res.mrsignal_port)
             if verbose:
@@ -358,21 +584,52 @@ def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryR
                     exclude_prefixes.append("/dev/ttyusb")
 
             # Build a realpath set for serial devices we must not poke via VISA.
+            # This is stricter than the *serial probing* skip list.
             skip_serial_realpaths = set()
             for p in [
                 res.multimeter_path,
                 res.mrsignal_port,
+                res.k1_serial_port,
+                res.can_channel,
                 str(getattr(config, "MULTI_METER_PATH", "") or "").strip() or None,
                 str(getattr(config, "MRSIGNAL_PORT", "") or "").strip() or None,
+                str(getattr(config, "K1_SERIAL_PORT", "") or "").strip() or None,
+                str(getattr(config, "CAN_CHANNEL", "") or "").strip() or None,
             ]:
                 if not p:
+                    continue
+                # Only add true device nodes/paths; skip interface names like "can0".
+                if isinstance(p, str) and (not p.startswith("/dev/")):
                     continue
                 try:
                     skip_serial_realpaths.add(os.path.realpath(p))
                 except Exception:
-                    continue
+                    try:
+                        skip_serial_realpaths.add(str(p))
+                    except Exception:
+                        continue
+
+            # If we can identify the AFG by its /dev/serial/by-id name, probe it first
+            # (and optionally probe *only* it in AUTO_DETECT_BYID_ONLY mode).
+            afg_byid_rid: Optional[str] = None
+            afg_byid_real: Optional[str] = None
+            if afg_byid_hints and byid_entries and bool(getattr(config, "AUTO_DETECT_AFG", True)):
+                byid_path = _pick_by_id(byid_entries, afg_byid_hints)
+                if byid_path:
+                    afg_byid_rid = f"ASRL{byid_path}::INSTR"
+                    try:
+                        dn = _asrl_devnode(afg_byid_rid)
+                        if dn:
+                            afg_byid_real = os.path.realpath(dn)
+                    except Exception:
+                        afg_byid_real = None
+                    if verbose:
+                        _log(log_fn, f"[autodetect] afg by-id candidate: {afg_byid_rid}")
 
             cand: List[str] = []
+            if afg_byid_rid:
+                cand.append(afg_byid_rid)
+
             for r in rids:
                 if r.startswith("USB"):
                     cand.append(r)
@@ -389,6 +646,13 @@ def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryR
                         dn_real = os.path.realpath(devnode)
                     except Exception:
                         dn_real = devnode
+
+                    # In closed-system (by-id-only) mode, never probe random ASRL ports.
+                    # Only probe the AFG candidate if we have one.
+                    if byid_only and afg_byid_real and dn_real and (dn_real != afg_byid_real):
+                        if verbose:
+                            _log(log_fn, f"[autodetect] skip VISA probe on {r} (by-id-only)")
+                        continue
 
                     dn_l = (dn_real or devnode).lower()
 
@@ -420,6 +684,10 @@ def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryR
                     except Exception:
                         pass
                 cand.append(r)
+
+            # De-dupe while preserving order
+            seen = set()
+            cand = [x for x in cand if not (x in seen or seen.add(x))]
             if verbose:
                 _log(log_fn, f"[autodetect] visa resources: {cand}")
 
@@ -486,11 +754,13 @@ def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryR
                             chosen_idn = idn
                             break
                 if chosen:
-                    res.afg_visa_id = chosen
+                    chosen_stable = _stable_asrl_resource_id(chosen, prefer_by_id=prefer_by_id)
+                    res.afg_visa_id = chosen_stable
                     res.afg_idn = chosen_idn
-                    setattr(config, "AFG_VISA_ID", chosen)
+                    setattr(config, "AFG_VISA_ID", chosen_stable)
                     if verbose:
-                        _log(log_fn, f"[autodetect] afg: {chosen} ({chosen_idn})")
+                        extra = "" if chosen_stable == chosen else f" (stable={chosen_stable})"
+                        _log(log_fn, f"[autodetect] afg: {chosen} ({chosen_idn}){extra}")
 
             try:
                 rm.close()

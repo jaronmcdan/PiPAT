@@ -190,6 +190,8 @@ PiPAT includes **best-effort auto-detection** that runs at startup and patches:
 
 - `MULTI_METER_PATH`
 - `MRSIGNAL_PORT`
+- `K1_SERIAL_PORT` (optional Arduino relay backend)
+- `CAN_CHANNEL` (when `CAN_INTERFACE=rmcanview`)
 - `AFG_VISA_ID`
 - `ELOAD_VISA_ID`
 
@@ -200,6 +202,17 @@ How it works:
 Controls:
 - Disable detection: `python3 main.py --no-auto-detect`
 - Or via env: `AUTO_DETECT_ENABLE=0`
+
+Closed / fixed systems (recommended):
+- Set `AUTO_DETECT_BYID_ONLY=1` to avoid probing **unknown** serial ports. In this
+  mode PiPAT will prefer mapping devices purely by their `/dev/serial/by-id/...`
+  names (plus a single verification attempt on the matched device).
+- Tune the by-id matching hints if needed:
+  - `AUTO_DETECT_MMETER_BYID_HINTS`
+  - `AUTO_DETECT_MRSIGNAL_BYID_HINTS`
+  - `AUTO_DETECT_K1_BYID_HINTS`
+  - `AUTO_DETECT_CANVIEW_BYID_HINTS`
+  - `AUTO_DETECT_AFG_BYID_HINTS`
 
 Hint tuning (comma-separated, optional):
 - `AUTO_DETECT_MMETER_IDN_HINTS` (default: `multimeter,5491b`)
