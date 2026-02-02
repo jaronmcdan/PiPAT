@@ -105,6 +105,15 @@ MULTI_METER_FETCH_CMDS = _env_str(
 #   - "auto": probe once on startup (tries "func" first)
 MMETER_SCPI_STYLE = _env_str("MMETER_SCPI_STYLE", "func").strip().lower()
 
+# Legacy CAN frame compatibility: the original MMETER_CTRL_ID frame includes a
+# 2nd byte often called "range". Historically PiPAT did **not** apply it to the
+# instrument (it only stored it).
+#
+# Some 5491B firmware variants will throw a front-panel "BUS: BAD COMMAND" if we
+# try to drive autorange with an unsupported SCPI command. To preserve legacy
+# behavior (and avoid surprises), this defaults to False.
+MMETER_LEGACY_RANGE_ENABLE = _env_bool("MMETER_LEGACY_RANGE_ENABLE", False)
+
 # If True, query and drain the multimeter error queue on startup.
 # Useful if you've been experimenting with SCPI and the front panel is showing
 # a persistent "BUS" error message.

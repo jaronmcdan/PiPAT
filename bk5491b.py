@@ -70,17 +70,25 @@ SCPI_STYLE_AUTO = "auto"
 # Primary function selection commands
 # NOTE: Always include a leading ':' for root-level addressing.
 
-# FUNC-style (classic) function selection
+# FUNC-style (classic) function selection.
+#
+# NOTE: For many SCPI DMMs, the parameter values for :FUNCtion are *mnemonics*
+# (e.g. "VOLT:DC", "CURR:DC"). Some firmware variants are picky about these
+# tokens (they may not accept the long-form "VOLTage" / "CURRent" strings as
+# parameter values even though long-form works in command headers).
+#
+# To maximize compatibility (and avoid front-panel "BUS: BAD COMMAND"), we use
+# the common abbreviated mnemonics here.
 FUNC_TO_SCPI_FUNC = {
-    MmeterFunc.VDC: ":FUNCtion VOLTage:DC",
-    MmeterFunc.VAC: ":FUNCtion VOLTage:AC",
-    MmeterFunc.IDC: ":FUNCtion CURRent:DC",
-    MmeterFunc.IAC: ":FUNCtion CURRent:AC",
-    MmeterFunc.RES: ":FUNCtion RESistance",
-    MmeterFunc.FREQ: ":FUNCtion FREQuency",
-    MmeterFunc.PERIOD: ":FUNCtion PERiod",
+    MmeterFunc.VDC: ":FUNCtion VOLT:DC",
+    MmeterFunc.VAC: ":FUNCtion VOLT:AC",
+    MmeterFunc.IDC: ":FUNCtion CURR:DC",
+    MmeterFunc.IAC: ":FUNCtion CURR:AC",
+    MmeterFunc.RES: ":FUNCtion RES",
+    MmeterFunc.FREQ: ":FUNCtion FREQ",
+    MmeterFunc.PERIOD: ":FUNCtion PER",
     MmeterFunc.DIODE: ":FUNCtion DIODe",
-    MmeterFunc.CONT: ":FUNCtion CONTinuity",
+    MmeterFunc.CONT: ":FUNCtion CONT",
 }
 
 
@@ -108,42 +116,42 @@ FUNC_TO_SCPI_CONF = {
 #   VOLTage:AC/DC, CURRent:AC/DC, FREQuency, dB, dBm.
 # We only expose the subset we have enums for.
 FUNC_TO_SCPI_FUNC2 = {
-    MmeterFunc.VDC: ":FUNCtion2 VOLTage:DC",
-    MmeterFunc.VAC: ":FUNCtion2 VOLTage:AC",
-    MmeterFunc.IDC: ":FUNCtion2 CURRent:DC",
-    MmeterFunc.IAC: ":FUNCtion2 CURRent:AC",
-    MmeterFunc.FREQ: ":FUNCtion2 FREQuency",
+    MmeterFunc.VDC: ":FUNCtion2 VOLT:DC",
+    MmeterFunc.VAC: ":FUNCtion2 VOLT:AC",
+    MmeterFunc.IDC: ":FUNCtion2 CURR:DC",
+    MmeterFunc.IAC: ":FUNCtion2 CURR:AC",
+    MmeterFunc.FREQ: ":FUNCtion2 FREQ",
 }
 
 
 # Which subsystem prefix to use for RANGE / AUTO-RANGE / NPLC / REF in FUNC-style.
 # Not all functions support these; unsupported functions will be ignored.
 FUNC_TO_RANGE_PREFIX_FUNC = {
-    MmeterFunc.VDC: ":VOLTage:DC",
-    MmeterFunc.VAC: ":VOLTage:AC",
-    MmeterFunc.IDC: ":CURRent:DC",
-    MmeterFunc.IAC: ":CURRent:AC",
-    MmeterFunc.RES: ":RESistance",
+    MmeterFunc.VDC: ":VOLT:DC",
+    MmeterFunc.VAC: ":VOLT:AC",
+    MmeterFunc.IDC: ":CURR:DC",
+    MmeterFunc.IAC: ":CURR:AC",
+    MmeterFunc.RES: ":RES",
 }
 
 
 FUNC_TO_NPLC_PREFIX_FUNC = {
     # Integration rate (NPLC) is supported for most basic measurement functions
     # except frequency/period/continuity/diode (see the 2831E/5491B manual).
-    MmeterFunc.VDC: ":VOLTage:DC",
-    MmeterFunc.VAC: ":VOLTage:AC",
-    MmeterFunc.IDC: ":CURRent:DC",
-    MmeterFunc.IAC: ":CURRent:AC",
-    MmeterFunc.RES: ":RESistance",
+    MmeterFunc.VDC: ":VOLT:DC",
+    MmeterFunc.VAC: ":VOLT:AC",
+    MmeterFunc.IDC: ":CURR:DC",
+    MmeterFunc.IAC: ":CURR:AC",
+    MmeterFunc.RES: ":RES",
 }
 
 
 FUNC_TO_REF_PREFIX_FUNC = {
-    MmeterFunc.VDC: ":VOLTage:DC",
-    MmeterFunc.VAC: ":VOLTage:AC",
-    MmeterFunc.IDC: ":CURRent:DC",
-    MmeterFunc.IAC: ":CURRent:AC",
-    MmeterFunc.RES: ":RESistance",
+    MmeterFunc.VDC: ":VOLT:DC",
+    MmeterFunc.VAC: ":VOLT:AC",
+    MmeterFunc.IDC: ":CURR:DC",
+    MmeterFunc.IAC: ":CURR:AC",
+    MmeterFunc.RES: ":RES",
 }
 
 

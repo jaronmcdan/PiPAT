@@ -12,6 +12,7 @@ import config
 from hardware import HardwareManager
 from bk5491b import (
     FUNC_TO_SCPI_FUNC,
+    FUNC_TO_SCPI_CONF,
     FUNC_TO_SCPI_FUNC2,
     FUNC_TO_RANGE_PREFIX_FUNC,
     FUNC_TO_NPLC_PREFIX_FUNC,
@@ -87,11 +88,22 @@ class DeviceCommandProcessor:
 
     def _mmeter_set_func(self, func: int) -> None:
         func_i = int(func) & 0xFF
-        # PiPAT defaults to the documented 2831E/5491B SCPI dialect rooted at
-        # :FUNCtion (plus :FUNCtion2 for secondary display).
-        # Treat any legacy "conf" selection as "func" to avoid spamming the
-        # instrument with unsupported :CONFigure commands.
-        cmd = FUNC_TO_SCPI_FUNC.get(func_i)
+
+        # The 5491B family has at least two commonly observed SCPI "dialects":
+        #   - "func": :FUNCtion <mnemonic> (and :FUNCtion2)
+        #   - "conf": :CONF:<FUNC> style
+        #
+        # Which one works depends on firmware / command set. Use the value
+        # selected by HardwareManager (from MMETER_SCPI_STYLE).
+        style = str(
+            getattr(self.hardware, "mmeter_scpi_style", getattr(config, "MMETER_SCPI_STYLE", "func"))
+        ).strip().lower()
+
+        # Choose mapping based on style, but keep a fallback.
+        if style == "conf":
+            cmd = FUNC_TO_SCPI_CONF.get(func_i) or FUNC_TO_SCPI_FUNC.get(func_i)
+        else:
+            cmd = FUNC_TO_SCPI_FUNC.get(func_i) or FUNC_TO_SCPI_CONF.get(func_i)
 
         if not cmd:
             self.log(f"MMETER: unsupported function enum {func_i}")
@@ -188,29 +200,32 @@ class DeviceCommandProcessor:
                 except Exception:
                     pass
 
-            # Range byte historically wasn't applied; we now interpret 0 as autorange ON.
-            # Non-zero values are stored but not mapped (instrument-specific).
-            try:
-                with self.hardware.mmeter_lock:
-                    if int(meter_range) == 0:
-                        func_i = int(getattr(self.hardware, "mmeter_func", int(MmeterFunc.VDC))) & 0xFF
-                        prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(func_i)
-                        key = (func_i, True)
-                        if prefix and self._mmeter_last_autorange_cmd != key:
-                            self._mmeter_write(f"{prefix}:RANGe:AUTO ON")
-                            self._mmeter_last_autorange_cmd = key
-                        self.hardware.mmeter_autorange = True
-                    else:
-                        # Disable autorange (freeze at the currently selected range)
-                        func_i = int(getattr(self.hardware, "mmeter_func", int(MmeterFunc.VDC))) & 0xFF
-                        prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(func_i)
-                        key = (func_i, False)
-                        if prefix and self._mmeter_last_autorange_cmd != key:
-                            self._mmeter_write(f"{prefix}:RANGe:AUTO OFF")
-                            self._mmeter_last_autorange_cmd = key
-                        self.hardware.mmeter_autorange = False
-            except Exception:
-                pass
+            # Legacy range byte:
+            # By default we **do not** apply it (matches historical PiPAT
+            # behavior and avoids "BUS: BAD COMMAND" on meters that don't
+            # support the per-subsystem :RANGe:AUTO commands).
+            if bool(getattr(config, "MMETER_LEGACY_RANGE_ENABLE", False)):
+                try:
+                    with self.hardware.mmeter_lock:
+                        if int(meter_range) == 0:
+                            func_i = int(getattr(self.hardware, "mmeter_func", int(MmeterFunc.VDC))) & 0xFF
+                            prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(func_i)
+                            key = (func_i, True)
+                            if prefix and self._mmeter_last_autorange_cmd != key:
+                                self._mmeter_write(f"{prefix}:RANGe:AUTO ON")
+                                self._mmeter_last_autorange_cmd = key
+                            self.hardware.mmeter_autorange = True
+                        else:
+                            # Disable autorange (freeze at the currently selected range)
+                            func_i = int(getattr(self.hardware, "mmeter_func", int(MmeterFunc.VDC))) & 0xFF
+                            prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(func_i)
+                            key = (func_i, False)
+                            if prefix and self._mmeter_last_autorange_cmd != key:
+                                self._mmeter_write(f"{prefix}:RANGe:AUTO OFF")
+                                self._mmeter_last_autorange_cmd = key
+                            self.hardware.mmeter_autorange = False
+                except Exception:
+                    pass
 
             self.hardware.multi_meter_range = int(meter_range)
             return
