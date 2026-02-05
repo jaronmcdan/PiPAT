@@ -12,6 +12,12 @@ import config
 
 from bk5491b import func_name
 
+# Optional: PAT switch-matrix J0 pin labels (parsed from PAT.dbc if available)
+try:
+    from pat_matrix import j0_pin_names as _pat_j0_pin_names
+except Exception:
+    _pat_j0_pin_names = lambda: {}
+
 # Try to initialize Rich Console
 try:
     console = Console(highlight=False)
@@ -129,7 +135,8 @@ def build_dashboard(hardware, *,
     layout = Layout()
     layout.split(
         Layout(name="grid", ratio=1),
-        Layout(name="pat", size=3),
+        # Two-line PAT footer (J0..J5 in a 2x3 grid) + panel border.
+        Layout(name="pat", size=4),
     )
 
     layout["grid"].split(
@@ -137,42 +144,38 @@ def build_dashboard(hardware, *,
         Layout(name="row2", ratio=1),
     )
 
-    def _pat_compact(vals):
-        """Render 12 2-bit values as a tight, color-coded string.
+    def _pat_active_list(vals, *, names: dict[int, str] | None = None, show_pin: bool = True) -> str:
+        """Render PAT_Jx values as a compact list of *active* pins.
 
-        Convention (purely visual):
-          0 -> dim '.'
-          1 -> green '1'
-          2 -> yellow '2'
-          3 -> red '3'
+        Instead of drawing a 12-char bitmap, we list the pin numbers (1..12)
+        that are non-zero.
+
+        - Pin numbers (or names) are color-coded by the 2-bit value:
+            1 -> green, 2 -> yellow, 3 -> red
+        - If `names` is provided (e.g. for J0), the label becomes:
+            "<pin>:<name>" (still color-coded)
         """
+
         try:
             if not vals or len(vals) < 12:
-                return "[dim]------------[/]"
+                return "[dim]n/a[/]"
 
-            style_map = {0: "dim", 1: "green", 2: "yellow", 3: "red"}
-
-            out = []
-            cur_style = None
-            cur = []
-            for v in list(vals)[:12]:
+            style_map = {1: "green", 2: "yellow", 3: "red"}
+            items = []
+            for pin, v in enumerate(list(vals)[:12], start=1):
                 vi = int(v) & 0x3
-                ch = "." if vi == 0 else str(vi)
+                if vi == 0:
+                    continue
                 st = style_map.get(vi, "red")
-                if cur_style is None:
-                    cur_style = st
-                if st != cur_style:
-                    out.append(f"[{cur_style}]{''.join(cur)}[/]")
-                    cur = [ch]
-                    cur_style = st
+                if isinstance(names, dict) and pin in names:
+                    label = f"{pin}:{names.get(pin, '')}" if show_pin else str(names.get(pin, ''))
                 else:
-                    cur.append(ch)
+                    label = str(pin)
+                items.append(f"[{st}]{label}[/]")
 
-            if cur_style is not None and cur:
-                out.append(f"[{cur_style}]{''.join(cur)}[/]")
-            return "".join(out) if out else "[dim]------------[/]"
+            return " ".join(items) if items else "[dim]--[/]"
         except Exception:
-            return "[dim]------------[/]"
+            return "[dim]--[/]"
 
     layout["row1"].split_row(
         Layout(name="eload"),
@@ -466,17 +469,35 @@ def build_dashboard(hardware, *,
     except Exception:
         ps = {}
 
-    parts = []
-    for j in range(6):
+    # Display as a 2x3 compact grid so we have enough horizontal space to
+    # show pin numbers (and J0 names) without wrapping.
+    j0_names = {}
+    try:
+        j0_names = _pat_j0_pin_names() or {}
+    except Exception:
+        j0_names = {}
+
+    pat_grid = Table.grid(expand=True)
+    pat_grid.add_column(ratio=1)
+    pat_grid.add_column(ratio=1)
+    pat_grid.add_column(ratio=1)
+
+    def _cell(j: int) -> str:
         entry = ps.get(f"J{j}", {}) if isinstance(ps, dict) else {}
         vals = entry.get("vals") if isinstance(entry, dict) else None
-        parts.append(f"[bold]J{j}[/] {_pat_compact(vals)}")
+        if j == 0:
+            body = _pat_active_list(vals, names=j0_names, show_pin=True)
+        else:
+            body = _pat_active_list(vals)
+        return f"[bold]J{j}[/] {body}"
 
-    pat_line = "  ".join(parts) if parts else "[dim]--[/]"
+    pat_grid.add_row(_cell(0), _cell(1), _cell(2))
+    pat_grid.add_row(_cell(3), _cell(4), _cell(5))
+
     layout["pat"].update(
         Panel(
-            pat_line,
-            title="[bold]PAT_J0..PAT_J5[/]",
+            pat_grid,
+            title="[bold]PAT switching matrix[/]",
             border_style="blue",
             box=box.SQUARE,
             padding=(0, 1),

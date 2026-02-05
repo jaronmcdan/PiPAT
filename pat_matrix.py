@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
+import re
 from typing import Dict, List, Optional
 
 # NOTE on IDs:
@@ -34,6 +36,101 @@ from typing import Dict, List, Optional
 PAT_J_BASE_ID = 0x0CFFE727  # PAT_J0 (29-bit ID)
 PAT_J_STRIDE = 0x100
 PAT_J_COUNT = 6
+
+
+def _parse_j0_pin_names_from_dbc(dbc_path: Path) -> Dict[int, str]:
+    """Best-effort parse of J0 pin labels from a DBC file.
+
+    We look for a `BO_ ... PAT_J0:` section and then extract signals of the form:
+
+        SG_ J0_01_3A_LOAD : ...
+
+    returning a mapping of {1: "3A_LOAD", 2: "5A_LOAD", ...}.
+    """
+
+    try:
+        txt = dbc_path.read_text(errors="ignore")
+    except Exception:
+        return {}
+
+    in_j0 = False
+    out: Dict[int, str] = {}
+    sig_re = re.compile(r"\bSG_\s+J0_(\d{2})_([A-Za-z0-9_]+)\s*:")
+    for raw in txt.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("BO_"):
+            # Enter/exit PAT_J0 section.
+            if "PAT_J0" in line:
+                in_j0 = True
+                continue
+            if in_j0:
+                break
+        if not in_j0:
+            continue
+
+        m = sig_re.search(line)
+        if not m:
+            continue
+        try:
+            idx = int(m.group(1))
+        except Exception:
+            continue
+        name = str(m.group(2)).strip()
+        if 1 <= idx <= 12 and name:
+            out[idx] = name
+
+    return out
+
+
+def j0_pin_names() -> Dict[int, str]:
+    """Return a {pin_index: label} mapping for PAT_J0.
+
+    Prefer parsing the local PAT.dbc shipped with the repo. Falls back to a
+    small hardcoded mapping if the DBC is missing or doesn't match.
+    """
+
+    # Cache on first call.
+    global _J0_PIN_NAMES  # type: ignore
+    try:
+        cached = _J0_PIN_NAMES  # type: ignore
+        if isinstance(cached, dict) and cached:
+            return dict(cached)
+    except Exception:
+        pass
+
+    names: Dict[int, str] = {}
+    try:
+        here = Path(__file__).resolve().parent
+        dbc = here / "PAT.dbc"
+        if dbc.exists():
+            names = _parse_j0_pin_names_from_dbc(dbc)
+    except Exception:
+        names = {}
+
+    if not names:
+        # Fallback mapping (matches the PAT.dbc in this repo as of Feb 2026).
+        names = {
+            1: "3A_LOAD",
+            2: "5A_LOAD",
+            3: "7A_LOAD",
+            4: "12A_LOAD",
+            5: "200MA_PULLUP",
+            6: "12MA_PULLUP",
+            7: "GND_LOAD",
+            8: "METER_LOAD",
+            9: "TEST_SUPPLY",
+            10: "MAIN_SUPPLY",
+            11: "FREQ_GEN",
+            12: "PROBE",
+        }
+
+    try:
+        _J0_PIN_NAMES = dict(names)  # type: ignore
+    except Exception:
+        pass
+    return dict(names)
 
 
 def pat_j_ids() -> set[int]:
