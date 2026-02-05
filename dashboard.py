@@ -56,6 +56,36 @@ def _short_can_channel(can_channel: str) -> str:
     # Otherwise, just show the basename (e.g. ttyUSB0).
     return base
 
+
+def _wd_cell(watchdog, key: str) -> str:
+    """Format watchdog age/state for a given device key.
+
+    The watchdog snapshot is produced by WatchdogManager.snapshot() in main.py.
+    """
+    try:
+        if not watchdog or not isinstance(watchdog, dict):
+            return "[dim]--[/]"
+
+        ages = watchdog.get("ages", {}) or {}
+        states = watchdog.get("states", {}) or {}
+        timed_out = watchdog.get("timed_out", {}) or {}
+
+        age = ages.get(key)
+        st = str(states.get(key) or "").strip().lower()
+        to = bool(timed_out.get(key, False))
+
+        if age is None:
+            return "[dim]--[/]"
+
+        # Prefer explicit state.
+        if st == "warn":
+            return f"[yellow]LAG {age:.1f}s[/]"
+        if st in ("to", "timeout") or to:
+            return f"[red]TO {age:.1f}s[/]"
+        return f"[green]{age:.1f}s[/]"
+    except Exception:
+        return "[dim]--[/]"
+
 def build_dashboard(hardware, *,
                     meter_current_mA: int,
                     mmeter_func_str: str = "",
@@ -92,40 +122,59 @@ def build_dashboard(hardware, *,
         mm = mmeter_primary_str or f"{meter_current_mA}mA"
         return f"E-Load V: {load_volts_mV}mV | AFG Freq: {afg_freq_read} | Meter: {mm}"
 
+    # Dashboard layout is now organized primarily by *device*, so each panel is
+    # self-contained (status + key readings + watchdog freshness).
     layout = Layout()
     layout.split(
-        Layout(name="top", size=12),
-        Layout(name="middle", ratio=1),
+        Layout(name="grid", ratio=1),
         Layout(name="bottom", size=3),
     )
 
-    # --- TOP: Instrument Status ---
-    # E-LOAD Panel
+    layout["grid"].split(
+        Layout(name="row1", ratio=1),
+        Layout(name="row2", ratio=1),
+    )
+
+    layout["row1"].split_row(
+        Layout(name="eload"),
+        Layout(name="afg"),
+        Layout(name="mmeter"),
+    )
+    layout["row2"].split_row(
+        Layout(name="mrsignal"),
+        Layout(name="k1"),
+        Layout(name="can"),
+    )
+
+    # --------------------
+    # E-LOAD panel
+    # --------------------
     eload_table = Table.grid(padding=(0, 1))
-    eload_table.add_column(justify="right", style="bold cyan")
+    eload_table.add_column(justify="right", style="bold cyan", no_wrap=True)
     eload_table.add_column()
+    eload_table.add_row("WD", _wd_cell(watchdog, "eload"))
     if hardware.e_load:
-        visa_id = getattr(hardware.e_load, 'resource_name', '')
+        visa_id = getattr(hardware.e_load, "resource_name", "")
         eload_table.add_row("ID", f"[white]{visa_id}[/]")
 
         # Prefer polled status when available, but fall back to the last
         # commanded state to reduce perceived UI lag.
-        if str(load_stat_imp or '').strip() != "":
-            el_on = str(load_stat_imp or '').strip().upper() in ['ON', '1']
+        if str(load_stat_imp or "").strip() != "":
+            el_on = str(load_stat_imp or "").strip().upper() in ["ON", "1"]
         else:
-            el_on = bool(getattr(hardware, 'e_load_enabled', 0))
+            el_on = bool(getattr(hardware, "e_load_enabled", 0))
         eload_table.add_row("Enable", f"{_badge(el_on)}")
 
-        mode_polled = str(load_stat_func or '').strip()
+        mode_polled = str(load_stat_func or "").strip()
         if mode_polled:
             mode_str = mode_polled
         else:
-            mode_str = "RES" if bool(getattr(hardware, 'e_load_mode', 0)) else "CURR"
+            mode_str = "RES" if bool(getattr(hardware, "e_load_mode", 0)) else "CURR"
         eload_table.add_row("Mode", f"[white]{mode_str}[/]")
 
         mode_u = mode_str.strip().upper()
         if mode_u.startswith("CURR"):
-            sp = str(load_stat_curr or '').strip()
+            sp = str(load_stat_curr or "").strip()
             if not sp:
                 try:
                     sp = f"{float(getattr(hardware, 'e_load_csetting', 0)) / 1000.0:g}"
@@ -133,7 +182,7 @@ def build_dashboard(hardware, *,
                     sp = ""
             eload_table.add_row("Set (I)", f"[yellow]{sp}[/]")
         elif mode_u.startswith("RES"):
-            sp = str(load_stat_res or '').strip()
+            sp = str(load_stat_res or "").strip()
             if not sp:
                 try:
                     sp = f"{float(getattr(hardware, 'e_load_rsetting', 0)) / 1000.0:g}"
@@ -142,120 +191,145 @@ def build_dashboard(hardware, *,
             eload_table.add_row("Set (R)", f"[yellow]{sp}[/]")
         else:
             # Unknown: best-effort
-            sp = (str(load_stat_curr or '').strip() or str(load_stat_res or '').strip())
+            sp = (str(load_stat_curr or "").strip() or str(load_stat_res or "").strip())
             eload_table.add_row("Set", f"[yellow]{sp}[/]")
+
+        # Key measurements
+        eload_table.add_row("Meas V", f"[green]{load_volts_mV/1000:.3f} V[/]")
+        eload_table.add_row("Meas I", f"[green]{load_current_mA/1000:.3f} A[/]")
+
+        # Short state (when available)
+        short_s = str(load_stat_short or "").strip()
+        if short_s:
+            short_on = short_s.upper() in ["ON", "1"]
+            eload_table.add_row("Short", _badge(short_on, "ON", "OFF"))
     else:
         eload_table.add_row("Status", "[red]NOT DETECTED[/]")
 
-    # AFG Panel
+    # --------------------
+    # AFG panel
+    # --------------------
     afg_table = Table.grid(padding=(0, 1))
-    afg_table.add_column(justify="right", style="bold green")
+    afg_table.add_column(justify="right", style="bold green", no_wrap=True)
     afg_table.add_column()
+    afg_table.add_row("WD", _wd_cell(watchdog, "afg"))
     if hardware.afg:
         afg_table.add_row("ID", f"[white]{hardware.afg_id or 'Unknown'}[/]")
-        
-        out_polled = str(afg_out_read or '').strip()
+
+        out_polled = str(afg_out_read or "").strip()
         if out_polled:
-            is_on = out_polled.upper() in ['ON', '1']
+            is_on = out_polled.upper() in ["ON", "1"]
         else:
-            is_on = bool(getattr(hardware, 'afg_output', False))
+            is_on = bool(getattr(hardware, "afg_output", False))
         afg_table.add_row("Output", _badge(is_on))
 
-        freq = str(afg_freq_read or '').strip()
+        freq = str(afg_freq_read or "").strip()
         if not freq:
             try:
-                freq = str(int(getattr(hardware, 'afg_freq', 0) or 0))
+                freq = str(int(getattr(hardware, "afg_freq", 0) or 0))
             except Exception:
-                freq = ''
-        ampl = str(afg_ampl_read or '').strip()
+                freq = ""
+        ampl = str(afg_ampl_read or "").strip()
         if not ampl:
             try:
                 ampl = f"{float(getattr(hardware, 'afg_ampl', 0) or 0) / 1000.0:g}"
             except Exception:
-                ampl = ''
-        offs = str(afg_offset_read or '').strip()
+                ampl = ""
+        offs = str(afg_offset_read or "").strip()
         if not offs:
             try:
                 offs = f"{float(getattr(hardware, 'afg_offset', 0) or 0) / 1000.0:g}"
             except Exception:
-                offs = ''
+                offs = ""
 
         afg_table.add_row("Freq", f"[yellow]{freq} Hz[/]")
         afg_table.add_row("Ampl", f"[yellow]{ampl} Vpp[/]")
         afg_table.add_row("Offset", f"[cyan]{offs} V[/]")
-        
-        shape_polled = str(afg_shape_read or '').strip()
-        if not shape_polled:
-            shape_polled = {0: 'SIN', 1: 'SQU', 2: 'RAMP'}.get(int(getattr(hardware, 'afg_shape', 0) or 0), '')
 
-        duty = str(afg_duty_read or '').strip()
+        shape_polled = str(afg_shape_read or "").strip()
+        if not shape_polled:
+            shape_polled = {0: "SIN", 1: "SQU", 2: "RAMP"}.get(int(getattr(hardware, "afg_shape", 0) or 0), "")
+
+        duty = str(afg_duty_read or "").strip()
         if not duty:
             try:
-                duty = str(int(getattr(hardware, 'afg_duty', 50) or 50))
+                duty = str(int(getattr(hardware, "afg_duty", 50) or 50))
             except Exception:
-                duty = ''
+                duty = ""
 
         duty_style = "yellow" if "SQU" in str(shape_polled).upper() else "dim white"
         afg_table.add_row("Duty", f"[{duty_style}]{duty} %[/]")
-        
         afg_table.add_row("Shape", f"[white]{shape_polled}[/]")
     else:
         afg_table.add_row("Status", "[red]NOT DETECTED[/]")
 
-    # Multimeter Panel
+    # --------------------
+    # Multimeter panel
+    # --------------------
     meter_table = Table.grid(padding=(0, 1))
-    meter_table.add_column(justify="right", style="bold magenta")
+    meter_table.add_column(justify="right", style="bold magenta", no_wrap=True)
     meter_table.add_column()
+    meter_table.add_row("WD", _wd_cell(watchdog, "mmeter"))
     meter_table.add_row("ID", f"[white]{hardware.mmeter_id or '—'}[/]")
 
     try:
-        f_i = int(getattr(hardware, 'mmeter_func', 0)) & 0xFF
-        f2_i = int(getattr(hardware, 'mmeter_func2', f_i)) & 0xFF
-        f2_en = bool(getattr(hardware, 'mmeter_func2_enabled', False))
-        auto = bool(getattr(hardware, 'mmeter_autorange', True))
-        rng_val = float(getattr(hardware, 'mmeter_range_value', 0.0) or 0.0)
-        nplc = float(getattr(hardware, 'mmeter_nplc', 1.0) or 1.0)
-        rel = bool(getattr(hardware, 'mmeter_rel_enabled', False))
-        trig = int(getattr(hardware, 'mmeter_trig_source', 0)) & 0xFF
+        f_i = int(getattr(hardware, "mmeter_func", 0)) & 0xFF
+        f2_i = int(getattr(hardware, "mmeter_func2", f_i)) & 0xFF
+        f2_en = bool(getattr(hardware, "mmeter_func2_enabled", False))
+        auto = bool(getattr(hardware, "mmeter_autorange", True))
+        rng_val = float(getattr(hardware, "mmeter_range_value", 0.0) or 0.0)
+        nplc = float(getattr(hardware, "mmeter_nplc", 1.0) or 1.0)
+        rel = bool(getattr(hardware, "mmeter_rel_enabled", False))
+        trig = int(getattr(hardware, "mmeter_trig_source", 0)) & 0xFF
     except Exception:
         f_i, f2_i, f2_en, auto, rng_val, nplc, rel, trig = 0, 0, False, True, 0.0, 1.0, False, 0
 
     meter_table.add_row("Func", f"[yellow]{func_name(f_i)}[/]")
-    meter_table.add_row("Auto", _badge(auto, 'ON', 'OFF'))
     meter_table.add_row("Range", f"[white]{'AUTO' if auto else (f'{rng_val:g}' if rng_val else '--')}[/]")
     meter_table.add_row("NPLC", f"[white]{nplc:g}[/]")
-    meter_table.add_row("Rel", _badge(rel, 'ON', 'OFF'))
-
-    trig_name = {0: 'IMM', 1: 'BUS', 2: 'MAN'}.get(trig, str(trig))
+    meter_table.add_row("Rel", _badge(rel, "ON", "OFF"))
+    trig_name = {0: "IMM", 1: "BUS", 2: "MAN"}.get(trig, str(trig))
     meter_table.add_row("Trig", f"[white]{trig_name}[/]")
+    meter_table.add_row("Func2", f"[white]{func_name(f2_i) if f2_en else 'OFF'}[/]")
 
-    meter_table.add_row("2nd", f"[white]{func_name(f2_i) if f2_en else 'OFF'}[/]")
+    # Key measurements (shown inside the device panel so it's device-categorized)
+    if mmeter_primary_str:
+        if mmeter_func_str:
+            meter_table.add_row("Meas", f"[yellow]{mmeter_func_str}[/]")
+        meter_table.add_row("Val", f"[yellow]{mmeter_primary_str}[/]")
+        if mmeter_secondary_str:
+            meter_table.add_row("Val2", f"[yellow]{mmeter_secondary_str}[/]")
+    else:
+        meter_table.add_row("Val", f"[yellow]{meter_current_mA/1000:.3f} A[/]")
 
-    # MrSignal Panel
+    # --------------------
+    # MrSignal panel
+    # --------------------
     mrs_table = Table.grid(padding=(0, 1))
-    mrs_table.add_column(justify="right", style="bold white")
+    mrs_table.add_column(justify="right", style="bold white", no_wrap=True)
     mrs_table.add_column()
+    mrs_table.add_row("WD", _wd_cell(watchdog, "mrsignal"))
     if getattr(hardware, "mrsignal", None):
         mrs_table.add_row("ID", f"[white]{mrs_id or getattr(hardware, 'mrsignal_id', '—') or '—'}[/]")
 
-        out_polled = str(mrs_out or '').strip()
+        out_polled = str(mrs_out or "").strip()
         if out_polled:
-            out_on = out_polled.upper() in ['ON', '1', 'TRUE']
+            out_on = out_polled.upper() in ["ON", "1", "TRUE"]
         else:
-            out_on = bool(getattr(hardware, 'mrsignal_output_on', False))
-        mrs_table.add_row("Output", _badge(out_on, 'ON', 'OFF'))
+            out_on = bool(getattr(hardware, "mrsignal_output_on", False))
+        mrs_table.add_row("Output", _badge(out_on, "ON", "OFF"))
 
-        mode_label = str(mrs_mode or '').strip()
+        mode_label = str(mrs_mode or "").strip()
         if not mode_label:
-            sel = int(getattr(hardware, 'mrsignal_output_select', 0) or 0)
-            mode_label = {0: 'mA', 1: 'V', 2: 'XMT', 3: 'PULSE', 4: 'mV', 5: 'R', 6: '24V'}.get(sel, '—')
+            sel = int(getattr(hardware, "mrsignal_output_select", 0) or 0)
+            mode_label = {0: "mA", 1: "V", 2: "XMT", 3: "PULSE", 4: "mV", 5: "R", 6: "24V"}.get(sel, "—")
         mrs_table.add_row("Mode", f"[white]{mode_label or '—'}[/]")
 
-        set_str = str(mrs_set or '').strip()
+        set_str = str(mrs_set or "").strip()
         if not set_str:
             try:
-                sel = int(getattr(hardware, 'mrsignal_output_select', 0) or 0)
-                v = float(getattr(hardware, 'mrsignal_output_value', 0.0) or 0.0)
+                sel = int(getattr(hardware, "mrsignal_output_select", 0) or 0)
+                v = float(getattr(hardware, "mrsignal_output_value", 0.0) or 0.0)
                 if sel == 0:
                     set_str = f"{v:.4g} mA"
                 elif sel == 4:
@@ -263,14 +337,14 @@ def build_dashboard(hardware, *,
                 else:
                     set_str = f"{v:.4g} V"
             except Exception:
-                set_str = ''
+                set_str = ""
         mrs_table.add_row("Set", f"[yellow]{set_str or '—'}[/]")
 
-        in_str = str(mrs_in or '').strip()
+        in_str = str(mrs_in or "").strip()
         if not in_str:
             try:
-                sel = int(getattr(hardware, 'mrsignal_output_select', 0) or 0)
-                v = float(getattr(hardware, 'mrsignal_input_value', 0.0) or 0.0)
+                sel = int(getattr(hardware, "mrsignal_output_select", 0) or 0)
+                v = float(getattr(hardware, "mrsignal_input_value", 0.0) or 0.0)
                 if sel == 0:
                     in_str = f"{v:.4g} mA"
                 elif sel == 4:
@@ -278,124 +352,81 @@ def build_dashboard(hardware, *,
                 else:
                     in_str = f"{v:.4g} V"
             except Exception:
-                in_str = ''
+                in_str = ""
         mrs_table.add_row("Input", f"[cyan]{in_str or '—'}[/]")
 
-        bo = str(mrs_bo or '').strip() or str(getattr(hardware, 'mrsignal_float_byteorder', '') or '').strip()
+        bo = str(mrs_bo or "").strip() or str(getattr(hardware, "mrsignal_float_byteorder", "") or "").strip()
         if bo:
             mrs_table.add_row("Float", f"[dim]{bo}[/]")
     else:
         mrs_table.add_row("Status", "[red]NOT DETECTED[/]")
 
-    top_grid = Table.grid(expand=True)
-    top_grid.add_column(ratio=1)
-    top_grid.add_column(ratio=1)
-    top_grid.add_column(ratio=1)
-    top_grid.add_column(ratio=1)
-    top_grid.add_row(
-        Panel(eload_table, title="[bold]E-Load[/]", border_style="cyan", box=box.ROUNDED),
-        Panel(afg_table, title="[bold]AFG-2125[/]", border_style="green", box=box.ROUNDED),
-        Panel(meter_table, title="[bold]Multimeter[/]", border_style="magenta", box=box.ROUNDED),
-        Panel(mrs_table, title="[bold]MrSignal[/]", border_style="white", box=box.ROUNDED),
-    )
-    layout["top"].update(top_grid)
-
-    # --- MIDDLE: Measurements ---
-    meas_eload = Table(title="[bold]E-Load Meas[/]", box=box.SIMPLE_HEAVY, expand=True)
-    meas_eload.add_column("Metric", style="bold cyan", no_wrap=True)
-    meas_eload.add_column("Value", justify="right")
-    meas_eload.add_row("Voltage", f"[green]{load_volts_mV/1000:.3f} V[/]")
-    meas_eload.add_row("Current", f"[green]{load_current_mA/1000:.3f} A[/]")
-
-    meas_meter = Table(title="[bold]Meter Meas[/]", box=box.SIMPLE_HEAVY, expand=True)
-    meas_meter.add_column("Metric", style="bold magenta", no_wrap=True)
-    meas_meter.add_column("Value", justify="right")
-    if mmeter_primary_str:
-        meas_meter.add_row("Function", f"[yellow]{mmeter_func_str or '--'}[/]")
-        meas_meter.add_row("Primary", f"[yellow]{mmeter_primary_str}[/]")
-        if mmeter_secondary_str:
-            meas_meter.add_row("Secondary", f"[yellow]{mmeter_secondary_str}[/]")
-    else:
-        meas_meter.add_row("Current", f"[yellow]{meter_current_mA/1000:.3f} A[/]")
-
-    # K1 relay status (drive + raw GPIO level when applicable)
-    # We show only: (1) the logical drive state (ON/OFF) and (2) the raw GPIO level (HIGH/LOW).
+    # --------------------
+    # K1 relay panel
+    # --------------------
     try:
         drive_on = bool(hardware.get_k1_drive())
     except Exception:
-        drive_on = bool(getattr(hardware.relay, 'is_lit', False))
+        drive_on = bool(getattr(hardware.relay, "is_lit", False))
 
     try:
         pin_level = hardware.get_k1_pin_level()
     except Exception:
         pin_level = None
 
-    backend = str(getattr(hardware, 'relay_backend', '') or '').strip() or 'unknown'
+    backend = str(getattr(hardware, "relay_backend", "") or "").strip() or "unknown"
 
-    drive_badge = Text.from_markup(_badge(drive_on, 'ON', 'OFF'))
+    k1_table = Table.grid(padding=(0, 1))
+    k1_table.add_column(justify="right", style="bold yellow", no_wrap=True)
+    k1_table.add_column()
+    k1_table.add_row("WD", _wd_cell(watchdog, "k1"))
+    k1_table.add_row("Backend", f"[dim]{backend}[/]")
+    k1_table.add_row("Drive", _badge(drive_on, "ON", "OFF"))
     if pin_level is None:
-        level_badge = Text.from_markup('[bold dim]--[/]')
+        k1_table.add_row("GPIO", "[dim]--[/]")
     else:
-        level_badge = Text.from_markup(_badge(bool(pin_level), 'HIGH', 'LOW'))
+        k1_table.add_row("GPIO", _badge(bool(pin_level), "HIGH", "LOW"))
 
-    gpio_panel = Panel(
-        Align.center(
-            Text.assemble(
-                ("K1 Relay\n", "bold"),
-                ("Backend: ", "bold"), (f"{backend}\n", "dim"),
-                ("Drive: ", "bold"), drive_badge, ("\n", ""),
-                ("GPIO:  ", "bold"), level_badge,
-            ),
-            vertical='middle',
-        ),
-        border_style='yellow',
-        box=box.ROUNDED,
-        title='[bold]K1[/]',
+    # --------------------
+    # CAN panel
+    # --------------------
+    can_table = Table.grid(padding=(0, 1))
+    can_table.add_column(justify="right", style="bold cyan", no_wrap=True)
+    can_table.add_column()
+    can_table.add_row("WD", _wd_cell(watchdog, "can"))
+    can_table.add_row("IF", f"[white]{str(getattr(config, 'CAN_INTERFACE', '') or 'socketcan')}[/]")
+    can_table.add_row("Chan", f"[white]{_short_can_channel(can_channel)}[/]")
+    can_table.add_row("Bitrate", f"[white]{int(can_bitrate)//1000} kbps[/]")
+    can_table.add_row(
+        "Load",
+        f"[yellow]{bus_load_pct:.1f}%[/]" if isinstance(bus_load_pct, (int, float)) else "[dim]--[/]",
     )
+    if isinstance(bus_rx_fps, (int, float)):
+        can_table.add_row("RX", f"[white]{bus_rx_fps:.0f} fps[/]")
+    if isinstance(bus_tx_fps, (int, float)):
+        can_table.add_row("TX", f"[white]{bus_tx_fps:.0f} fps[/]")
 
-    mid = Table.grid(expand=True)
-    mid.add_column(ratio=2)
-    mid.add_column(ratio=2)
-    mid.add_column(ratio=1)
-    mid.add_row(meas_eload, meas_meter, gpio_panel)
-    layout["middle"].update(mid)
+    # Render into layout slots
+    layout["eload"].update(Panel(eload_table, title="[bold]E-Load[/]", border_style="cyan", box=box.ROUNDED))
+    layout["afg"].update(Panel(afg_table, title="[bold]AFG-2125[/]", border_style="green", box=box.ROUNDED))
+    layout["mmeter"].update(Panel(meter_table, title="[bold]Multimeter[/]", border_style="magenta", box=box.ROUNDED))
+    layout["mrsignal"].update(Panel(mrs_table, title="[bold]MrSignal[/]", border_style="white", box=box.ROUNDED))
+    layout["k1"].update(Panel(k1_table, title="[bold]K1 Relay[/]", border_style="yellow", box=box.ROUNDED))
+    layout["can"].update(Panel(can_table, title="[bold]CAN[/]", border_style="blue", box=box.ROUNDED))
 
     # --- BOTTOM: Status Bar ---
     status = Text.assemble(
-        (" CAN: ", "bold"), (f"{_short_can_channel(can_channel)}@{can_bitrate//1000}k ", "cyan"),
+        (" CAN: ", "bold"),
+        (f"{_short_can_channel(can_channel)}@{int(can_bitrate)//1000}k ", "cyan"),
         (" Load: ", "bold"),
         ((f"{bus_load_pct:.1f}% " if isinstance(bus_load_pct, (int, float)) else "-- "), "yellow"),
-        (" Poll: ", "bold"), (f"{status_poll_period:.2f}s ", "cyan"),
-        (" AFG: ", "bold"), (f"{'Connected' if hardware.afg else 'Missing'}", "green" if hardware.afg else "red"),
-        (" MR2: ", "bold"), (f"{'Connected' if getattr(hardware, 'mrsignal', None) else 'Missing'}", "green" if getattr(hardware, 'mrsignal', None) else "red"),
+        (" Poll: ", "bold"),
+        (f"{status_poll_period:.2f}s ", "cyan"),
+        (" AFG: ", "bold"),
+        (f"{'OK' if hardware.afg else 'MISS'} ", "green" if hardware.afg else "red"),
+        (" MR2: ", "bold"),
+        (f"{'OK' if getattr(hardware, 'mrsignal', None) else 'MISS'} ", "green" if getattr(hardware, 'mrsignal', None) else "red"),
     )
-
-    # Watchdog / control freshness (optional)
-    if watchdog and isinstance(watchdog, dict):
-        ages = watchdog.get("ages", {}) or {}
-        timed_out = watchdog.get("timed_out", {}) or {}
-        status_map = watchdog.get("states", {}) or {}
-
-        def _seg(key: str, label: str):
-            age = ages.get(key)
-            st = status_map.get(key)
-            to = bool(timed_out.get(key, False))
-            if age is None:
-                return (f" {label}:-- ", "dim")
-            # Prefer the richer status (ok/warn/to) when available.
-            if st == "warn":
-                return (f" {label}:LAG({age:.1f}s) ", "yellow")
-            if st == "to" or to:
-                return (f" {label}:TO({age:.1f}s) ", "red")
-            return (f" {label}:{age:.1f}s ", "green")
-
-        status.append(" WD:", style="bold")
-        status.append(*_seg("can", "CAN"))
-        status.append(*_seg("k1", "K1"))
-        status.append(*_seg("eload", "Load"))
-        status.append(*_seg("afg", "AFG"))
-        status.append(*_seg("mmeter", "DMM"))
-        status.append(*_seg("mrsignal", "MR2"))
 
     layout["bottom"].update(Panel(status, box=box.SQUARE, border_style="blue"))
     return layout
