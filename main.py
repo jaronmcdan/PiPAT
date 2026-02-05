@@ -22,6 +22,9 @@ from can_comm import (
     setup_can_interface,
     shutdown_can_interface,
 )
+
+# Dashboard-only: PAT switching matrix (PAT_J0..PAT_J5)
+from pat_matrix import PatSwitchMatrixState
 from device_comm import device_command_loop
 
 from bk5491b import MmeterFunc, func_name, func_unit
@@ -847,6 +850,9 @@ def main() -> int:
     # outgoing CAN readback publisher state (sent by TX thread)
     tx_state = OutgoingTxState()
 
+    # PAT switching matrix snapshot (updated by CAN RX thread)
+    pat_matrix = PatSwitchMatrixState()
+
     # status vars
     load_stat_func, load_stat_curr, load_stat_imp, load_stat_res, load_stat_short = "", "", "", "", ""
     afg_freq_str, afg_ampl_str, afg_out_str, afg_shape_str = "", "", "", ""
@@ -884,7 +890,7 @@ def main() -> int:
         can_rx_thread = threading.Thread(
             target=can_rx_loop,
             args=(cbus, cmd_queue, stop_event, watchdog),
-            kwargs={"busload": busload, "log_fn": _log},
+            kwargs={"busload": busload, "log_fn": _log, "pat_matrix": pat_matrix},
             daemon=True,
         )
         can_rx_thread.start()
@@ -1012,6 +1018,7 @@ def main() -> int:
                         bus_load_pct=bus_load_pct,
                         bus_rx_fps=bus_rx_fps,
                         bus_tx_fps=bus_tx_fps,
+                        pat_matrix=pat_matrix.snapshot(),
                         watchdog=watchdog.snapshot(),
                     )
                     live.update(renderable, refresh=True)

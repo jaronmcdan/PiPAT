@@ -15,6 +15,12 @@ import can
 import config
 from can_metrics import BusLoadMeter
 
+# Optional dashboard-only state (PAT switching matrix)
+try:
+    from pat_matrix import PatSwitchMatrixState
+except Exception:  # pragma: no cover
+    PatSwitchMatrixState = None  # type: ignore
+
 
 def setup_can_interface(channel: str, bitrate: int, *, do_setup: bool = True, log_fn=print) -> Optional[can.BusABC]:
     """Open the configured CAN backend.
@@ -412,6 +418,7 @@ def can_rx_loop(
     cmd_queue,
     stop_event: threading.Event,
     watchdog,
+    pat_matrix: "PatSwitchMatrixState | None" = None,
     busload: BusLoadMeter | None = None,
     log_fn=print,
 ) -> None:
@@ -462,6 +469,13 @@ def can_rx_loop(
             watchdog.mark("can")
         except Exception:
             pass
+
+        # Capture PAT switching-matrix frames for the dashboard (do not enqueue).
+        if pat_matrix is not None:
+            try:
+                pat_matrix.maybe_update(arb, data)
+            except Exception:
+                pass
 
         # Ignore non-control frames to keep the control path responsive.
         if arb not in ctrl_ids:

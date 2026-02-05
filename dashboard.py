@@ -114,24 +114,65 @@ def build_dashboard(hardware, *,
                     bus_load_pct=None,
                     bus_rx_fps=None,
                     bus_tx_fps=None,
+                    pat_matrix=None,
                     watchdog=None):
     
     if not HAVE_RICH:
         mm = mmeter_primary_str or f"{meter_current_mA}mA"
         return f"E-Load V: {load_volts_mV}mV | AFG Freq: {afg_freq_read} | Meter: {mm}"
 
-    # Dashboard layout is now organized primarily by *device*, so each panel is
+    # Dashboard layout is organized primarily by *device*, so each panel is
     # self-contained (status + key readings + watchdog freshness).
     #
-    # The older "bottom" status bar became redundant once every device got its
-    # own panel, so the layout is now *just* the 2x3 device grid.
+    # We also reserve a small footer bar for the PAT switching-matrix view
+    # (PAT_J0..PAT_J5).
     layout = Layout()
-    layout.split(Layout(name="grid", ratio=1))
+    layout.split(
+        Layout(name="grid", ratio=1),
+        Layout(name="pat", size=3),
+    )
 
     layout["grid"].split(
         Layout(name="row1", ratio=1),
         Layout(name="row2", ratio=1),
     )
+
+    def _pat_compact(vals):
+        """Render 12 2-bit values as a tight, color-coded string.
+
+        Convention (purely visual):
+          0 -> dim '.'
+          1 -> green '1'
+          2 -> yellow '2'
+          3 -> red '3'
+        """
+        try:
+            if not vals or len(vals) < 12:
+                return "[dim]------------[/]"
+
+            style_map = {0: "dim", 1: "green", 2: "yellow", 3: "red"}
+
+            out = []
+            cur_style = None
+            cur = []
+            for v in list(vals)[:12]:
+                vi = int(v) & 0x3
+                ch = "." if vi == 0 else str(vi)
+                st = style_map.get(vi, "red")
+                if cur_style is None:
+                    cur_style = st
+                if st != cur_style:
+                    out.append(f"[{cur_style}]{''.join(cur)}[/]")
+                    cur = [ch]
+                    cur_style = st
+                else:
+                    cur.append(ch)
+
+            if cur_style is not None and cur:
+                out.append(f"[{cur_style}]{''.join(cur)}[/]")
+            return "".join(out) if out else "[dim]------------[/]"
+        except Exception:
+            return "[dim]------------[/]"
 
     layout["row1"].split_row(
         Layout(name="eload"),
@@ -416,4 +457,29 @@ def build_dashboard(hardware, *,
     layout["mrsignal"].update(Panel(mrs_table, title="[bold]MrSignal[/]", border_style="white", box=box.ROUNDED))
     layout["k1"].update(Panel(k1_table, title="[bold]K1 Relay[/]", border_style="yellow", box=box.ROUNDED))
     layout["can"].update(Panel(can_table, title="[bold]CAN[/]", border_style="blue", box=box.ROUNDED))
+
+    # --------------------
+    # PAT switching matrix footer (PAT_J0..PAT_J5)
+    # --------------------
+    try:
+        ps = pat_matrix if isinstance(pat_matrix, dict) else {}
+    except Exception:
+        ps = {}
+
+    parts = []
+    for j in range(6):
+        entry = ps.get(f"J{j}", {}) if isinstance(ps, dict) else {}
+        vals = entry.get("vals") if isinstance(entry, dict) else None
+        parts.append(f"[bold]J{j}[/] {_pat_compact(vals)}")
+
+    pat_line = "  ".join(parts) if parts else "[dim]--[/]"
+    layout["pat"].update(
+        Panel(
+            pat_line,
+            title="[bold]PAT_J0..PAT_J5[/]",
+            border_style="blue",
+            box=box.SQUARE,
+            padding=(0, 1),
+        )
+    )
     return layout
