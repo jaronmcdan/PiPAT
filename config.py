@@ -57,7 +57,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 # Build / version tag to make it obvious which zip is running.
 # You can override via env var PIPAT_BUILD_TAG.
-BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-02-02-mmeter-fallback-v2")
+BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-02-05-perf-ctrl-ui-v1")
 
 
 # --- Hardware Identifiers ---
@@ -317,6 +317,16 @@ CAN_CLEAR_ERRORS_ON_INIT = _env_bool("CAN_CLEAR_ERRORS_ON_INIT", CAN_SETUP)
 # and the device command worker. Keeping this bounded ensures the CAN RX loop
 # never blocks on slow instrument I/O.
 CAN_CMD_QUEUE_MAX = _env_int("CAN_CMD_QUEUE_MAX", 256)
+
+# For CAN_INTERFACE="rmcanview": max number of received frames buffered inside
+# the adapter driver (between the serial reader thread and python-can recv()).
+#
+# When the host cannot keep up with incoming traffic (busy bus + slow consumer),
+# the buffer would otherwise grow without bound and add seconds of latency.
+# Keeping this bounded makes the system "fail fast" by dropping the oldest
+# frames under extreme backpressure (newest traffic is generally more useful
+# for control responsiveness).
+CAN_RMCANVIEW_RX_MAX = _env_int("CAN_RMCANVIEW_RX_MAX", 2048)
 
 # --- Control watchdog ---
 # If a given device doesn't receive its control message within the timeout,

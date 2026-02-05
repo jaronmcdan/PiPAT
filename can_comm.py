@@ -7,6 +7,7 @@ import subprocess
 import threading
 import time
 import math
+import queue
 from typing import Optional
 
 import can
@@ -420,7 +421,11 @@ def can_rx_loop(
     """
 
     log_fn("CAN RX thread started.")
-    drop = 0
+    # Keep separate counters so logs reflect whether we are dropping *incoming*
+    # frames (worst case) or dropping *oldest buffered* frames to make room for
+    # the newest command (preferred under backpressure).
+    drop_oldest = 0
+    drop_newest = 0
 
     # Only control frames should be forwarded to the device thread.
     # This prevents unrelated bus chatter from filling the bounded queue and
@@ -465,7 +470,27 @@ def can_rx_loop(
         # Non-blocking enqueue; never stall CAN recv due to slow devices.
         try:
             cmd_queue.put_nowait((arb, data))
+        except queue.Full:
+            # Prefer dropping the *oldest* queued command so the newest state
+            # update wins (better for knob/slider style controls).
+            try:
+                cmd_queue.get_nowait()
+                drop_oldest += 1
+            except queue.Empty:
+                pass
+
+            try:
+                cmd_queue.put_nowait((arb, data))
+            except queue.Full:
+                # Queue is still full (consumer is extremely behind). Drop this
+                # newest frame as a last resort.
+                drop_newest += 1
+                if drop_newest in (1, 10, 100) or (drop_newest % 500 == 0):
+                    log_fn(
+                        f"CAN RX: command queue saturated; dropped NEWEST frame {drop_newest} times "
+                        f"(also dropped {drop_oldest} OLDEST frames to make room)"
+                    )
+            except Exception:
+                drop_newest += 1
         except Exception:
-            drop += 1
-            if drop in (1, 10, 100) or (drop % 500 == 0):
-                log_fn(f"CAN RX: command queue full; dropped {drop} frames")
+            drop_newest += 1

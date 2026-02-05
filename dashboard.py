@@ -105,15 +105,45 @@ def build_dashboard(hardware, *,
     eload_table.add_column(justify="right", style="bold cyan")
     eload_table.add_column()
     if hardware.e_load:
-        visa_id = hardware.e_load.resource_name
+        visa_id = getattr(hardware.e_load, 'resource_name', '')
         eload_table.add_row("ID", f"[white]{visa_id}[/]")
-        el_on = str(load_stat_imp or '').strip().upper() in ['ON', '1']
-        eload_table.add_row("Enable", f"{_badge(el_on)}")
-        eload_table.add_row("Mode", f"[white]{load_stat_func or ''}[/]")
-        if load_stat_func and load_stat_func.strip().upper().startswith("CURR"):
-            eload_table.add_row("Set (I)", f"[yellow]{load_stat_curr or ''}[/]")
+
+        # Prefer polled status when available, but fall back to the last
+        # commanded state to reduce perceived UI lag.
+        if str(load_stat_imp or '').strip() != "":
+            el_on = str(load_stat_imp or '').strip().upper() in ['ON', '1']
         else:
-            eload_table.add_row("Set", f"[yellow]{(load_stat_curr or load_stat_res or '').strip()}[/]")
+            el_on = bool(getattr(hardware, 'e_load_enabled', 0))
+        eload_table.add_row("Enable", f"{_badge(el_on)}")
+
+        mode_polled = str(load_stat_func or '').strip()
+        if mode_polled:
+            mode_str = mode_polled
+        else:
+            mode_str = "RES" if bool(getattr(hardware, 'e_load_mode', 0)) else "CURR"
+        eload_table.add_row("Mode", f"[white]{mode_str}[/]")
+
+        mode_u = mode_str.strip().upper()
+        if mode_u.startswith("CURR"):
+            sp = str(load_stat_curr or '').strip()
+            if not sp:
+                try:
+                    sp = f"{float(getattr(hardware, 'e_load_csetting', 0)) / 1000.0:g}"
+                except Exception:
+                    sp = ""
+            eload_table.add_row("Set (I)", f"[yellow]{sp}[/]")
+        elif mode_u.startswith("RES"):
+            sp = str(load_stat_res or '').strip()
+            if not sp:
+                try:
+                    sp = f"{float(getattr(hardware, 'e_load_rsetting', 0)) / 1000.0:g}"
+                except Exception:
+                    sp = ""
+            eload_table.add_row("Set (R)", f"[yellow]{sp}[/]")
+        else:
+            # Unknown: best-effort
+            sp = (str(load_stat_curr or '').strip() or str(load_stat_res or '').strip())
+            eload_table.add_row("Set", f"[yellow]{sp}[/]")
     else:
         eload_table.add_row("Status", "[red]NOT DETECTED[/]")
 
@@ -124,17 +154,51 @@ def build_dashboard(hardware, *,
     if hardware.afg:
         afg_table.add_row("ID", f"[white]{hardware.afg_id or 'Unknown'}[/]")
         
-        is_on = str(afg_out_read).strip().upper() in ['ON', '1']
+        out_polled = str(afg_out_read or '').strip()
+        if out_polled:
+            is_on = out_polled.upper() in ['ON', '1']
+        else:
+            is_on = bool(getattr(hardware, 'afg_output', False))
         afg_table.add_row("Output", _badge(is_on))
+
+        freq = str(afg_freq_read or '').strip()
+        if not freq:
+            try:
+                freq = str(int(getattr(hardware, 'afg_freq', 0) or 0))
+            except Exception:
+                freq = ''
+        ampl = str(afg_ampl_read or '').strip()
+        if not ampl:
+            try:
+                ampl = f"{float(getattr(hardware, 'afg_ampl', 0) or 0) / 1000.0:g}"
+            except Exception:
+                ampl = ''
+        offs = str(afg_offset_read or '').strip()
+        if not offs:
+            try:
+                offs = f"{float(getattr(hardware, 'afg_offset', 0) or 0) / 1000.0:g}"
+            except Exception:
+                offs = ''
+
+        afg_table.add_row("Freq", f"[yellow]{freq} Hz[/]")
+        afg_table.add_row("Ampl", f"[yellow]{ampl} Vpp[/]")
+        afg_table.add_row("Offset", f"[cyan]{offs} V[/]")
         
-        afg_table.add_row("Freq", f"[yellow]{afg_freq_read} Hz[/]")
-        afg_table.add_row("Ampl", f"[yellow]{afg_ampl_read} Vpp[/]")
-        afg_table.add_row("Offset", f"[cyan]{afg_offset_read} V[/]")
+        shape_polled = str(afg_shape_read or '').strip()
+        if not shape_polled:
+            shape_polled = {0: 'SIN', 1: 'SQU', 2: 'RAMP'}.get(int(getattr(hardware, 'afg_shape', 0) or 0), '')
+
+        duty = str(afg_duty_read or '').strip()
+        if not duty:
+            try:
+                duty = str(int(getattr(hardware, 'afg_duty', 50) or 50))
+            except Exception:
+                duty = ''
+
+        duty_style = "yellow" if "SQU" in str(shape_polled).upper() else "dim white"
+        afg_table.add_row("Duty", f"[{duty_style}]{duty} %[/]")
         
-        duty_style = "yellow" if "SQU" in str(afg_shape_read).upper() else "dim white"
-        afg_table.add_row("Duty", f"[{duty_style}]{afg_duty_read} %[/]")
-        
-        afg_table.add_row("Shape", f"[white]{afg_shape_read}[/]")
+        afg_table.add_row("Shape", f"[white]{shape_polled}[/]")
     else:
         afg_table.add_row("Status", "[red]NOT DETECTED[/]")
 
@@ -173,12 +237,53 @@ def build_dashboard(hardware, *,
     mrs_table.add_column()
     if getattr(hardware, "mrsignal", None):
         mrs_table.add_row("ID", f"[white]{mrs_id or getattr(hardware, 'mrsignal_id', '—') or '—'}[/]")
-        mrs_table.add_row("Output", _badge(str(mrs_out).strip().upper() in ['ON','1','TRUE'], 'ON', 'OFF'))
-        mrs_table.add_row("Mode", f"[white]{mrs_mode or '—'}[/]")
-        mrs_table.add_row("Set", f"[yellow]{mrs_set or '—'}[/]")
-        mrs_table.add_row("Input", f"[cyan]{mrs_in or '—'}[/]")
-        if mrs_bo:
-            mrs_table.add_row("Float", f"[dim]{mrs_bo}[/]")
+
+        out_polled = str(mrs_out or '').strip()
+        if out_polled:
+            out_on = out_polled.upper() in ['ON', '1', 'TRUE']
+        else:
+            out_on = bool(getattr(hardware, 'mrsignal_output_on', False))
+        mrs_table.add_row("Output", _badge(out_on, 'ON', 'OFF'))
+
+        mode_label = str(mrs_mode or '').strip()
+        if not mode_label:
+            sel = int(getattr(hardware, 'mrsignal_output_select', 0) or 0)
+            mode_label = {0: 'mA', 1: 'V', 2: 'XMT', 3: 'PULSE', 4: 'mV', 5: 'R', 6: '24V'}.get(sel, '—')
+        mrs_table.add_row("Mode", f"[white]{mode_label or '—'}[/]")
+
+        set_str = str(mrs_set or '').strip()
+        if not set_str:
+            try:
+                sel = int(getattr(hardware, 'mrsignal_output_select', 0) or 0)
+                v = float(getattr(hardware, 'mrsignal_output_value', 0.0) or 0.0)
+                if sel == 0:
+                    set_str = f"{v:.4g} mA"
+                elif sel == 4:
+                    set_str = f"{v:.4g} mV"
+                else:
+                    set_str = f"{v:.4g} V"
+            except Exception:
+                set_str = ''
+        mrs_table.add_row("Set", f"[yellow]{set_str or '—'}[/]")
+
+        in_str = str(mrs_in or '').strip()
+        if not in_str:
+            try:
+                sel = int(getattr(hardware, 'mrsignal_output_select', 0) or 0)
+                v = float(getattr(hardware, 'mrsignal_input_value', 0.0) or 0.0)
+                if sel == 0:
+                    in_str = f"{v:.4g} mA"
+                elif sel == 4:
+                    in_str = f"{v:.4g} mV"
+                else:
+                    in_str = f"{v:.4g} V"
+            except Exception:
+                in_str = ''
+        mrs_table.add_row("Input", f"[cyan]{in_str or '—'}[/]")
+
+        bo = str(mrs_bo or '').strip() or str(getattr(hardware, 'mrsignal_float_byteorder', '') or '').strip()
+        if bo:
+            mrs_table.add_row("Float", f"[dim]{bo}[/]")
     else:
         mrs_table.add_row("Status", "[red]NOT DETECTED[/]")
 
