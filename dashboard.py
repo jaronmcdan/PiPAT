@@ -3,8 +3,6 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.layout import Layout
-from rich.text import Text
-from rich.align import Align
 from rich import box
 
 import os
@@ -124,11 +122,11 @@ def build_dashboard(hardware, *,
 
     # Dashboard layout is now organized primarily by *device*, so each panel is
     # self-contained (status + key readings + watchdog freshness).
+    #
+    # The older "bottom" status bar became redundant once every device got its
+    # own panel, so the layout is now *just* the 2x3 device grid.
     layout = Layout()
-    layout.split(
-        Layout(name="grid", ratio=1),
-        Layout(name="bottom", size=3),
-    )
+    layout.split(Layout(name="grid", ratio=1))
 
     layout["grid"].split(
         Layout(name="row1", ratio=1),
@@ -401,6 +399,11 @@ def build_dashboard(hardware, *,
         "Load",
         f"[yellow]{bus_load_pct:.1f}%[/]" if isinstance(bus_load_pct, (int, float)) else "[dim]--[/]",
     )
+    # Global status poll period (thread that polls device status snapshots)
+    try:
+        can_table.add_row("Poll", f"[dim]{float(status_poll_period):.2f}s[/]")
+    except Exception:
+        can_table.add_row("Poll", "[dim]--[/]")
     if isinstance(bus_rx_fps, (int, float)):
         can_table.add_row("RX", f"[white]{bus_rx_fps:.0f} fps[/]")
     if isinstance(bus_tx_fps, (int, float)):
@@ -413,20 +416,4 @@ def build_dashboard(hardware, *,
     layout["mrsignal"].update(Panel(mrs_table, title="[bold]MrSignal[/]", border_style="white", box=box.ROUNDED))
     layout["k1"].update(Panel(k1_table, title="[bold]K1 Relay[/]", border_style="yellow", box=box.ROUNDED))
     layout["can"].update(Panel(can_table, title="[bold]CAN[/]", border_style="blue", box=box.ROUNDED))
-
-    # --- BOTTOM: Status Bar ---
-    status = Text.assemble(
-        (" CAN: ", "bold"),
-        (f"{_short_can_channel(can_channel)}@{int(can_bitrate)//1000}k ", "cyan"),
-        (" Load: ", "bold"),
-        ((f"{bus_load_pct:.1f}% " if isinstance(bus_load_pct, (int, float)) else "-- "), "yellow"),
-        (" Poll: ", "bold"),
-        (f"{status_poll_period:.2f}s ", "cyan"),
-        (" AFG: ", "bold"),
-        (f"{'OK' if hardware.afg else 'MISS'} ", "green" if hardware.afg else "red"),
-        (" MR2: ", "bold"),
-        (f"{'OK' if getattr(hardware, 'mrsignal', None) else 'MISS'} ", "green" if getattr(hardware, 'mrsignal', None) else "red"),
-    )
-
-    layout["bottom"].update(Panel(status, box=box.SQUARE, border_style="blue"))
     return layout
