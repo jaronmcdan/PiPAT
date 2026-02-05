@@ -70,7 +70,15 @@ SCPI_STYLE_AUTO = "auto"
 # Primary function selection commands
 # NOTE: Always include a leading ':' for root-level addressing.
 
-# FUNC-style (classic) function selection
+# FUNC-style (classic) function selection.
+#
+# NOTE: For many SCPI DMMs, the parameter values for :FUNCtion are *mnemonics*
+# (e.g. "VOLT:DC", "CURR:DC"). Some firmware variants are picky about these
+# tokens (they may not accept the long-form "VOLTage" / "CURRent" strings as
+# parameter values even though long-form works in command headers).
+#
+# To maximize compatibility (and avoid front-panel "BUS: BAD COMMAND"), we use
+# the common abbreviated mnemonics here.
 FUNC_TO_SCPI_FUNC = {
     MmeterFunc.VDC: ":FUNCtion VOLTage:DC",
     MmeterFunc.VAC: ":FUNCtion VOLTage:AC",
@@ -84,6 +92,7 @@ FUNC_TO_SCPI_FUNC = {
 }
 
 
+
 # CONF-style (legacy/alternate) function selection.
 #
 # IMPORTANT:
@@ -94,13 +103,15 @@ FUNC_TO_SCPI_FUNC = {
 #   We keep this mapping as an escape hatch for odd firmware variants, but it is
 #   NOT used unless you explicitly set MMETER_SCPI_STYLE=conf.
 FUNC_TO_SCPI_CONF = {
-    MmeterFunc.VDC: ":CONF:VOLT:DC",
-    MmeterFunc.VAC: ":CONF:VOLT:AC",
-    MmeterFunc.IDC: ":CONF:CURR:DC",
-    MmeterFunc.IAC: ":CONF:CURR:AC",
-    MmeterFunc.RES: ":CONF:RES",
-    MmeterFunc.FREQ: ":CONF:FREQ",
+    # Legacy / alternate command set. Many manuals show these without a leading ':'.
+    MmeterFunc.VDC: "CONF:VOLT:DC",
+    MmeterFunc.VAC: "CONF:VOLT:AC",
+    MmeterFunc.IDC: "CONF:CURR:DC",
+    MmeterFunc.IAC: "CONF:CURR:AC",
+    MmeterFunc.RES: "CONF:RES",
+    MmeterFunc.FREQ: "CONF:FREQ",
 }
+
 
 
 # Secondary display function selection for FUNC-style firmware.
@@ -116,6 +127,7 @@ FUNC_TO_SCPI_FUNC2 = {
 }
 
 
+
 # Which subsystem prefix to use for RANGE / AUTO-RANGE / NPLC / REF in FUNC-style.
 # Not all functions support these; unsupported functions will be ignored.
 FUNC_TO_RANGE_PREFIX_FUNC = {
@@ -125,6 +137,7 @@ FUNC_TO_RANGE_PREFIX_FUNC = {
     MmeterFunc.IAC: ":CURRent:AC",
     MmeterFunc.RES: ":RESistance",
 }
+
 
 
 FUNC_TO_NPLC_PREFIX_FUNC = {
@@ -138,6 +151,7 @@ FUNC_TO_NPLC_PREFIX_FUNC = {
 }
 
 
+
 FUNC_TO_REF_PREFIX_FUNC = {
     MmeterFunc.VDC: ":VOLTage:DC",
     MmeterFunc.VAC: ":VOLTage:AC",
@@ -145,6 +159,7 @@ FUNC_TO_REF_PREFIX_FUNC = {
     MmeterFunc.IAC: ":CURRent:AC",
     MmeterFunc.RES: ":RESistance",
 }
+
 
 
 def func_name(func: int) -> str:

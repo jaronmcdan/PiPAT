@@ -1,6 +1,6 @@
 # ROI Instrument Bridge (Raspberry Pi)
 
-This project runs on a Raspberry Pi and bridges **SocketCAN** control messages to lab instruments and local GPIO:
+This project runs on a Raspberry Pi and bridges **CAN** control messages (SocketCAN by default) to lab instruments and local GPIO:
 
 - **E-load** via PyVISA (SCPI)
 - **Multimeter** (e.g., B&K Precision 5491B) via USB-serial
@@ -15,7 +15,7 @@ This project runs on a Raspberry Pi and bridges **SocketCAN** control messages t
 
 PiPAT runs **CAN RX** and **device/instrument control** in separate threads:
 
-- `can_comm.py` (`can_rx_loop`) reads SocketCAN frames and enqueues *only* control frames.
+- `can_comm.py` (`can_rx_loop`) reads CAN frames (from the configured backend) and enqueues *only* control frames.
 - `device_comm.py` (`device_command_loop`) dequeues commands and applies them to instruments/GPIO.
 
 This keeps CAN reception responsive even when instrument I/O blocks.
@@ -190,6 +190,8 @@ PiPAT includes **best-effort auto-detection** that runs at startup and patches:
 
 - `MULTI_METER_PATH`
 - `MRSIGNAL_PORT`
+- `K1_SERIAL_PORT` (optional Arduino relay backend)
+- `CAN_CHANNEL` (when `CAN_INTERFACE=rmcanview`)
 - `AFG_VISA_ID`
 - `ELOAD_VISA_ID`
 
@@ -200,6 +202,17 @@ How it works:
 Controls:
 - Disable detection: `python3 main.py --no-auto-detect`
 - Or via env: `AUTO_DETECT_ENABLE=0`
+
+Closed / fixed systems (recommended):
+- Set `AUTO_DETECT_BYID_ONLY=1` to avoid probing **unknown** serial ports. In this
+  mode PiPAT will prefer mapping devices purely by their `/dev/serial/by-id/...`
+  names (plus a single verification attempt on the matched device).
+- Tune the by-id matching hints if needed:
+  - `AUTO_DETECT_MMETER_BYID_HINTS`
+  - `AUTO_DETECT_MRSIGNAL_BYID_HINTS`
+  - `AUTO_DETECT_K1_BYID_HINTS`
+  - `AUTO_DETECT_CANVIEW_BYID_HINTS`
+  - `AUTO_DETECT_AFG_BYID_HINTS`
 
 Hint tuning (comma-separated, optional):
 - `AUTO_DETECT_MMETER_IDN_HINTS` (default: `multimeter,5491b`)
@@ -220,9 +233,16 @@ python3 main.py
 
 ---
 
-## SocketCAN notes
+## CAN backend notes
 
-By default (`CAN_SETUP=1`), `main.py` attempts to bring the CAN interface up using:
+PiPAT can talk to CAN via different backends:
+
+- **SocketCAN** (`CAN_INTERFACE=socketcan`, default): Linux SocketCAN netdev (e.g. `can0`)
+- **CANview USB/RS232** (`CAN_INTERFACE=rmcanview`): RM/Proemion gateways via serial (Byte Command Protocol)
+
+### SocketCAN
+
+By default (`CAN_SETUP=1`), `main.py` attempts to bring the SocketCAN interface up using:
 
 ```bash
 ip link set <channel> up type can bitrate <bitrate>
@@ -236,6 +256,28 @@ Manual test:
 sudo ip link set can1 up type can bitrate 250000
 ip -details link show can1
 ```
+
+### CANview USB (rmcanview)
+
+These adapters usually show up as a USB-serial device on Linux (e.g. `/dev/ttyUSB0`), not as a `can0` network
+interface.
+
+Example `/etc/roi/roi.env`:
+
+```bash
+CAN_INTERFACE=rmcanview
+CAN_CHANNEL=/dev/ttyUSB0
+CAN_SERIAL_BAUD=115200
+CAN_BITRATE=250000
+CAN_SETUP=1
+CAN_CLEAR_ERRORS_ON_INIT=1
+```
+
+If you do **not** want PiPAT to change adapter settings on startup, set `CAN_SETUP=0` and configure the gateway
+separately.
+
+If the gateway's **ERROR** LED stays latched from a previous session, keep `CAN_CLEAR_ERRORS_ON_INIT=1` (default)
+so PiPAT will issue a CAN controller reset on startup.
 
 ---
 
@@ -386,7 +428,7 @@ Notes:
 
 - This is an **estimator**, not a physical-layer measurement.
 - It uses the configured `CAN_BITRATE` and observed frame sizes to approximate on-wire bits.
-- TX frames sent by PiPAT are counted in software; RX frames are counted from SocketCAN.
+- TX frames sent by PiPAT are counted in software; RX frames are counted from the CAN backend.
 
 Tuning (optional):
 

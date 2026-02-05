@@ -12,6 +12,7 @@ import config
 from hardware import HardwareManager
 from bk5491b import (
     FUNC_TO_SCPI_FUNC,
+    FUNC_TO_SCPI_CONF,
     FUNC_TO_SCPI_FUNC2,
     FUNC_TO_RANGE_PREFIX_FUNC,
     FUNC_TO_NPLC_PREFIX_FUNC,
@@ -59,46 +60,170 @@ class DeviceCommandProcessor:
 
         Caller should hold hardware.mmeter_lock.
         """
+        cmd = (cmd or "").strip()
+        if not cmd:
+            return
+
+        if bool(getattr(config, "MMETER_DEBUG", False)):
+            self.log(f"[mmeter] >> {cmd}")
+
         try:
             if getattr(self.hardware, "mmeter", None) is not None:
                 # Use the robust helper if available.
                 self.hardware.mmeter.write(cmd, delay_s=delay_s, clear_input=clear_input)
-                return
+            else:
+                mm = getattr(self.hardware, "multi_meter", None)
+                if not mm:
+                    return
 
-            mm = getattr(self.hardware, "multi_meter", None)
-            if not mm:
-                return
+                if clear_input:
+                    try:
+                        mm.reset_input_buffer()
+                    except Exception:
+                        pass
 
-            if clear_input:
+                mm.write((cmd + "\n").encode("ascii", errors="ignore"))
                 try:
-                    mm.reset_input_buffer()
+                    mm.flush()
                 except Exception:
                     pass
+                if delay_s and delay_s > 0:
+                    time.sleep(float(delay_s))
 
-            mm.write((cmd.strip() + "\n").encode("ascii", errors="ignore"))
+            # After any control write, pause background polling briefly so the meter
+            # can settle and we don't immediately query while it's busy.
             try:
-                mm.flush()
+                settle = float(getattr(config, "MMETER_CONTROL_SETTLE_SEC", 0.0) or 0.0)
+                if settle > 0:
+                    now_m = time.monotonic()
+                    until = now_m + settle
+                    prev = float(getattr(self.hardware, "mmeter_quiet_until", 0.0) or 0.0)
+                    if until > prev:
+                        setattr(self.hardware, "mmeter_quiet_until", until)
             except Exception:
                 pass
-            if delay_s and delay_s > 0:
-                time.sleep(float(delay_s))
+
         except Exception as e:
             self.log(f"MMETER write error: {e}")
 
     def _mmeter_set_func(self, func: int) -> None:
-        func_i = int(func) & 0xFF
-        # PiPAT defaults to the documented 2831E/5491B SCPI dialect rooted at
-        # :FUNCtion (plus :FUNCtion2 for secondary display).
-        # Treat any legacy "conf" selection as "func" to avoid spamming the
-        # instrument with unsupported :CONFigure commands.
-        cmd = FUNC_TO_SCPI_FUNC.get(func_i)
+        """Set the primary measurement function (VDC/IDC/etc).
 
-        if not cmd:
+        Supports both known 5491B SCPI dialects and will fall back automatically if
+        the currently-selected dialect rejects the command.
+        """
+        func_i = int(func) & 0xFF
+
+        style = str(
+            getattr(self.hardware, "mmeter_scpi_style", getattr(config, "MMETER_SCPI_STYLE", "auto"))
+        ).strip().lower()
+        if style not in ("conf", "func", "auto"):
+            style = "auto"
+
+        func_cmd = FUNC_TO_SCPI_FUNC.get(func_i)
+        conf_cmd = FUNC_TO_SCPI_CONF.get(func_i)
+
+        if not func_cmd and not conf_cmd:
             self.log(f"MMETER: unsupported function enum {func_i}")
             return
 
-        self._mmeter_write(cmd, delay_s=0.10, clear_input=True)
+        helper = getattr(self.hardware, "mmeter", None)
+
+        def _is_no_error(line: str) -> bool:
+            u = (line or "").strip().upper()
+            return (not u) or u.startswith("0") or ("NO ERROR" in u)
+
+        def _drain_errors(max_n: int = 8) -> list[str]:
+            if helper is None:
+                return []
+            try:
+                return helper.drain_errors(max_n=max_n, log=False)
+            except Exception:
+                return []
+
+        def _try_cmd(cmd: str) -> bool:
+            # Clear any prior errors so we can attribute the next error to this command.
+            _drain_errors(max_n=8)
+
+            self._mmeter_write(cmd, delay_s=0.12, clear_input=True)
+
+            errs = _drain_errors(max_n=4)
+            bad = [e for e in errs if not _is_no_error(e)]
+            if bad:
+                if bool(getattr(config, "MMETER_DEBUG", False)):
+                    self.log(f"[mmeter] !! after '{cmd}': {bad[0]}")
+                return False
+            return True
+
+        # Candidate command order:
+        #   - auto: try CONF first (often the original/most-compatible), then FUNC
+        #   - conf: CONF first, then FUNC
+        #   - func: FUNC first, then CONF
+        candidates: list[tuple[str, str]] = []
+        if style in ("auto", "conf"):
+            if conf_cmd:
+                base = conf_cmd.strip()
+                with_ch = base
+                # Add @1 if not specified and looks like a primary-selectable function.
+                if ("@" not in base) and (":VOLT" in base or ":CURR" in base or ":FREQ" in base):
+                    with_ch = base + ",@1"
+                candidates.append(("conf", with_ch))
+                if with_ch != base:
+                    candidates.append(("conf", base))
+                candidates.append(("conf", ":" + with_ch))
+                if with_ch != base:
+                    candidates.append(("conf", ":" + base))
+            if func_cmd:
+                candidates.append(("func", func_cmd))
+        else:
+            if func_cmd:
+                candidates.append(("func", func_cmd))
+            if conf_cmd:
+                base = conf_cmd.strip()
+                with_ch = base
+                if ("@" not in base) and (":VOLT" in base or ":CURR" in base or ":FREQ" in base):
+                    with_ch = base + ",@1"
+                candidates.append(("conf", with_ch))
+                if with_ch != base:
+                    candidates.append(("conf", base))
+                candidates.append(("conf", ":" + with_ch))
+                if with_ch != base:
+                    candidates.append(("conf", ":" + base))
+
+        # Remove duplicates while preserving order.
+        seen: set[str] = set()
+        uniq: list[tuple[str, str]] = []
+        for sty, cmd in candidates:
+            k = f"{sty}|{cmd}"
+            if k in seen:
+                continue
+            seen.add(k)
+            uniq.append((sty, cmd))
+        candidates = uniq
+
+        ok = False
+        used_style = style
+        used_cmd = ""
+        for sty, cmd in candidates:
+            if not cmd:
+                continue
+            if _try_cmd(cmd):
+                ok = True
+                used_style = sty
+                used_cmd = cmd
+                break
+
+        if not ok:
+            self.log(f"MMETER: failed to set function {func_name(func_i)} (style={style})")
+            return
+
+        # Commit function and (if auto/fallback) the discovered working dialect.
         self.hardware.mmeter_func = func_i
+        if used_style in ("conf", "func") and used_style != style:
+            setattr(self.hardware, "mmeter_scpi_style", used_style)
+
+        if bool(getattr(config, "MMETER_DEBUG", False)):
+            self.log(f"[mmeter] set func -> {func_name(func_i)} via {used_style}: {used_cmd}")
 
     def handle(self, arb: int, data: bytes) -> None:
         """Handle one control frame."""
@@ -188,29 +313,32 @@ class DeviceCommandProcessor:
                 except Exception:
                     pass
 
-            # Range byte historically wasn't applied; we now interpret 0 as autorange ON.
-            # Non-zero values are stored but not mapped (instrument-specific).
-            try:
-                with self.hardware.mmeter_lock:
-                    if int(meter_range) == 0:
-                        func_i = int(getattr(self.hardware, "mmeter_func", int(MmeterFunc.VDC))) & 0xFF
-                        prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(func_i)
-                        key = (func_i, True)
-                        if prefix and self._mmeter_last_autorange_cmd != key:
-                            self._mmeter_write(f"{prefix}:RANGe:AUTO ON")
-                            self._mmeter_last_autorange_cmd = key
-                        self.hardware.mmeter_autorange = True
-                    else:
-                        # Disable autorange (freeze at the currently selected range)
-                        func_i = int(getattr(self.hardware, "mmeter_func", int(MmeterFunc.VDC))) & 0xFF
-                        prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(func_i)
-                        key = (func_i, False)
-                        if prefix and self._mmeter_last_autorange_cmd != key:
-                            self._mmeter_write(f"{prefix}:RANGe:AUTO OFF")
-                            self._mmeter_last_autorange_cmd = key
-                        self.hardware.mmeter_autorange = False
-            except Exception:
-                pass
+            # Legacy range byte:
+            # By default we **do not** apply it (matches historical PiPAT
+            # behavior and avoids "BUS: BAD COMMAND" on meters that don't
+            # support the per-subsystem :RANGe:AUTO commands).
+            if bool(getattr(config, "MMETER_LEGACY_RANGE_ENABLE", False)):
+                try:
+                    with self.hardware.mmeter_lock:
+                        if int(meter_range) == 0:
+                            func_i = int(getattr(self.hardware, "mmeter_func", int(MmeterFunc.VDC))) & 0xFF
+                            prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(func_i)
+                            key = (func_i, True)
+                            if prefix and self._mmeter_last_autorange_cmd != key:
+                                self._mmeter_write(f"{prefix}:RANGe:AUTO ON")
+                                self._mmeter_last_autorange_cmd = key
+                            self.hardware.mmeter_autorange = True
+                        else:
+                            # Disable autorange (freeze at the currently selected range)
+                            func_i = int(getattr(self.hardware, "mmeter_func", int(MmeterFunc.VDC))) & 0xFF
+                            prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(func_i)
+                            key = (func_i, False)
+                            if prefix and self._mmeter_last_autorange_cmd != key:
+                                self._mmeter_write(f"{prefix}:RANGe:AUTO OFF")
+                                self._mmeter_last_autorange_cmd = key
+                            self.hardware.mmeter_autorange = False
+                except Exception:
+                    pass
 
             self.hardware.multi_meter_range = int(meter_range)
             return

@@ -181,6 +181,9 @@ class HardwareManager:
         self.mmeter_id: Optional[str] = None
         # Determined at runtime by the polling thread (see main.py).
         self.mmeter_fetch_cmd: Optional[str] = None
+        # When control commands change meter mode/range, we pause background polling
+        # until this monotonic timestamp.
+        self.mmeter_quiet_until: float = 0.0
 
         # Expanded DMM state (used for CAN status/readback)
         self.mmeter_func: int = int(MmeterFunc.VDC)
@@ -196,7 +199,7 @@ class HardwareManager:
         #
         # For the 2831E/5491B family, the documented / recommended dialect is
         # the classic tree rooted at :FUNCtion (plus :FUNCtion2 for secondary
-        # display on newer firmware). We default to "func".
+        # display on newer firmware). Default is "auto" (choose a working dialect).
         try:
             self.mmeter_scpi_style: str = str(getattr(config, "MMETER_SCPI_STYLE", "func") or "func").strip().lower()
         except Exception:
@@ -333,6 +336,7 @@ class HardwareManager:
                         self.relay = _NullRelay(initial_drive)
                         self.relay_backend = "mock"
 
+
     def _maybe_detect_mmeter_scpi_style(self) -> None:
         """One-time SCPI dialect detection for the 5491B.
 
@@ -341,9 +345,9 @@ class HardwareManager:
         meter display "BUS: BAD COMMAND".
         """
 
-        style = str(getattr(self, "mmeter_scpi_style", "func") or "func").strip().lower()
+        style = str(getattr(self, "mmeter_scpi_style", "auto") or "auto").strip().lower()
         if style not in ("conf", "func", "auto"):
-            style = "func"
+            style = "auto"
 
         # If explicitly configured, honor it.
         if style != "auto":
@@ -351,29 +355,14 @@ class HardwareManager:
             print(f"MMETER SCPI style: {self.mmeter_scpi_style}")
             return
 
-        # Auto-detect
         helper = getattr(self, "mmeter", None)
         if helper is None:
-            self.mmeter_scpi_style = "func"
+            # Can't probe; default to the more backwards-compatible dialect.
+            self.mmeter_scpi_style = "conf"
             print(f"MMETER SCPI style: {self.mmeter_scpi_style} (default)")
             return
 
-        # 1) Try FUNC-style query (classic SCPI tree) first.
-        resp2 = ""
-        try:
-            resp2 = helper.query_line(":FUNCtion?", delay_s=0.05, read_lines=6)
-        except Exception:
-            resp2 = ""
-        r2 = (resp2 or "").upper()
-        if any(tok in r2 for tok in ("VOLT", "CURR", "RES", "FREQ", "PER", "DIO", "CONT")):
-            self.mmeter_scpi_style = "func"
-            print(f"MMETER SCPI style: {self.mmeter_scpi_style} (auto)")
-            return
-
-        # 2) As a fallback, try CONF-style query.
-        # WARNING: Some firmware variants will complain on the front panel when
-        # they receive an unknown command. Only attempt this when the user
-        # explicitly requested auto detection.
+        # 1) Try CONF-style query first (often present on older firmware).
         resp = ""
         try:
             resp = helper.query_line(":CONFigure:FUNCtion?", delay_s=0.05, read_lines=6)
@@ -385,8 +374,20 @@ class HardwareManager:
             print(f"MMETER SCPI style: {self.mmeter_scpi_style} (auto)")
             return
 
+        # 2) Then try FUNC-style query (classic SCPI tree).
+        resp2 = ""
+        try:
+            resp2 = helper.query_line(":FUNCtion?", delay_s=0.05, read_lines=6)
+        except Exception:
+            resp2 = ""
+        r2 = (resp2 or "").upper()
+        if any(tok in r2 for tok in ("VOLT", "CURR", "RES", "FREQ", "PER", "DIO", "CONT")):
+            self.mmeter_scpi_style = "func"
+            print(f"MMETER SCPI style: {self.mmeter_scpi_style} (auto)")
+            return
+
         # Fallback
-        self.mmeter_scpi_style = "func"
+        self.mmeter_scpi_style = "conf"
         print(f"MMETER SCPI style: {self.mmeter_scpi_style} (auto default)")
 
     # --- Relay helpers ---

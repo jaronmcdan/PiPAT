@@ -7,6 +7,11 @@ from rich.text import Text
 from rich.align import Align
 from rich import box
 
+import os
+import re
+
+import config
+
 from bk5491b import func_name
 
 # Try to initialize Rich Console
@@ -20,6 +25,36 @@ except Exception:
 def _badge(ok: bool, true_label="ON", false_label="OFF"):
     """Helper to create color-coded text badges."""
     return f"[bold {'green' if ok else 'red'}]{true_label if ok else false_label}[/]"
+
+def _short_can_channel(can_channel: str) -> str:
+    """Make CAN channel labels compact for the dashboard.
+
+    When using the rmcanview backend, CAN_CHANNEL is often a long /dev/serial/by-id
+    path. For display we shorten it to something like 'CANview-USB' or 'ttyUSB0'.
+    """
+    ch = str(can_channel or '').strip()
+    if not ch:
+        return '--'
+
+    iface = str(getattr(config, 'CAN_INTERFACE', 'socketcan') or 'socketcan').strip().lower()
+    if iface not in ('rmcanview', 'rm-canview', 'proemion'):
+        return ch
+
+    base = os.path.basename(ch)
+    low = base.lower()
+
+    # Common by-id example:
+    #   usb-RM_Michaelides_RM_CANview-USB-if00-port0
+    if 'canview' in low:
+        idx = low.find('canview')
+        s = base[idx:]
+        # Drop interface/port suffixes.
+        s = re.sub(r'-if\d+.*$', '', s)
+        s = re.sub(r'[_-]port\d+$', '', s)
+        return s
+
+    # Otherwise, just show the basename (e.g. ttyUSB0).
+    return base
 
 def build_dashboard(hardware, *,
                     meter_current_mA: int,
@@ -222,7 +257,7 @@ def build_dashboard(hardware, *,
 
     # --- BOTTOM: Status Bar ---
     status = Text.assemble(
-        (" CAN: ", "bold"), (f"{can_channel}@{can_bitrate//1000}k ", "cyan"),
+        (" CAN: ", "bold"), (f"{_short_can_channel(can_channel)}@{can_bitrate//1000}k ", "cyan"),
         (" Load: ", "bold"),
         ((f"{bus_load_pct:.1f}% " if isinstance(bus_load_pct, (int, float)) else "-- "), "yellow"),
         (" Poll: ", "bold"), (f"{status_poll_period:.2f}s ", "cyan"),

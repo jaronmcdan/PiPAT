@@ -16,36 +16,80 @@ from can_metrics import BusLoadMeter
 
 
 def setup_can_interface(channel: str, bitrate: int, *, do_setup: bool = True, log_fn=print) -> Optional[can.BusABC]:
-    """Bring up SocketCAN and open a python-can bus.
+    """Open the configured CAN backend.
 
-    If the interface is already configured/up, bus open will still succeed.
+    Supported backends (see config.CAN_INTERFACE):
+      - socketcan  : Linux SocketCAN netdev (e.g. can0)
+      - rmcanview  : RM/Proemion CANview USB/RS232 gateways via serial (Byte Command Protocol)
+
+    If the backend is already configured/up, bus open will still succeed.
     """
 
-    if do_setup:
-        # Try without sudo first (works when running as root / in systemd).
-        cmds = [
-            ["ip", "link", "set", channel, "up", "type", "can", "bitrate", str(bitrate)],
-            ["sudo", "ip", "link", "set", channel, "up", "type", "can", "bitrate", str(bitrate)],
-        ]
-        for cmd in cmds:
-            try:
-                res = subprocess.run(cmd, check=False, capture_output=True, text=True)
-                if res.returncode == 0:
-                    break
-            except FileNotFoundError:
-                # ip or sudo missing; continue to bus open attempt
-                break
+    iface = str(getattr(config, "CAN_INTERFACE", "socketcan") or "socketcan").strip().lower()
 
+    # --- SocketCAN (default) ---
+    if iface in ("socketcan", "socketcan_native", "socketcan_ctypes"):
+        if do_setup:
+            # Try without sudo first (works when running as root / in systemd).
+            cmds = [
+                ["ip", "link", "set", channel, "up", "type", "can", "bitrate", str(bitrate)],
+                ["sudo", "ip", "link", "set", channel, "up", "type", "can", "bitrate", str(bitrate)],
+            ]
+            for cmd in cmds:
+                try:
+                    res = subprocess.run(cmd, check=False, capture_output=True, text=True)
+                    if res.returncode == 0:
+                        break
+                except FileNotFoundError:
+                    # ip or sudo missing; continue to bus open attempt
+                    break
+
+        try:
+            return can.interface.Bus(interface="socketcan", channel=channel)
+        except Exception as e:
+            log_fn(f"CAN Init Failed (socketcan): {e}")
+            return None
+
+    # --- RM/Proemion CANview (Byte Command Protocol over serial) ---
+    if iface in ("rmcanview", "rm-canview", "proemion"):
+        try:
+            from rmcanview import RmCanViewBus
+
+            serial_baud = int(getattr(config, "CAN_SERIAL_BAUD", 115200))
+            clear_err = bool(getattr(config, "CAN_CLEAR_ERRORS_ON_INIT", True))
+            return RmCanViewBus(
+                channel,
+                serial_baud=serial_baud,
+                can_bitrate=int(bitrate),
+                do_setup=bool(do_setup),
+                clear_errors_on_init=clear_err,
+                log_fn=log_fn,
+            )
+        except Exception as e:
+            log_fn(f"CAN Init Failed (rmcanview): {e}")
+            return None
+
+    # --- Best-effort fallback to python-can interface names ---
     try:
-        return can.interface.Bus(interface="socketcan", channel=channel)
+        return can.interface.Bus(interface=iface, channel=channel, bitrate=int(bitrate))
     except Exception as e:
-        log_fn(f"CAN Init Failed: {e}")
+        log_fn(f"CAN Init Failed ({iface}): {e}")
         return None
 
 
 def shutdown_can_interface(channel: str, *, do_setup: bool = True) -> None:
+    """Tear down the configured CAN backend (if requested).
+
+    For SocketCAN this brings the netdev down. For serial adapters (rmcanview)
+    no explicit teardown is necessary.
+    """
     if not do_setup:
         return
+
+    iface = str(getattr(config, "CAN_INTERFACE", "socketcan") or "socketcan").strip().lower()
+    if iface not in ("socketcan", "socketcan_native", "socketcan_ctypes"):
+        return
+
     for cmd in (
         ["ip", "link", "set", channel, "down"],
         ["sudo", "ip", "link", "set", channel, "down"],

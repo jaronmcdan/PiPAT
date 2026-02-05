@@ -57,7 +57,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 # Build / version tag to make it obvious which zip is running.
 # You can override via env var PIPAT_BUILD_TAG.
-BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-01-31-mmeter-scpi-conf-v5")
+BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-02-02-mmeter-fallback-v2")
 
 
 # --- Hardware Identifiers ---
@@ -85,7 +85,7 @@ MULTI_METER_IDN_READ_LINES = _env_int("MULTI_METER_IDN_READ_LINES", 4)
 # until we get a parseable float.
 MULTI_METER_FETCH_CMDS = _env_str(
     "MULTI_METER_FETCH_CMDS",
-    ":FETC?",
+    ":FETC?,:FETCh?,READ?,READ??",
 )
 
 # SCPI dialect for the 2831E/5491B bench multimeters.
@@ -100,10 +100,26 @@ MULTI_METER_FETCH_CMDS = _env_str(
 # PiPAT primarily uses this "func" dialect.
 #
 # Values:
-#   - "func" (default): :FUNCtion, :VOLTage:DC:RANGe:AUTO, :FUNCtion2...
-#   - "conf": legacy/alternate dialect (not used by default)
-#   - "auto": probe once on startup (tries "func" first)
-MMETER_SCPI_STYLE = _env_str("MMETER_SCPI_STYLE", "func").strip().lower()
+#   - "auto" (default): choose a working dialect (tries "conf" then "func")
+#   - "func": force :FUNCtion / :VOLTage/:CURRent... dialect
+#   - "conf": force CONF:... / CONFigure:... dialect
+MMETER_SCPI_STYLE = _env_str("MMETER_SCPI_STYLE", "auto").strip().lower()
+
+# After any control command that changes measurement mode/range/etc, PiPAT
+# pauses background meter polling briefly so the instrument can settle.
+MMETER_CONTROL_SETTLE_SEC = _env_float("MMETER_CONTROL_SETTLE_SEC", 0.30)
+
+# Enable extra multimeter SCPI logging (useful for diagnosing "BUS" errors).
+MMETER_DEBUG = _env_bool("MMETER_DEBUG", False)
+
+# Legacy CAN frame compatibility: the original MMETER_CTRL_ID frame includes a
+# 2nd byte often called "range". Historically PiPAT did **not** apply it to the
+# instrument (it only stored it).
+#
+# Some 5491B firmware variants will throw a front-panel "BUS: BAD COMMAND" if we
+# try to drive autorange with an unsupported SCPI command. To preserve legacy
+# behavior (and avoid surprises), this defaults to False.
+MMETER_LEGACY_RANGE_ENABLE = _env_bool("MMETER_LEGACY_RANGE_ENABLE", False)
 
 # If True, query and drain the multimeter error queue on startup.
 # Useful if you've been experimenting with SCPI and the front panel is showing
@@ -119,10 +135,17 @@ MULTI_METER_PROBE_BACKOFF_SEC = _env_float("MULTI_METER_PROBE_BACKOFF_SEC", 2.0)
 # and patch these config values at runtime:
 #   - MULTI_METER_PATH
 #   - MRSIGNAL_PORT
+#   - K1_SERIAL_PORT
+#   - CAN_CHANNEL (when CAN_INTERFACE=rmcanview)
 #   - AFG_VISA_ID
 #   - ELOAD_VISA_ID
 AUTO_DETECT_ENABLE = _env_bool("AUTO_DETECT_ENABLE", True)
 AUTO_DETECT_VERBOSE = _env_bool("AUTO_DETECT_VERBOSE", True)
+
+# If True, prefer mapping by /dev/serial/by-id (name matching) and avoid probing
+# *unknown* serial ports. This is ideal for closed systems where the USB devices
+# are known and rarely change.
+AUTO_DETECT_BYID_ONLY = _env_bool("AUTO_DETECT_BYID_ONLY", False)
 
 # Sub-features
 AUTO_DETECT_MMETER = _env_bool("AUTO_DETECT_MMETER", True)
@@ -130,6 +153,34 @@ AUTO_DETECT_MRSIGNAL = _env_bool("AUTO_DETECT_MRSIGNAL", True)
 AUTO_DETECT_VISA = _env_bool("AUTO_DETECT_VISA", True)
 AUTO_DETECT_AFG = _env_bool("AUTO_DETECT_AFG", True)
 AUTO_DETECT_ELOAD = _env_bool("AUTO_DETECT_ELOAD", True)
+
+# Serial device selection hints (comma-separated, case-insensitive)
+# These are matched against the /dev/serial/by-id symlink names.
+AUTO_DETECT_MMETER_BYID_HINTS = _env_str(
+    "AUTO_DETECT_MMETER_BYID_HINTS",
+    _env_str("AUTO_DETECT_MMETER_IDN_HINTS", "multimeter,5491b"),
+)
+AUTO_DETECT_MRSIGNAL_BYID_HINTS = _env_str(
+    "AUTO_DETECT_MRSIGNAL_BYID_HINTS",
+    "mr.signal,lanyi,mr2",
+)
+AUTO_DETECT_K1_BYID_HINTS = _env_str(
+    "AUTO_DETECT_K1_BYID_HINTS",
+    "arduino,micro,relay",
+)
+AUTO_DETECT_CANVIEW_BYID_HINTS = _env_str(
+    "AUTO_DETECT_CANVIEW_BYID_HINTS",
+    "canview,rm_canview,proemion",
+)
+# AFG USB-serial adapters typically include "AFG" and/or a model number.
+AUTO_DETECT_AFG_BYID_HINTS = _env_str(
+    "AUTO_DETECT_AFG_BYID_HINTS",
+    "afg",
+)
+
+# Optional extra device detection targets
+AUTO_DETECT_K1_SERIAL = _env_bool("AUTO_DETECT_K1_SERIAL", True)
+AUTO_DETECT_CANVIEW = _env_bool("AUTO_DETECT_CANVIEW", True)
 
 # VISA/serial probing safety:
 # - Probing ASRL resources sends *IDN? over a serial port. If the baud is wrong
@@ -169,6 +220,24 @@ AUTO_DETECT_VISA_BACKEND = _env_str("AUTO_DETECT_VISA_BACKEND", "")
 AUTO_DETECT_MMETER_IDN_HINTS = _env_str("AUTO_DETECT_MMETER_IDN_HINTS", "multimeter,5491b")
 AUTO_DETECT_AFG_IDN_HINTS = _env_str("AUTO_DETECT_AFG_IDN_HINTS", "afg,function,generator,arb")
 AUTO_DETECT_ELOAD_IDN_HINTS = _env_str("AUTO_DETECT_ELOAD_IDN_HINTS", "load,eload,electronic load,dl,it,bk,b&k,b&k precision,bk precision,8600")
+
+# By-id name matching hints (comma-separated, case-insensitive)
+#
+# These are used to map /dev/serial/by-id entries to device roles *without*
+# touching the port. This is the safest method for a closed system.
+#
+# Defaults are intentionally conservative. Adjust to match your actual
+# /dev/serial/by-id names.
+AUTO_DETECT_MMETER_BYID_HINTS = _env_str("AUTO_DETECT_MMETER_BYID_HINTS", AUTO_DETECT_MMETER_IDN_HINTS)
+AUTO_DETECT_MRSIGNAL_BYID_HINTS = _env_str("AUTO_DETECT_MRSIGNAL_BYID_HINTS", "mr.signal,lanyi,mrsignal")
+AUTO_DETECT_K1_BYID_HINTS = _env_str("AUTO_DETECT_K1_BYID_HINTS", "arduino,arduino_micro,relay")
+AUTO_DETECT_CANVIEW_BYID_HINTS = _env_str("AUTO_DETECT_CANVIEW_BYID_HINTS", "canview,rm_canview,proemion")
+# Keep this tight by default; many serial devices will match generic words.
+AUTO_DETECT_AFG_BYID_HINTS = _env_str("AUTO_DETECT_AFG_BYID_HINTS", "afg")
+
+# Additional auto-detect sub-features
+AUTO_DETECT_K1_SERIAL = _env_bool("AUTO_DETECT_K1_SERIAL", True)
+AUTO_DETECT_CANVIEW = _env_bool("AUTO_DETECT_CANVIEW", True)
 
 # VISA Resource IDs (PyVISA)
 ELOAD_VISA_ID = _env_str("ELOAD_VISA_ID", "USB0::11975::34816::*::0::INSTR")
@@ -220,11 +289,29 @@ K1_CAN_INVERT = _env_bool("K1_CAN_INVERT", False)
 K1_IDLE_DRIVE = _env_bool("K1_IDLE_DRIVE", False)
 
 # --- CAN Bus ---
-CAN_CHANNEL = _env_str("CAN_CHANNEL", "can1")
+# CAN backend:
+#   socketcan = Linux SocketCAN netdev (e.g. can0/can1)
+#   rmcanview  = RM/Proemion CANview USB/RS232 gateways via serial (Byte Command Protocol)
+CAN_INTERFACE = _env_str("CAN_INTERFACE", "socketcan").strip().lower()
+
+# Channel identifier used by the selected backend:
+#   - socketcan: "can0", "can1", ...
+#   - rmcanview: "/dev/ttyUSB0", "/dev/serial/by-id/...", ...
+CAN_CHANNEL = _env_str("CAN_CHANNEL", "can0")
+
+# Serial baud rate for CAN_INTERFACE="rmcanview" (USB-serial link baud).
+# This is *not* the CAN bus bitrate; use CAN_BITRATE for that.
+CAN_SERIAL_BAUD = _env_int("CAN_SERIAL_BAUD", 115200)
 CAN_BITRATE = _env_int("CAN_BITRATE", 250000)
 
-# If True, main.py will try to bring the SocketCAN interface up.
+# If True, main.py will try to bring the CAN interface up.
+#   - socketcan: runs `ip link set <CAN_CHANNEL> up type can bitrate <CAN_BITRATE>`
+#   - rmcanview: configures adapter CAN bitrate + forces active mode
 CAN_SETUP = _env_bool("CAN_SETUP", True)
+
+# If True and CAN_INTERFACE="rmcanview", PiPAT will issue a CAN controller reset
+# on startup to clear any latched error status in the gateway.
+CAN_CLEAR_ERRORS_ON_INIT = _env_bool("CAN_CLEAR_ERRORS_ON_INIT", CAN_SETUP)
 
 # Max number of incoming CAN control frames buffered between the CAN RX thread
 # and the device command worker. Keeping this bounded ensures the CAN RX loop
