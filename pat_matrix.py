@@ -16,8 +16,22 @@ import threading
 import time
 from typing import Dict, List, Optional
 
-# These IDs come from PAT.dbc (29-bit, J1939-style).
-PAT_J_BASE_ID = 0x8CFFE727  # PAT_J0
+# NOTE on IDs:
+#
+# The PAT.dbc included with this project encodes extended-frame IDs using the
+# common SocketCAN "can_id" convention where bit31 (0x8000_0000) is the EFF
+# (extended frame format) flag.
+#
+# python-can (and our rmcanview backend) exposes ``Message.arbitration_id`` as
+# the *pure* 29-bit identifier, and stores EFF separately as
+# ``Message.is_extended_id``.
+#
+# Therefore, the "real" 29-bit ID for PAT_J0 is 0x0CFFE727, while the DBC shows
+# 0x8CFFE727 (= 0x80000000 | 0x0CFFE727).
+#
+# To be robust across backends (in case any returns can_id-with-flags), we mask
+# arbitration IDs down to 29 bits before matching.
+PAT_J_BASE_ID = 0x0CFFE727  # PAT_J0 (29-bit ID)
 PAT_J_STRIDE = 0x100
 PAT_J_COUNT = 6
 
@@ -52,7 +66,10 @@ class PatSwitchMatrixState:
     @staticmethod
     def _id_to_index(arb_id: int) -> Optional[int]:
         try:
-            aid = int(arb_id)
+            # Mask to a raw 29-bit arbitration ID. This makes us tolerant of
+            # backends that might pass a SocketCAN-style "can_id" with flags
+            # (e.g. EFF=0x8000_0000) mixed into the integer.
+            aid = int(arb_id) & 0x1FFFFFFF
         except Exception:
             return None
         d = aid - int(PAT_J_BASE_ID)
