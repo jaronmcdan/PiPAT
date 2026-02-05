@@ -10,12 +10,9 @@ from typing import Optional
 
 import pyvisa
 import serial
-import os
-
 from gpiozero import LED
 
 import config
-from bk5491b import BK5491B, MmeterFunc
 from mrsignal import MrSignalClient, MrSignalStatus
 
 
@@ -45,113 +42,6 @@ class _NullRelay:
         return None
 
 
-def _is_raspberry_pi() -> bool:
-    """Best-effort detection for whether we're running on a Raspberry Pi."""
-
-    # Fast path: device-tree model (common on Raspberry Pi OS)
-    try:
-        with open("/proc/device-tree/model", "r", encoding="ascii", errors="ignore") as f:
-            s = (f.read() or "").lower()
-            if "raspberry pi" in s:
-                return True
-    except Exception:
-        pass
-
-    # Fallback: cpuinfo
-    try:
-        with open("/proc/cpuinfo", "r", encoding="ascii", errors="ignore") as f:
-            s = (f.read() or "").lower()
-            if "raspberry pi" in s:
-                return True
-            # Broadcom SoCs commonly used in Pi devices.
-            if "bcm270" in s or "bcm271" in s or "bcm283" in s:
-                return True
-    except Exception:
-        pass
-    return False
-
-
-class _SerialRelay:
-    """Relay backend that toggles a channel via a USB-serial ASCII protocol.
-
-    Designed for simple Arduino-based relay controllers that accept a single
-    byte command to turn a relay channel ON/OFF.
-
-    Interface mirrors gpiozero.LED enough for this app: on/off/is_lit/pin.
-    """
-
-    def __init__(
-        self,
-        port: str,
-        *,
-        baud: int = 9600,
-        cmd_on: bytes,
-        cmd_off: bytes,
-        initial_drive: bool = False,
-        boot_delay_s: float = 2.0,
-        timeout_s: float = 0.5,
-    ):
-        self._port = str(port)
-        self._baud = int(baud)
-        self._cmd_on = bytes(cmd_on)
-        self._cmd_off = bytes(cmd_off)
-        self._is_lit = bool(initial_drive)
-        self._lock = threading.Lock()
-
-        self.ser = serial.Serial(
-            self._port,
-            self._baud,
-            timeout=float(timeout_s),
-            write_timeout=float(timeout_s),
-        )
-
-        # Many Arduino-class boards either reset on open or need a moment to
-        # finish USB enumeration / setup(). Keep it configurable.
-        if boot_delay_s and boot_delay_s > 0:
-            time.sleep(float(boot_delay_s))
-
-        try:
-            self.ser.reset_input_buffer()
-            self.ser.reset_output_buffer()
-        except Exception:
-            pass
-
-        # Apply the initial drive state so the software and hardware match.
-        self._apply(self._is_lit)
-
-    def _write(self, payload: bytes) -> None:
-        if not payload:
-            return
-        with self._lock:
-            self.ser.write(payload)
-            try:
-                self.ser.flush()
-            except Exception:
-                pass
-
-    def _apply(self, drive_on: bool) -> None:
-        try:
-            self._write(self._cmd_on if drive_on else self._cmd_off)
-            self._is_lit = bool(drive_on)
-        except Exception as e:
-            # Keep running; device may be unplugged. Caller will see the log.
-            print(f"WARNING: K1 serial relay write failed ({self._port}): {e}")
-
-    @property
-    def is_lit(self) -> bool:
-        return bool(self._is_lit)
-
-    def on(self) -> None:
-        self._apply(True)
-
-    def off(self) -> None:
-        self._apply(False)
-
-    @property
-    def pin(self):
-        return None
-
-
 def _clamp_i16(x: int) -> int:
     if x < -32768:
         return -32768
@@ -174,36 +64,9 @@ class HardwareManager:
 
         # multimeter
         self.multi_meter: Optional[serial.Serial] = None
-        # Higher-level helper (preferred)
-        self.mmeter: BK5491B | None = None
         self.multi_meter_mode: int = 0
         self.multi_meter_range: int = 0
         self.mmeter_id: Optional[str] = None
-        # Determined at runtime by the polling thread (see main.py).
-        self.mmeter_fetch_cmd: Optional[str] = None
-        # When control commands change meter mode/range, we pause background polling
-        # until this monotonic timestamp.
-        self.mmeter_quiet_until: float = 0.0
-
-        # Expanded DMM state (used for CAN status/readback)
-        self.mmeter_func: int = int(MmeterFunc.VDC)
-        self.mmeter_autorange: bool = True
-        self.mmeter_range_value: float = 0.0
-        self.mmeter_nplc: float = 1.0
-        self.mmeter_func2: int = int(MmeterFunc.VDC)
-        self.mmeter_func2_enabled: bool = False
-        self.mmeter_rel_enabled: bool = False
-        self.mmeter_trig_source: int = 0  # 0=IMM,1=BUS,2=MAN
-
-        # SCPI command dialect for the multimeter.
-        #
-        # For the 2831E/5491B family, the documented / recommended dialect is
-        # the classic tree rooted at :FUNCtion (plus :FUNCtion2 for secondary
-        # display on newer firmware). Default is "auto" (choose a working dialect).
-        try:
-            self.mmeter_scpi_style: str = str(getattr(config, "MMETER_SCPI_STYLE", "func") or "func").strip().lower()
-        except Exception:
-            self.mmeter_scpi_style = "func"
 
         # AFG
         self.afg = None
@@ -240,155 +103,32 @@ class HardwareManager:
 
         self.mrsignal_lock = threading.Lock()
 
-        # --- K1 Relay ---
+        # --- GPIO Relay (K1) ---
         # K1 is treated as a direct drive output. We intentionally do not infer "DUT power"
         # from contact wiring (NC/NO). If you need true DUT power status, measure it.
         initial_drive = bool(getattr(config, "K1_IDLE_DRIVE", False))
 
         self.relay_backend: str = "disabled"
-
-        # Respect the legacy enable switch first.
-        if not bool(getattr(config, "K1_ENABLE", True)):
-            self.relay = _NullRelay(initial_drive)
-            self.relay_backend = "disabled"
-        else:
-            backend = str(getattr(config, "K1_BACKEND", "auto") or "auto").strip().lower()
-
-            # Helper: construct the serial relay (Arduino controller)
-            def _try_serial() -> bool:
-                port = str(getattr(config, "K1_SERIAL_PORT", "") or "").strip()
-                if not port:
-                    return False
-
-                idx = int(getattr(config, "K1_SERIAL_RELAY_INDEX", 1) or 1)
-                idx = max(1, min(8, idx))
-
-                on_char = str(getattr(config, "K1_SERIAL_ON_CHAR", "") or "").strip()
-                off_char = str(getattr(config, "K1_SERIAL_OFF_CHAR", "") or "").strip()
-                if not on_char:
-                    # Default protocol: ON = '1'.., OFF = 'a'.. (index 1 -> '1'/'a')
-                    on_char = str(idx)
-                if not off_char:
-                    off_char = chr(ord('a') + idx - 1)
-
-                baud = int(getattr(config, "K1_SERIAL_BAUD", 9600) or 9600)
-                boot_delay = float(getattr(config, "K1_SERIAL_BOOT_DELAY_SEC", 2.0) or 0.0)
-
-                try:
-                    self.relay = _SerialRelay(
-                        port,
-                        baud=baud,
-                        cmd_on=on_char.encode("ascii", errors="ignore"),
-                        cmd_off=off_char.encode("ascii", errors="ignore"),
-                        initial_drive=bool(initial_drive),
-                        boot_delay_s=boot_delay,
-                    )
-                    self.relay_backend = "serial"
-                    print(f"K1 relay: serial backend on {port} (relay {idx}, on='{on_char}', off='{off_char}')")
-                    return True
-                except Exception as e:
-                    print(f"WARNING: K1 serial relay unavailable ({port}); running with a mock relay. ({e})")
-                    return False
-
-            # Helper: construct the Pi GPIO relay
-            def _try_gpio() -> bool:
-                try:
-                    self.relay = LED(
-                        config.K1_PIN_BCM,
-                        # active_high is the *electrical* polarity of the relay input.
-                        # If K1_ACTIVE_LOW=True, then LED.on() drives the pin LOW.
-                        active_high=not bool(getattr(config, "K1_ACTIVE_LOW", False)),
-                        # initial_value is whether LED is "on" (drive asserted).
-                        initial_value=bool(initial_drive),
-                    )
-                    self.relay_backend = "gpio"
-                    return True
-                except Exception as e:
-                    print(f"WARNING: K1 GPIO unavailable; {e}")
-                    return False
-
-            # Backend selection
-            if backend == "disabled":
-                self.relay = _NullRelay(initial_drive)
-                self.relay_backend = "disabled"
-            elif backend == "mock":
+        if bool(getattr(config, "K1_ENABLE", True)):
+            try:
+                self.relay = LED(
+                    config.K1_PIN_BCM,
+                    # active_high is the *electrical* polarity of the relay input.
+                    # If K1_ACTIVE_LOW=True, then LED.on() drives the pin LOW.
+                    active_high=not bool(getattr(config, "K1_ACTIVE_LOW", False)),
+                    # initial_value is whether LED is "on" (drive asserted).
+                    initial_value=bool(initial_drive),
+                )
+                self.relay_backend = "gpio"
+            except Exception as e:
+                # Typical causes: running off-Pi, missing pin factory backends
+                # (lgpio/RPi.GPIO/pigpio), or insufficient permissions for GPIO.
+                print(f"WARNING: K1 GPIO unavailable; running with a mock relay. ({e})")
                 self.relay = _NullRelay(initial_drive)
                 self.relay_backend = "mock"
-            elif backend == "serial":
-                if not _try_serial():
-                    self.relay = _NullRelay(initial_drive)
-                    self.relay_backend = "mock"
-            elif backend == "gpio":
-                if not _try_gpio():
-                    self.relay = _NullRelay(initial_drive)
-                    self.relay_backend = "mock"
-            else:
-                # auto
-                if _is_raspberry_pi():
-                    if not _try_gpio():
-                        if not _try_serial():
-                            self.relay = _NullRelay(initial_drive)
-                            self.relay_backend = "mock"
-                else:
-                    # Non-Pi: don't spam pin-factory fallbacks. Prefer serial if configured.
-                    if not _try_serial():
-                        print("WARNING: K1 GPIO unavailable (not a Raspberry Pi); set K1_SERIAL_PORT or use a mock relay.")
-                        self.relay = _NullRelay(initial_drive)
-                        self.relay_backend = "mock"
-
-
-    def _maybe_detect_mmeter_scpi_style(self) -> None:
-        """One-time SCPI dialect detection for the 5491B.
-
-        Some 5491/5492 command sets use :CONFigure (CONF:...) while others use
-        :FUNCtion + per-subsystem trees. Sending the wrong style can make the
-        meter display "BUS: BAD COMMAND".
-        """
-
-        style = str(getattr(self, "mmeter_scpi_style", "auto") or "auto").strip().lower()
-        if style not in ("conf", "func", "auto"):
-            style = "auto"
-
-        # If explicitly configured, honor it.
-        if style != "auto":
-            self.mmeter_scpi_style = style
-            print(f"MMETER SCPI style: {self.mmeter_scpi_style}")
-            return
-
-        helper = getattr(self, "mmeter", None)
-        if helper is None:
-            # Can't probe; default to the more backwards-compatible dialect.
-            self.mmeter_scpi_style = "conf"
-            print(f"MMETER SCPI style: {self.mmeter_scpi_style} (default)")
-            return
-
-        # 1) Try CONF-style query first (often present on older firmware).
-        resp = ""
-        try:
-            resp = helper.query_line(":CONFigure:FUNCtion?", delay_s=0.05, read_lines=6)
-        except Exception:
-            resp = ""
-        r = (resp or "").upper()
-        if any(tok in r for tok in ("DCV", "ACV", "DCA", "ACA", "HZ", "RES", "DIOC", "NONE")):
-            self.mmeter_scpi_style = "conf"
-            print(f"MMETER SCPI style: {self.mmeter_scpi_style} (auto)")
-            return
-
-        # 2) Then try FUNC-style query (classic SCPI tree).
-        resp2 = ""
-        try:
-            resp2 = helper.query_line(":FUNCtion?", delay_s=0.05, read_lines=6)
-        except Exception:
-            resp2 = ""
-        r2 = (resp2 or "").upper()
-        if any(tok in r2 for tok in ("VOLT", "CURR", "RES", "FREQ", "PER", "DIO", "CONT")):
-            self.mmeter_scpi_style = "func"
-            print(f"MMETER SCPI style: {self.mmeter_scpi_style} (auto)")
-            return
-
-        # Fallback
-        self.mmeter_scpi_style = "conf"
-        print(f"MMETER SCPI style: {self.mmeter_scpi_style} (auto default)")
+        else:
+            self.relay = _NullRelay(initial_drive)
+            self.relay_backend = "disabled"
 
     # --- Relay helpers ---
     def get_k1_drive(self) -> bool:
@@ -431,12 +171,6 @@ class HardwareManager:
         self._initialize_mrsignal()
 
     def _initialize_multimeter(self) -> None:
-        """Initialize the serial multimeter.
-
-        Many USB-serial instruments will *echo* the command you send before
-        replying with the actual IDN string. Also, some respond a beat later.
-        We therefore read a few lines and skip obvious echoes.
-        """
         try:
             mmeter = serial.Serial(
                 config.MULTI_METER_PATH,
@@ -451,80 +185,15 @@ class HardwareManager:
             except Exception:
                 pass
 
-            # If device_discovery already identified the meter, avoid sending
-            # another *IDN? immediately on boot unless verification is enabled.
-            cached_idn = str(getattr(config, 'MULTI_METER_IDN', '') or '').strip()
-            verify = bool(getattr(config, 'MULTI_METER_VERIFY_ON_STARTUP', False))
-            if cached_idn and not verify:
-                self.mmeter_id = cached_idn
-                print(f"MULTI-METER ID: {self.mmeter_id}")
-                self.multi_meter = mmeter
-                try:
-                    self.mmeter = BK5491B(mmeter, log_fn=print)
-                except Exception:
-                    self.mmeter = None
-
-                # Clear any stale error queue entries so the front panel doesn't
-                # keep showing a persistent BUS error after experimentation.
-                try:
-                    if bool(getattr(config, "MMETER_CLEAR_ERRORS_ON_STARTUP", True)) and self.mmeter is not None:
-                        self.mmeter.drain_errors(log=True)
-                except Exception:
-                    pass
-
-                # Optional SCPI dialect detection (one-time) to avoid sending
-                # commands the meter doesn't understand (prevents "BUS: BAD COMMAND").
-                self._maybe_detect_mmeter_scpi_style()
-                return
-
-            # Query IDN and tolerate command echo.
-            try:
-                mmeter.write(b"*IDN?\n")
-                mmeter.flush()
-            except Exception:
-                pass
-
-            # Give the device a moment; many respond ~10-100ms later.
-            time.sleep(float(getattr(config, 'MULTI_METER_IDN_DELAY', 0.05)))
-
-            idn: Optional[str] = None
-            for _ in range(int(getattr(config, 'MULTI_METER_IDN_READ_LINES', 4))):
-                raw = mmeter.readline()
-                if not raw:
-                    continue
-                line = raw.decode("ascii", errors="replace").strip()
-                if not line:
-                    continue
-                # Ignore the common echo patterns.
-                if line.upper().startswith("*IDN?"):
-                    continue
-                # Some devices include stray prompts; prefer lines that look like an IDN.
-                if ("," in line) or ("multimeter" in line.lower()) or ("5491" in line.lower()):
-                    idn = line
-                    break
-                # Fallback: accept the first non-empty non-echo line.
-                if idn is None:
-                    idn = line
-
-            self.mmeter_id = idn
+            mmeter.write(b"*IDN?\n")
+            mmeter.flush()
+            raw = mmeter.readline()
+            self.mmeter_id = raw.decode("ascii", errors="replace").strip() or None
             print(f"MULTI-METER ID: {self.mmeter_id or 'Unknown'}")
             self.multi_meter = mmeter
-            try:
-                self.mmeter = BK5491B(mmeter, log_fn=print)
-            except Exception:
-                self.mmeter = None
-
-            try:
-                if bool(getattr(config, "MMETER_CLEAR_ERRORS_ON_STARTUP", True)) and self.mmeter is not None:
-                    self.mmeter.drain_errors(log=True)
-            except Exception:
-                pass
-
-            self._maybe_detect_mmeter_scpi_style()
         except (serial.SerialException, IOError) as e:
             print(f"Failed to communicate with multi-meter: {e}")
             self.multi_meter = None
-            self.mmeter = None
 
     def _initialize_visa_devices(self) -> None:
         """Initializes both E-Load and AFG via PyVISA."""
@@ -534,82 +203,20 @@ class HardwareManager:
             # --- 1. E-LOAD (Scan for USBTMC / match pattern) ---
             try:
                 available_resources = list(self.resource_manager.list_resources())
+                print(f"Scanning for E-Load in: {available_resources}")
 
-                # CRITICAL SAFETY: Never probe ASRL resources when looking for an E-load.
-                # Many unrelated USB-serial devices show up as ASRL/dev/ttyUSB*::INSTR
-                # (including the 5491B DMM). Touching them via VISA can make them beep
-                # "bus command error" and stop responding. The E-load is USBTMC and
-                # should appear as a USB* resource.
-                usb_resources = [r for r in available_resources if str(r).startswith("USB")]
-                print(f"Scanning for E-Load in (USB only): {usb_resources}")
-
-                eload_pat = str(getattr(config, "ELOAD_VISA_ID", "") or "").strip()
-                eload_hints = [
-                    t.strip().lower()
-                    for t in str(getattr(config, "AUTO_DETECT_ELOAD_IDN_HINTS", "") or "").split(",")
-                    if t.strip()
-                ]
-
-                def _is_specific_resource(pat: str) -> bool:
-                    if not pat:
-                        return False
-                    # If there are any glob metacharacters, treat as a pattern.
-                    return not any(ch in pat for ch in ("*", "?", "["))
-
-                eload_specific = _is_specific_resource(eload_pat)
-
-                if eload_specific:
-                    # If config points at a specific VISA resource (e.g. from autodetect),
-                    # trust it and connect directly. Do NOT require IDN hints here.
-                    # Try the specific resource first, even if list_resources() is empty.
-                    candidates = [eload_pat] if eload_pat else []
-                    # Then fall back to scanning any other USB resources we can see.
-                    if usb_resources:
-                        candidates += [r for r in usb_resources if r != eload_pat]
-                    print(f"E-Load target (direct): {eload_pat}")
-                else:
-                    # Pattern scan across all USB resources.
-                    candidates = [r for r in usb_resources if (not eload_pat or fnmatch.fnmatch(r, eload_pat))]
-                    print(f"E-Load scan: pattern={eload_pat or '*'} hints={eload_hints or 'none'}")
-
-                for resource_id in candidates:
-                    try:
-                        dev = self.resource_manager.open_resource(resource_id)
-                        # Bound I/O time so a slow/missing instrument doesn't stall controls.
+                for resource_id in available_resources:
+                    if fnmatch.fnmatch(resource_id, config.ELOAD_VISA_ID):
                         try:
-                            dev.timeout = int(getattr(config, "VISA_TIMEOUT_MS", 500))
-                        except Exception:
-                            pass
-                        # USBTMC devices usually speak SCPI with newline termination.
-                        try:
-                            dev.read_termination = "\n"
-                            dev.write_termination = "\n"
-                        except Exception:
-                            pass
-
-                        dev_id = str(dev.query("*IDN?")).strip()
-
-                        # Only enforce hints when doing a broad scan.
-                        if (not eload_specific) and eload_hints:
-                            low = (dev_id or "").lower()
-                            if not any(h in low for h in eload_hints):
-                                print(f"E-Load candidate rejected: {resource_id} -> {dev_id}")
-                                try:
-                                    dev.close()
-                                except Exception:
-                                    pass
-                                continue
-
-                        print(f"E-LOAD FOUND: {dev_id} @ {resource_id}")
-                        # Keep these best-effort; some loads dislike *RST.
-                        try:
+                            dev = self.resource_manager.open_resource(resource_id)
+                            dev_id = dev.query("*IDN?").strip()
+                            print(f"E-LOAD FOUND: {dev_id}")
+                            dev.write("*RST")
                             dev.write("SYST:CLE")
-                        except Exception:
-                            pass
-                        self.e_load = dev
-                        break
-                    except Exception as e:
-                        print(f"Skip E-LOAD ({resource_id}): {e}")
+                            self.e_load = dev
+                            break
+                        except Exception as e:
+                            print(f"Skip E-LOAD ({resource_id}): {e}")
             except Exception as e:
                 print(f"E-Load Scan Error: {e}")
 
@@ -617,11 +224,6 @@ class HardwareManager:
             try:
                 print(f"Attempting AFG connection at {config.AFG_VISA_ID}...")
                 afg_dev = self.resource_manager.open_resource(config.AFG_VISA_ID)
-                # Bound I/O time so polling doesn't block control writes for long.
-                try:
-                    afg_dev.timeout = int(getattr(config, "VISA_TIMEOUT_MS", 500))
-                except Exception:
-                    pass
                 # Some VISA backends expose serial config fields
                 try:
                     afg_dev.baud_rate = 115200

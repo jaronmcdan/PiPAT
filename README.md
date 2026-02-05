@@ -1,27 +1,15 @@
 # ROI Instrument Bridge (Raspberry Pi)
 
-This project runs on a Raspberry Pi and bridges **CAN** control messages (SocketCAN by default) to lab instruments and local GPIO:
+This project runs on a Raspberry Pi and bridges **SocketCAN** control messages to lab instruments and local GPIO:
 
 - **E-load** via PyVISA (SCPI)
-- **Multimeter** (e.g., B&K Precision 5491B) via USB-serial
+- **Multimeter** (e.g., Keysight 5491B) via USB-serial
 - **AFG** via PyVISA (SCPI)
 - **MrSignal / LANYI MR2.0** via Modbus RTU (USB-serial)
 - **K1 Relay** (GPIO) for DUT power control
 - Optional terminal dashboard (Rich TUI)
 
-> Key files: `main.py`, `hardware.py`, `can_comm.py`, `device_comm.py`, `dashboard.py`, `config.py`
-
-### Architecture note: CAN vs device I/O are isolated
-
-PiPAT runs **CAN RX** and **device/instrument control** in separate threads:
-
-- `can_comm.py` (`can_rx_loop`) reads CAN frames (from the configured backend) and enqueues *only* control frames.
-- `device_comm.py` (`device_command_loop`) dequeues commands and applies them to instruments/GPIO.
-
-This keeps CAN reception responsive even when instrument I/O blocks.
-
-Tuning:
-- `CAN_CMD_QUEUE_MAX` controls the buffer size between the two threads (default `256`).
+> Key files: `main.py`, `hardware.py`, `dashboard.py`, `config.py`
 
 ---
 
@@ -79,152 +67,6 @@ The most common settings:
 - `ELOAD_VISA_ID`, `AFG_VISA_ID`
 - `MRSIGNAL_ENABLE`, `MRSIGNAL_PORT`, `MRSIGNAL_BAUD`, `MRSIGNAL_SLAVE_ID`, `MRSIGNAL_PARITY`, `MRSIGNAL_STOPBITS`
 
----
-
-## 5491B multimeter control over CAN
-
-PiPAT supports controlling a connected bench DMM (tested with a **B&K Precision 5491B**) via CAN, just like the other devices.
-
-### CAN IDs
-
-- Control (legacy): `MMETER_CTRL_ID = 0x0CFF0600`
-- Control (extended): `MMETER_CTRL_EXT_ID = 0x0CFF0601`
-- Readback (legacy current): `MMETER_READ_ID = 0x0CFF0004`
-- Readback (extended floats): `MMETER_READ_EXT_ID = 0x0CFF0009`
-- Status: `MMETER_STATUS_ID = 0x0CFF000A`
-
-### Legacy control `MMETER_CTRL_ID` (2 bytes)
-
-Payload: `mode, range, 0,0,0,0,0,0`
-
-- `mode=0` → DC Voltage (`VDC`)
-- `mode=1` → DC Current (`IDC`)
-- `range=0` → autorange ON for the selected function
-- any other `range` value is currently stored for UI display (extended control gives full range control)
-
-Example:
-
-```bash
-# Set DC current mode with autorange
-cansend can0 0CFF0600#0100000000000000
-```
-
-### Extended control `MMETER_CTRL_EXT_ID` (op-code protocol)
-
-Payload format (8 bytes):
-
-```
-[0] op
-[1] arg0
-[2] arg1
-[3] arg2
-[4..7] value_f32_le   (IEEE754 float32, little-endian)
-```
-
-#### Function enums
-
-| Enum | Function |
-|---:|---|
-| 0 | VDC |
-| 1 | VAC |
-| 2 | IDC |
-| 3 | IAC |
-| 4 | RES (2W) |
-| 5 | FREQ |
-| 6 | PERIOD |
-| 7 | DIODE |
-| 8 | CONT |
-
-#### Ops
-
-| Op (hex) | Meaning | args | value |
-|---:|---|---|---|
-| `0x01` | Set primary function | `arg0=function_enum` | ignored |
-| `0x02` | Set autorange | `arg0=function_enum or 0xFF=current`, `arg1=0/1` | ignored |
-| `0x03` | Set range | `arg0=function_enum or 0xFF=current` | `value=<range>` |
-| `0x04` | Set NPLC | `arg0=function_enum or 0xFF=current` | `value=<nplc>` |
-| `0x05` | Enable/disable secondary display | `arg0=0/1` | ignored |
-| `0x06` | Set secondary function | `arg0=function_enum` | ignored |
-| `0x07` | Set trigger source | `arg0=0=IMM, 1=BUS, 2=MAN` | ignored |
-| `0x08` | BUS trigger | none | ignored |
-| `0x09` | Relative mode enable | `arg0=0/1` | ignored |
-| `0x0A` | Relative acquire | none | ignored |
-
-Examples:
-
-```bash
-# Set primary function to IDC
-cansend can0 0CFF0601#0102000000000000
-
-# Enable autorange for the *current* function (arg0=0xFF)
-cansend can0 0CFF0601#02FF010000000000
-
-# Set DC voltage range to 6.0 V (float32 little-endian = 00 00 C0 40)
-cansend can0 0CFF0601#03FF00000000C040
-
-# Set NPLC to 10.0 (float32 little-endian = 00 00 20 41)
-cansend can0 0CFF0601#04FF000000002041
-
-# Enable secondary display + set it to RES
-cansend can0 0CFF0601#0501000000000000
-cansend can0 0CFF0601#0604000000000000
-```
-
-### Readback
-
-- `MMETER_READ_EXT_ID` (`0x0CFF0009`): `float32 primary`, `float32 secondary`.
-  - If no secondary display is active, secondary is transmitted as **NaN**.
-- `MMETER_STATUS_ID` (`0x0CFF000A`):
-  - byte0: `function_enum`
-  - byte1: flags
-    - bit0: secondary enabled
-    - bit1: autorange enabled
-    - bit2: relative mode enabled
-
-> Compatibility: `MMETER_READ_ID` (legacy current mA) is only transmitted when the meter is in `IDC/IAC`.
-
-### USB / VISA auto-detection (recommended on Pi)
-
-On Raspberry Pi, USB serial devices can renumber (`/dev/ttyUSB0` becomes `/dev/ttyUSB1`, etc).
-PiPAT includes **best-effort auto-detection** that runs at startup and patches:
-
-- `MULTI_METER_PATH`
-- `MRSIGNAL_PORT`
-- `K1_SERIAL_PORT` (optional Arduino relay backend)
-- `CAN_CHANNEL` (when `CAN_INTERFACE=rmcanview`)
-- `AFG_VISA_ID`
-- `ELOAD_VISA_ID`
-
-How it works:
-- Prefers stable symlinks like `/dev/serial/by-id/...` when available
-- Uses short timeouts and only does safe identification reads (`*IDN?` for SCPI; a quick Modbus status read for MrSignal)
-
-Controls:
-- Disable detection: `python3 main.py --no-auto-detect`
-- Or via env: `AUTO_DETECT_ENABLE=0`
-
-Closed / fixed systems (recommended):
-- Set `AUTO_DETECT_BYID_ONLY=1` to avoid probing **unknown** serial ports. In this
-  mode PiPAT will prefer mapping devices purely by their `/dev/serial/by-id/...`
-  names (plus a single verification attempt on the matched device).
-- Tune the by-id matching hints if needed:
-  - `AUTO_DETECT_MMETER_BYID_HINTS`
-  - `AUTO_DETECT_MRSIGNAL_BYID_HINTS`
-  - `AUTO_DETECT_K1_BYID_HINTS`
-  - `AUTO_DETECT_CANVIEW_BYID_HINTS`
-  - `AUTO_DETECT_AFG_BYID_HINTS`
-
-Hint tuning (comma-separated, optional):
-- `AUTO_DETECT_MMETER_IDN_HINTS` (default: `multimeter,5491b`)
-- `AUTO_DETECT_AFG_IDN_HINTS` (default: `afg,function,generator,arb`)
-- `AUTO_DETECT_ELOAD_IDN_HINTS` (default: `load,eload,electronic load,dl,it,bk`)
-
-If you want to hard-pin ports anyway (for example in systemd), set these explicitly in `/etc/roi/roi.env`:
-- `MULTI_METER_PATH=/dev/serial/by-id/...`
-- `MRSIGNAL_PORT=/dev/serial/by-id/...`
-- `AFG_VISA_ID=ASRL/dev/ttyACM0::INSTR`
-- `ELOAD_VISA_ID=USB0::...::INSTR`
-
 ### 4) Run
 
 ```bash
@@ -233,16 +75,9 @@ python3 main.py
 
 ---
 
-## CAN backend notes
+## SocketCAN notes
 
-PiPAT can talk to CAN via different backends:
-
-- **SocketCAN** (`CAN_INTERFACE=socketcan`, default): Linux SocketCAN netdev (e.g. `can0`)
-- **CANview USB/RS232** (`CAN_INTERFACE=rmcanview`): RM/Proemion gateways via serial (Byte Command Protocol)
-
-### SocketCAN
-
-By default (`CAN_SETUP=1`), `main.py` attempts to bring the SocketCAN interface up using:
+By default (`CAN_SETUP=1`), `main.py` attempts to bring the CAN interface up using:
 
 ```bash
 ip link set <channel> up type can bitrate <bitrate>
@@ -257,29 +92,35 @@ sudo ip link set can1 up type can bitrate 250000
 ip -details link show can1
 ```
 
-### CANview USB (rmcanview)
+---
 
-These adapters usually show up as a USB-serial device on Linux (e.g. `/dev/ttyUSB0`), not as a `can0` network
-interface.
+## RM CANview USB (auto-detected)
 
-Example `/etc/roi/roi.env`:
+PiPAT can also use an **RM CANview USB** gateway (FTDI/USB-serial) by speaking the
+**Proemion Byte Command Protocol** in *Byte Mode*.
+
+By default, `CAN_INTERFACE=auto` which means:
+
+1. If an RM CANview USB is plugged in, PiPAT will use it automatically.
+2. Otherwise, PiPAT falls back to SocketCAN.
+
+Useful env vars:
+
+- `CAN_INTERFACE=auto|socketcan|rmcanview`
+- `RMCANVIEW_PORT=/dev/serial/by-id/...` (optional override; recommended for stability)
+- `RMCANVIEW_TTY_BAUD=115200` (serial line speed; often ignored by USB-serial, but safe)
+- `RMCANVIEW_SET_CAN_BAUD=1` (send protocol command 0x57 to set CAN bitrate on the device)
+
+To discover what the Pi sees when you plug it in:
 
 ```bash
-CAN_INTERFACE=rmcanview
-CAN_CHANNEL=/dev/ttyUSB0
-CAN_SERIAL_BAUD=115200
-CAN_BITRATE=250000
-CAN_SETUP=1
-CAN_CLEAR_ERRORS_ON_INIT=1
+lsusb | grep -i ftdi
+ls -l /dev/serial/by-id/
+python3 -m serial.tools.list_ports -v
 ```
 
-If you do **not** want PiPAT to change adapter settings on startup, set `CAN_SETUP=0` and configure the gateway
-separately.
-
-If the gateway's **ERROR** LED stays latched from a previous session, keep `CAN_CLEAR_ERRORS_ON_INIT=1` (default)
-so PiPAT will issue a CAN controller reset on startup.
-
----
+If auto-detection ever picks the wrong port, set `RMCANVIEW_PORT` to the desired
+`/dev/serial/by-id/...` path.
 
 ## K1 relay semantics (no inference)
 
@@ -428,7 +269,7 @@ Notes:
 
 - This is an **estimator**, not a physical-layer measurement.
 - It uses the configured `CAN_BITRATE` and observed frame sizes to approximate on-wire bits.
-- TX frames sent by PiPAT are counted in software; RX frames are counted from the CAN backend.
+- TX frames sent by PiPAT are counted in software; RX frames are counted from SocketCAN.
 
 Tuning (optional):
 
