@@ -19,3 +19,20 @@ Files touched: `main.py`, `dashboard.py`, `can_metrics.py`, `config.py`.
 - Wired MrSignal into `HardwareManager` for init/idle/shutdown and redundant-write suppression.
 - Added `MRSIGNAL_*` config/env options + CAN IDs + optional CAN readback frames.
 - Dashboard shows MrSignal status (ID, output enable, mode, setpoint, input, float byteorder).
+
+
+## 2026-01-30
+
+### USB auto-detect: prevent 5491B "bus command error" during VISA scanning
+- Root cause: PyVISA discovery was probing *every* `ASRL/...` resource with a forced baud (115200) and `*IDN?`.
+  When that hit the 5491B's `/dev/ttyUSB0` (38400 baud), the meter would display a bus/command error and could stop answering the subsequent `*IDN?` in `HardwareManager`.
+- Fix: VISA discovery now excludes ASRL resources that map to:
+  - already-discovered serial ports (multimeter + MrSignal)
+  - onboard/console ports (ttyAMA*, ttyS*; configurable)
+  - or all ASRL probing when disabled
+- New config/env knobs:
+  - `AUTO_DETECT_VISA_PROBE_ASRL` (default 1)
+  - `AUTO_DETECT_ASRL_BAUD` (default 115200)
+  - `AUTO_DETECT_VISA_ASRL_EXCLUDE_PREFIXES` (default "/dev/ttyAMA,/dev/ttyS")
+
+Files touched: `device_discovery.py`, `config.py`.
