@@ -57,7 +57,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 # Build / version tag to make it obvious which zip is running.
 # You can override via env var PIPAT_BUILD_TAG.
-BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-02-05-perf-ctrl-ui-v1")
+BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-02-05-perf-ctrl-ui-v1-can-auto")
 
 
 # --- Hardware Identifiers ---
@@ -136,7 +136,7 @@ MULTI_METER_PROBE_BACKOFF_SEC = _env_float("MULTI_METER_PROBE_BACKOFF_SEC", 2.0)
 #   - MULTI_METER_PATH
 #   - MRSIGNAL_PORT
 #   - K1_SERIAL_PORT
-#   - CAN_CHANNEL (when CAN_INTERFACE=rmcanview)
+#   - CAN_INTERFACE + CAN_CHANNEL (auto-select rmcanview when CANview is present)
 #   - AFG_VISA_ID
 #   - ELOAD_VISA_ID
 AUTO_DETECT_ENABLE = _env_bool("AUTO_DETECT_ENABLE", True)

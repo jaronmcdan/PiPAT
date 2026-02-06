@@ -191,9 +191,14 @@ PiPAT includes **best-effort auto-detection** that runs at startup and patches:
 - `MULTI_METER_PATH`
 - `MRSIGNAL_PORT`
 - `K1_SERIAL_PORT` (optional Arduino relay backend)
-- `CAN_CHANNEL` (when `CAN_INTERFACE=rmcanview`)
+- `CAN_INTERFACE` + `CAN_CHANNEL` (auto-select `rmcanview` when a CANview is present)
 - `AFG_VISA_ID`
 - `ELOAD_VISA_ID`
+
+CAN backend auto-select:
+- If a CANview gateway is detected under `/dev/serial/by-id`, PiPAT switches to `CAN_INTERFACE=rmcanview`.
+- Otherwise it uses `CAN_INTERFACE=socketcan`.
+- Disable this with `AUTO_DETECT_CANVIEW=0` (or `AUTO_DETECT_ENABLE=0`).
 
 How it works:
 - Prefers stable symlinks like `/dev/serial/by-id/...` when available

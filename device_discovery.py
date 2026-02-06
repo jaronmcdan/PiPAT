@@ -358,12 +358,62 @@ def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryR
     eload_hints = _split_hints(str(getattr(config, "AUTO_DETECT_ELOAD_IDN_HINTS", "") or ""))
 
     # ---- Closed-system helpers: map by-id names to config *without* probing ----
-    # CANview serial gateway (rmcanview)
+    # CAN backend auto-select:
+    #   - Prefer an RM/Proemion CANview gateway (rmcanview) when present
+    #   - Otherwise fall back to SocketCAN
+    #
+    # This is intentionally best-effort. If you need to force a backend, disable
+    # AUTO_DETECT_CANVIEW (or AUTO_DETECT_ENABLE) and set CAN_INTERFACE/CAN_CHANNEL.
     if bool(getattr(config, "AUTO_DETECT_CANVIEW", True)):
         iface = str(getattr(config, "CAN_INTERFACE", "socketcan") or "socketcan").strip().lower()
-        if iface in ("rmcanview", "rm-canview", "proemion"):
+
+        # Remember the current SocketCAN channel as the fallback *before* we
+        # potentially overwrite CAN_CHANNEL with a /dev/... serial path.
+        cur_chan = str(getattr(config, "CAN_CHANNEL", "") or "").strip()
+        socket_fallback = cur_chan if (cur_chan and (not cur_chan.startswith("/dev/"))) else "can0"
+
+        can_hints = _split_hints(str(getattr(config, "AUTO_DETECT_CANVIEW_BYID_HINTS", "") or ""))
+        cand = _pick_by_id(byid_entries, can_hints) if (byid_entries and can_hints) else None
+
+        # Only auto-switch for the two supported backends. If the user selected a
+        # different python-can interface, don't override it.
+        auto_ok = iface in (
+            "auto",
+            "socketcan",
+            "socketcan_native",
+            "socketcan_ctypes",
+            "rmcanview",
+            "rm-canview",
+            "proemion",
+        )
+
+        if cand and auto_ok:
+            # CANview present: switch to rmcanview + pin channel to stable by-id path
+            setattr(config, "CAN_INTERFACE", "rmcanview")
+            setattr(config, "CAN_CHANNEL", cand)
+            res.can_channel = cand
+            if verbose:
+                _log(log_fn, f"[autodetect] CAN backend: rmcanview ({cand})")
+
+        elif auto_ok:
+            # No CANview present: ensure we are on SocketCAN and have a sane netdev channel
+            if iface in ("rmcanview", "rm-canview", "proemion", "auto"):
+                setattr(config, "CAN_INTERFACE", "socketcan")
+                setattr(config, "CAN_CHANNEL", socket_fallback)
+                if verbose:
+                    _log(log_fn, f"[autodetect] CAN backend: socketcan ({socket_fallback})")
+
+            # If socketcan is selected but CAN_CHANNEL is a /dev/... path (misconfig),
+            # fall back to the remembered netdev name.
+            cur2 = str(getattr(config, "CAN_CHANNEL", "") or "").strip()
+            if cur2.startswith("/dev/") or (not cur2):
+                setattr(config, "CAN_CHANNEL", socket_fallback)
+
+        # If we ended up on rmcanview, normalize any volatile /dev/tty* node to a
+        # stable symlink, and if still unset try by-id matching.
+        iface2 = str(getattr(config, "CAN_INTERFACE", "socketcan") or "socketcan").strip().lower()
+        if iface2 in ("rmcanview", "rm-canview", "proemion"):
             cur = str(getattr(config, "CAN_CHANNEL", "") or "").strip()
-            # Normalize an existing path to a stable symlink if possible
             if cur.startswith("/dev/"):
                 stable = _stable_serial_path(cur, prefer_by_id=prefer_by_id)
                 if stable and stable != cur:
@@ -372,16 +422,14 @@ def autodetect_and_patch_config(*, log_fn: Optional[LogFn] = None) -> DiscoveryR
                     if verbose:
                         _log(log_fn, f"[autodetect] canview: {stable} (from {cur})")
 
-            # If empty or still a volatile /dev/tty* node, try by-id matching
-            cur2 = str(getattr(config, "CAN_CHANNEL", "") or "").strip()
-            if (not cur2) or cur2.startswith("/dev/tty"):
-                can_hints = _split_hints(str(getattr(config, "AUTO_DETECT_CANVIEW_BYID_HINTS", "") or ""))
-                cand = _pick_by_id(byid_entries, can_hints)
-                if cand:
-                    setattr(config, "CAN_CHANNEL", cand)
-                    res.can_channel = cand
+            cur3 = str(getattr(config, "CAN_CHANNEL", "") or "").strip()
+            if (not cur3) or cur3.startswith("/dev/tty"):
+                cand2 = cand or (_pick_by_id(byid_entries, can_hints) if (byid_entries and can_hints) else None)
+                if cand2:
+                    setattr(config, "CAN_CHANNEL", cand2)
+                    res.can_channel = cand2
                     if verbose:
-                        _log(log_fn, f"[autodetect] canview: {cand}")
+                        _log(log_fn, f"[autodetect] canview: {cand2}")
 
     # Arduino relay controller (K1 serial backend)
     if bool(getattr(config, "AUTO_DETECT_K1_SERIAL", True)) and bool(getattr(config, "K1_ENABLE", True)):
