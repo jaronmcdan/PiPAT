@@ -593,3 +593,59 @@ def test_can_rx_loop_put_nowait_generic_exception(monkeypatch):
             return None
 
     can_comm.can_rx_loop(Bus(), Q(), stop, WD(), pat_matrix=None, busload=None, log_fn=lambda s: None)
+
+
+def test_shutdown_can_interface_breaks_on_first_success(monkeypatch):
+    """Cover the shutdown_can_interface() success + break path."""
+    import config
+    import can_comm
+
+    monkeypatch.setattr(config, "CAN_INTERFACE", "socketcan", raising=False)
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, check=False, capture_output=True, text=True):
+        calls.append(list(cmd))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(can_comm.subprocess, "run", fake_run)
+
+    can_comm.shutdown_can_interface("can0", do_setup=True)
+
+    # We should stop after the first successful attempt.
+    assert len(calls) == 1
+    assert calls[0][:2] == ["ip", "link"]
+
+
+def test_can_tx_loop_busload_exceptions_in_each_branch(monkeypatch):
+    """Exercise the busload.record_tx() exception swallow blocks for every frame type."""
+    import can_comm
+
+    # Deterministic time so the TX loop never sleeps.
+    t = {"x": 0.0}
+
+    def fake_monotonic():
+        t["x"] += 0.01
+        return t["x"]
+
+    monkeypatch.setattr(time, "monotonic", fake_monotonic)
+
+    state = can_comm.OutgoingTxState()
+    state.update_meter_current(123)
+    state.update_mmeter_values(1.0, None)
+    state.update_mmeter_status(func=2, flags=3)
+    state.update_eload(1000, 2000)
+    state.update_afg_ext(-100, 42)
+    state.update_mrsignal_status(output_on=True, output_select=1, output_value=2.5)
+    state.update_mrsignal_input(9.0)
+
+    stop = threading.Event()
+    bus = FakeBus(stop_after_sends=7)
+    bus.stop_event = stop
+
+    class AlwaysBoomBusLoad:
+        def record_tx(self, dlc: int):
+            raise RuntimeError("boom")
+
+    can_comm.can_tx_loop(bus, state, stop, period_s=0.01, busload=AlwaysBoomBusLoad(), log_fn=lambda s: None)
+    assert len(bus.sent) == 7

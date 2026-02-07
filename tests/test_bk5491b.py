@@ -226,3 +226,20 @@ def test_fetch_values_empty_and_non_numeric_and_secondary_overload():
     r4 = dmm4.fetch_values(":FETC?")
     assert r4.primary == 5.0
     assert r4.secondary is None
+
+def test_query_line_respects_delay(monkeypatch):
+    """Cover the query_line() delay_s > 0 branch."""
+    from bk5491b import BK5491B
+
+    slept: list[float] = []
+
+    def fake_sleep(dt: float):
+        slept.append(float(dt))
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+
+    ser = FakeSerial([b"1.0\n"])
+    dmm = BK5491B(ser)
+    out = dmm.query_line(":FETC?", read_lines=1, delay_s=0.01)
+    assert out == "1.0"
+    assert slept == [0.01]

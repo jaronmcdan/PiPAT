@@ -127,3 +127,78 @@ def test_id_to_index_int_conversion_error_is_handled():
 
     s = PatSwitchMatrixState()
     assert s._id_to_index(Bad()) is None
+
+
+def test_parse_j0_pin_names_int_conversion_error_branch(monkeypatch, tmp_path):
+    """Force int(...) to fail to cover the defensive exception block."""
+    import pat_matrix
+
+    dbc = tmp_path / "x.dbc"
+    dbc.write_text(
+        """
+BO_ 123 PAT_J0: 8 Vector__XXX
+ SG_ J0_01_FIRST : 0|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ J0_02_SECOND : 0|2@1+ (1,0) [0|3] "" Vector__XXX
+""",
+        encoding="utf-8",
+    )
+
+    real_int = int
+
+    def bad_int(x):
+        if str(x) == "01":
+            raise ValueError("boom")
+        return real_int(x)
+
+    monkeypatch.setattr(pat_matrix, "int", bad_int, raising=False)
+
+    out = pat_matrix._parse_j0_pin_names_from_dbc(dbc)
+    assert 1 not in out
+    assert out.get(2) == "SECOND"
+
+
+def test_j0_pin_names_try_block_exception_falls_back(monkeypatch):
+    """Exercise the exception handler around DBC parsing in j0_pin_names()."""
+    import pat_matrix
+
+    # Clear cache then force Path.resolve() to throw.
+    if hasattr(pat_matrix, "_J0_PIN_NAMES"):
+        delattr(pat_matrix, "_J0_PIN_NAMES")
+
+    def boom(self):
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(pat_matrix.Path, "resolve", boom)
+
+    names = pat_matrix.j0_pin_names()
+    assert names.get(12) == "PROBE"  # fallback map
+
+
+def test_j0_pin_names_cache_assignment_failure_is_swallowed(monkeypatch):
+    """Cover the try/except around writing the _J0_PIN_NAMES cache."""
+    import pat_matrix
+
+    if hasattr(pat_matrix, "_J0_PIN_NAMES"):
+        delattr(pat_matrix, "_J0_PIN_NAMES")
+
+    real_dict = dict
+    calls = {"n": 0}
+
+    def flaky_dict(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        return real_dict(*args, **kwargs)
+
+    monkeypatch.setattr(pat_matrix, "dict", flaky_dict, raising=False)
+
+    names = pat_matrix.j0_pin_names()
+    assert names.get(1) == "3A_LOAD"
+
+
+def test_id_to_index_out_of_range_is_handled():
+    from pat_matrix import PatSwitchMatrixState, PAT_J_BASE_ID, PAT_J_STRIDE, PAT_J_COUNT
+
+    s = PatSwitchMatrixState()
+    # One past the last valid PAT_Jx id.
+    assert s._id_to_index(PAT_J_BASE_ID + (PAT_J_STRIDE * PAT_J_COUNT)) is None
