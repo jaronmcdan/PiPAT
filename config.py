@@ -345,6 +345,15 @@ ELOAD_TIMEOUT_SEC = _env_float("ELOAD_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
 AFG_TIMEOUT_SEC = _env_float("AFG_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
 MMETER_TIMEOUT_SEC = _env_float("MMETER_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
 
+# Timeout for the *dashboard-only* PAT switching matrix footer (PAT_J0..PAT_J5).
+#
+# The PAT matrix view is driven by passively snooping PAT_Jx frames on the CAN
+# bus. If those frames stop arriving (PAT offline, bus disconnected, etc.), the
+# dashboard would otherwise keep showing the last captured (stale) matrix.
+#
+# Set <= 0 to disable stale blanking and always show the last seen values.
+PAT_MATRIX_TIMEOUT_SEC = _env_float("PAT_MATRIX_TIMEOUT_SEC", CAN_TIMEOUT_SEC)
+
 # If True, apply idle states immediately on startup before processing controls.
 APPLY_IDLE_ON_STARTUP = _env_bool("APPLY_IDLE_ON_STARTUP", True)
 

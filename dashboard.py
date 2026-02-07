@@ -482,9 +482,32 @@ def build_dashboard(hardware, *,
     pat_grid.add_column(ratio=1)
     pat_grid.add_column(ratio=1)
 
+    # PAT matrix freshness: blank the view if we haven't seen PAT_Jx frames
+    # recently so we don't display a stale "active" route forever.
+    try:
+        pat_timeout_s = float(getattr(config, "PAT_MATRIX_TIMEOUT_SEC", getattr(config, "CAN_TIMEOUT_SEC", 2.0)))
+    except Exception:
+        pat_timeout_s = 2.0
+
     def _cell(j: int) -> str:
         entry = ps.get(f"J{j}", {}) if isinstance(ps, dict) else {}
         vals = entry.get("vals") if isinstance(entry, dict) else None
+        age = entry.get("age") if isinstance(entry, dict) else None
+
+        # If we've never seen this J-frame, or it has gone stale, don't show
+        # the last captured pin list (which can be very misleading).
+        if age is None:
+            return f"[bold]J{j}[/] [dim]n/a[/]"
+
+        try:
+            age_f = float(age)
+        except Exception:
+            age_f = None
+
+        if (pat_timeout_s is not None) and (pat_timeout_s > 0) and (age_f is not None) and (age_f > pat_timeout_s):
+            # Keep it short to avoid wrapping; matches other watchdog indicators.
+            return f"[bold]J{j}[/] [dim]TO {age_f:.1f}s[/]"
+
         if j == 0:
             body = _pat_active_list(vals, names=j0_names, show_pin=True)
         else:
