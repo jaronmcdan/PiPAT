@@ -482,32 +482,58 @@ class DeviceCommandProcessor:
             new_short = 1 if (first_byte & 0xC0) == 0x40 else 0
 
             try:
-                if self.hardware.e_load_enabled != new_enable:
-                    self.hardware.e_load_enabled = new_enable
-                    with self.hardware.eload_lock:
-                        self.hardware.e_load.write("INP ON" if new_enable else "INP OFF")
-
-                if self.hardware.e_load_mode != new_mode:
-                    self.hardware.e_load_mode = new_mode
-                    with self.hardware.eload_lock:
-                        self.hardware.e_load.write("FUNC RES" if new_mode else "FUNC CURR")
-
-                if self.hardware.e_load_short != new_short:
-                    self.hardware.e_load_short = new_short
-                    with self.hardware.eload_lock:
-                        self.hardware.e_load.write("INP:SHOR ON" if new_short else "INP:SHOR OFF")
-
                 val_c = (data[3] << 8) | data[2]
-                if self.hardware.e_load_csetting != val_c:
-                    self.hardware.e_load_csetting = val_c
-                    with self.hardware.eload_lock:
-                        self.hardware.e_load.write(f"CURR {val_c/1000}")
-
                 val_r = (data[5] << 8) | data[4]
-                if self.hardware.e_load_rsetting != val_r:
+
+                enable_changed = (self.hardware.e_load_enabled != new_enable)
+                mode_changed = (self.hardware.e_load_mode != new_mode)
+                short_changed = (self.hardware.e_load_short != new_short)
+                c_changed = (self.hardware.e_load_csetting != val_c)
+                r_changed = (self.hardware.e_load_rsetting != val_r)
+
+                # Update cached commanded state immediately (used by the dashboard
+                # and by redundant-write suppression).
+                self.hardware.e_load_enabled = new_enable
+                self.hardware.e_load_mode = new_mode
+                self.hardware.e_load_short = new_short
+                if c_changed:
+                    self.hardware.e_load_csetting = val_c
+                if r_changed:
                     self.hardware.e_load_rsetting = val_r
+
+                # Build a minimal write list and hold the lock only once.
+                # Order is chosen to avoid unexpected load transients:
+                #   - If disabling: INP OFF first
+                #   - Apply mode/short + relevant setpoint
+                #   - If enabling: INP ON last
+                writes: list[str] = []
+
+                if enable_changed and (not new_enable):
+                    writes.append("INP OFF")
+
+                if mode_changed:
+                    writes.append("FUNC RES" if new_mode else "FUNC CURR")
+
+                if short_changed:
+                    writes.append("INP:SHOR ON" if new_short else "INP:SHOR OFF")
+
+                # Only write the setpoint relevant to the active mode. Also
+                # force a write on mode change to ensure the new subsystem has a
+                # valid setpoint.
+                if new_mode == 0:
+                    if c_changed or mode_changed:
+                        writes.append(f"CURR {val_c/1000}")
+                else:
+                    if r_changed or mode_changed:
+                        writes.append(f"RES {val_r/1000}")
+
+                if enable_changed and new_enable:
+                    writes.append("INP ON")
+
+                if writes:
                     with self.hardware.eload_lock:
-                        self.hardware.e_load.write(f"RES {val_r/1000}")
+                        for cmd in writes:
+                            self.hardware.e_load.write(cmd)
             except Exception:
                 pass
             return

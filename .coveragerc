@@ -1,0 +1,18 @@
+[run]
+branch = False
+source = .
+
+omit =
+    */tests/*
+    */dashboard.py
+    */device_discovery.py
+    */hardware.py
+    */main.py
+    */rmcanview.py
+    */scripts/*
+    */systemd/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:

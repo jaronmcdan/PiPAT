@@ -22,9 +22,22 @@ from can_comm import (
     setup_can_interface,
     shutdown_can_interface,
 )
+
+# Dashboard-only: PAT switching matrix (PAT_J0..PAT_J5)
+from pat_matrix import PatSwitchMatrixState
 from device_comm import device_command_loop
 
 from bk5491b import MmeterFunc, func_name, func_unit
+
+# MrSignal register constants (used for stepwise polling that yields to control writes)
+from mrsignal import (
+    REG_ID,
+    REG_INPUT_VALUE_FLOAT,
+    REG_OUTPUT_ON,
+    REG_OUTPUT_SELECT,
+    REG_OUTPUT_VALUE_FLOAT,
+    MrSignalStatus,
+)
 
 from device_discovery import autodetect_and_patch_config
 
@@ -468,15 +481,21 @@ def instrument_poll_loop(
             # E-Load measurement
             if hardware.e_load:
                 try:
-                    # Don't block controls; if the device thread is writing, skip this poll.
-                    if not hardware.eload_lock.acquire(timeout=0.0):
-                        v_str, i_str = "", ""
-                    else:
+                    # Don't block controls. Keep lock holds short by doing one
+                    # query per acquisition; this caps worst-case control stall
+                    # time to a single VISA timeout.
+                    v_str, i_str = "", ""
+                    if hardware.eload_lock.acquire(timeout=0.0):
                         try:
                             v_str = hardware.e_load.query("MEAS:VOLT?").strip()
+                        finally:
+                            hardware.eload_lock.release()
+                    if hardware.eload_lock.acquire(timeout=0.0):
+                        try:
                             i_str = hardware.e_load.query("MEAS:CURR?").strip()
                         finally:
                             hardware.eload_lock.release()
+
                     if v_str and i_str:
                         load_volts_mV = int(float(v_str) * 1000)
                         load_current_mA = int(float(i_str) * 1000)
@@ -519,49 +538,109 @@ def instrument_poll_loop(
 
             if hardware.e_load:
                 try:
+                    # Keep lock holds short and avoid unnecessary queries.
+                    # We only query the setpoint relevant to the active mode.
+
+                    # FUNC?
                     if hardware.eload_lock.acquire(timeout=0.0):
                         try:
                             load_stat_func = hardware.e_load.query("FUNC?").strip()
-                            load_stat_curr = hardware.e_load.query("CURR?").strip()
+                        finally:
+                            hardware.eload_lock.release()
+
+                    # INP?
+                    if hardware.eload_lock.acquire(timeout=0.0):
+                        try:
                             load_stat_imp = hardware.e_load.query("INP?").strip()
-                            load_stat_res = hardware.e_load.query("RES?").strip()
-                            # Some loads have SHOR?; keep optional
+                        finally:
+                            hardware.eload_lock.release()
+
+                    # INP:SHOR? (optional)
+                    if hardware.eload_lock.acquire(timeout=0.0):
+                        try:
                             try:
                                 load_stat_short = hardware.e_load.query("INP:SHOR?").strip()
                             except Exception:
                                 load_stat_short = ""
                         finally:
                             hardware.eload_lock.release()
+
+                    # Active setpoint based on mode
+                    func_u = (str(load_stat_func or "").strip().upper())
+                    if func_u.startswith("CURR"):
+                        # Clear RES setpoint so the dashboard doesn't show stale values.
+                        load_stat_res = ""
+                        if hardware.eload_lock.acquire(timeout=0.0):
+                            try:
+                                load_stat_curr = hardware.e_load.query("CURR?").strip()
+                            finally:
+                                hardware.eload_lock.release()
+                    elif func_u.startswith("RES"):
+                        load_stat_curr = ""
+                        if hardware.eload_lock.acquire(timeout=0.0):
+                            try:
+                                load_stat_res = hardware.e_load.query("RES?").strip()
+                            finally:
+                                hardware.eload_lock.release()
+                    else:
+                        # Unknown mode: keep the old behavior (best-effort read both)
+                        if hardware.eload_lock.acquire(timeout=0.0):
+                            try:
+                                load_stat_curr = hardware.e_load.query("CURR?").strip()
+                                load_stat_res = hardware.e_load.query("RES?").strip()
+                            finally:
+                                hardware.eload_lock.release()
                 except Exception:
                     pass
 
             if hardware.afg:
                 try:
+                    # Keep lock holds short: one query per acquisition so
+                    # control writes are only blocked for a single VISA transaction.
+                    if hardware.afg_lock.acquire(timeout=0.0):
+                        try:
+                            afg_out_str = hardware.afg.query("SOUR1:OUTP?").strip()
+                        finally:
+                            hardware.afg_lock.release()
+                    if afg_out_str is not None and str(afg_out_str).strip() != "":
+                        is_actually_on = str(afg_out_str).strip().upper() in ["ON", "1"]
+                        if hardware.afg_output != is_actually_on:
+                            hardware.afg_output = is_actually_on
+
                     if hardware.afg_lock.acquire(timeout=0.0):
                         try:
                             afg_freq_str = hardware.afg.query("SOUR1:FREQ?").strip()
-                            afg_ampl_str = hardware.afg.query("SOUR1:AMPL?").strip()
-                            afg_out_str = hardware.afg.query("SOUR1:OUTP?").strip()
-
-                            is_actually_on = str(afg_out_str).strip().upper() in ["ON", "1"]
-                            if hardware.afg_output != is_actually_on:
-                                hardware.afg_output = is_actually_on
-
-                            afg_shape_str = hardware.afg.query("SOUR1:FUNC?").strip()
-                            afg_offset_str = hardware.afg.query("SOUR1:VOLT:OFFS?").strip()
-                            afg_duty_str = hardware.afg.query("SOUR1:SQU:DCYC?").strip()
-
-                            if afg_offset_str and afg_duty_str:
-                                off_mv = _i16_clamp(int(float(afg_offset_str) * 1000))
-                                duty_pct = max(0, min(100, int(float(afg_duty_str))))
-                                tx_state.update_afg_ext(off_mv, duty_pct)
                         finally:
                             hardware.afg_lock.release()
+                    if hardware.afg_lock.acquire(timeout=0.0):
+                        try:
+                            afg_ampl_str = hardware.afg.query("SOUR1:AMPL?").strip()
+                        finally:
+                            hardware.afg_lock.release()
+                    if hardware.afg_lock.acquire(timeout=0.0):
+                        try:
+                            afg_shape_str = hardware.afg.query("SOUR1:FUNC?").strip()
+                        finally:
+                            hardware.afg_lock.release()
+                    if hardware.afg_lock.acquire(timeout=0.0):
+                        try:
+                            afg_offset_str = hardware.afg.query("SOUR1:VOLT:OFFS?").strip()
+                        finally:
+                            hardware.afg_lock.release()
+                    if hardware.afg_lock.acquire(timeout=0.0):
+                        try:
+                            afg_duty_str = hardware.afg.query("SOUR1:SQU:DCYC?").strip()
+                        finally:
+                            hardware.afg_lock.release()
+
+                    if afg_offset_str and afg_duty_str:
+                        off_mv = _i16_clamp(int(float(afg_offset_str) * 1000))
+                        duty_pct = max(0, min(100, int(float(afg_duty_str))))
+                        tx_state.update_afg_ext(off_mv, duty_pct)
                 except Exception:
                     pass
 
-
-                        # MrSignal (MR2.0) status/input
+            # MrSignal (MR2.0) status/input
             mrs_id_str = None
             mrs_out_str = None
             mrs_mode_str = None
@@ -577,56 +656,123 @@ def instrument_poll_loop(
 
                     if (now_m - last_mrs) >= poll_p:
                         last_mrs = now_m
+                        client = hardware.mrsignal
+
+                        # Read status in small chunks so control writes are only
+                        # blocked for a single Modbus transaction at a time.
+                        dev_id = None
+                        out_on = None
+                        out_sel = None
+                        out_val = None
+                        in_val = None
+                        bo = str(getattr(client, "_last_used_bo", "DEFAULT") or "DEFAULT")
+
+                        # If the device thread is actively writing, skip this poll.
                         if not hardware.mrsignal_lock.acquire(timeout=0.0):
-                            st = None
-                        else:
+                            raise RuntimeError("mrsignal busy")
+                        try:
                             try:
-                                st = hardware.mrsignal.read_status()
+                                dev_id = client._read_u16(REG_ID, signed=False)
+                            except Exception:
+                                dev_id = None
+                        finally:
+                            hardware.mrsignal_lock.release()
+
+                        if hardware.mrsignal_lock.acquire(timeout=0.0):
+                            try:
+                                try:
+                                    out_on = bool(client._read_u16(REG_OUTPUT_ON, signed=False))
+                                except Exception:
+                                    out_on = None
                             finally:
                                 hardware.mrsignal_lock.release()
 
-                        if st is None:
-                            # Device thread is busy with writes; skip this poll.
-                            raise RuntimeError("mrsignal busy")
+                        if hardware.mrsignal_lock.acquire(timeout=0.0):
+                            try:
+                                try:
+                                    out_sel = int(client._read_u16(REG_OUTPUT_SELECT, signed=False))
+                                except Exception:
+                                    out_sel = None
+                            finally:
+                                hardware.mrsignal_lock.release()
 
-                        # Update hardware cached fields for dashboard
-                        hardware.mrsignal_id = st.device_id
-                        hardware.mrsignal_output_on = bool(st.output_on) if st.output_on is not None else False
-                        hardware.mrsignal_output_select = int(st.output_select or 0)
+                        if hardware.mrsignal_lock.acquire(timeout=0.0):
+                            try:
+                                try:
+                                    out_val, bo = client._read_float(REG_OUTPUT_VALUE_FLOAT)
+                                except Exception:
+                                    out_val = None
+                            finally:
+                                hardware.mrsignal_lock.release()
+
+                        if hardware.mrsignal_lock.acquire(timeout=0.0):
+                            try:
+                                try:
+                                    in_val, bo2 = client._read_float(REG_INPUT_VALUE_FLOAT)
+                                    bo = bo2 or bo
+                                except Exception:
+                                    in_val = None
+                            finally:
+                                hardware.mrsignal_lock.release()
+
+                        st = MrSignalStatus(
+                            device_id=dev_id,
+                            output_on=out_on,
+                            output_select=out_sel,
+                            output_value=out_val,
+                            input_value=in_val,
+                            float_byteorder=bo,
+                        )
+
+                        # Update hardware cached fields for dashboard (only when present)
+                        if st.device_id is not None:
+                            hardware.mrsignal_id = st.device_id
+                        if st.output_on is not None:
+                            hardware.mrsignal_output_on = bool(st.output_on)
+                        if st.output_select is not None:
+                            hardware.mrsignal_output_select = int(st.output_select or 0)
                         if st.output_value is not None:
                             hardware.mrsignal_output_value = float(st.output_value)
                         if st.input_value is not None:
                             hardware.mrsignal_input_value = float(st.input_value)
                         hardware.mrsignal_float_byteorder = str(st.float_byteorder or "DEFAULT")
 
-                        mrs_id_str = str(st.device_id) if st.device_id is not None else "—"
-                        mrs_out_str = "ON" if bool(st.output_on) else "OFF"
-                        mrs_mode_str = st.mode_label
+                        if st.device_id is not None:
+                            mrs_id_str = str(st.device_id)
+                        if st.output_on is not None:
+                            mrs_out_str = "ON" if bool(st.output_on) else "OFF"
+                        if st.output_select is not None:
+                            mrs_mode_str = st.mode_label
 
                         # Render set/input with units based on mode
-                        if st.output_value is not None:
+                        if st.output_value is not None and st.output_select is not None:
                             if int(st.output_select or 0) == 0:
                                 mrs_set_str = f"{float(st.output_value):.4g} mA"
                             elif int(st.output_select or 0) == 4:
                                 mrs_set_str = f"{float(st.output_value):.4g} mV"
                             else:
                                 mrs_set_str = f"{float(st.output_value):.4g} V"
-                        if st.input_value is not None:
+                        if st.input_value is not None and st.output_select is not None:
                             if int(st.output_select or 0) == 0:
                                 mrs_in_str = f"{float(st.input_value):.4g} mA"
                             elif int(st.output_select or 0) == 4:
                                 mrs_in_str = f"{float(st.input_value):.4g} mV"
                             else:
                                 mrs_in_str = f"{float(st.input_value):.4g} V"
-                        mrs_bo_str = str(st.float_byteorder or "DEFAULT")
+                        if st.float_byteorder:
+                            mrs_bo_str = str(st.float_byteorder)
 
                         # CAN readback publisher state
                         try:
-                            tx_state.update_mrsignal_status(
-                                output_on=bool(st.output_on),
-                                output_select=int(st.output_select or 0),
-                                output_value=float(st.output_value or 0.0),
-                            )
+                            # Use the last-known value if the float read failed; output_on/off
+                            # and mode are still useful for remote clients.
+                            out_v = float(st.output_value) if st.output_value is not None else float(getattr(hardware, "mrsignal_output_value", 0.0) or 0.0)
+                            if st.output_on is not None and st.output_select is not None:
+                                tx_state.update_mrsignal_status(
+                                    output_on=bool(st.output_on),
+                                    output_select=int(st.output_select or 0),
+                                    output_value=out_v,
+                                )
                             if st.input_value is not None:
                                 tx_state.update_mrsignal_input(float(st.input_value))
                         except Exception:
@@ -704,6 +850,9 @@ def main() -> int:
     # outgoing CAN readback publisher state (sent by TX thread)
     tx_state = OutgoingTxState()
 
+    # PAT switching matrix snapshot (updated by CAN RX thread)
+    pat_matrix = PatSwitchMatrixState()
+
     # status vars
     load_stat_func, load_stat_curr, load_stat_imp, load_stat_res, load_stat_short = "", "", "", "", ""
     afg_freq_str, afg_ampl_str, afg_out_str, afg_shape_str = "", "", "", ""
@@ -741,7 +890,7 @@ def main() -> int:
         can_rx_thread = threading.Thread(
             target=can_rx_loop,
             args=(cbus, cmd_queue, stop_event, watchdog),
-            kwargs={"busload": busload, "log_fn": _log},
+            kwargs={"busload": busload, "log_fn": _log, "pat_matrix": pat_matrix},
             daemon=True,
         )
         can_rx_thread.start()
@@ -869,6 +1018,7 @@ def main() -> int:
                         bus_load_pct=bus_load_pct,
                         bus_rx_fps=bus_rx_fps,
                         bus_tx_fps=bus_tx_fps,
+                        pat_matrix=pat_matrix.snapshot(),
                         watchdog=watchdog.snapshot(),
                     )
                     live.update(renderable, refresh=True)

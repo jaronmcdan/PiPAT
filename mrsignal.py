@@ -146,6 +146,24 @@ class MrSignalClient:
         if not self.inst:
             raise RuntimeError("MrSignal not connected")
 
+        # If we previously discovered a working byteorder during auto-detect,
+        # try it first to avoid re-scanning the full set on every poll.
+        if self.float_byteorder_auto and (not self.float_byteorder):
+            prev = (self._last_used_bo or "DEFAULT").strip() or "DEFAULT"
+            if prev != "DEFAULT":
+                bo_prev = get_byteorder_by_name(prev)
+                if bo_prev is not None:
+                    try:
+                        if hasattr(self.inst, "byteorder"):
+                            self.inst.byteorder = bo_prev
+                            v = float(call_compat(self.inst.read_float, reg_addr, functioncode=3, number_of_registers=2))
+                        else:
+                            v = float(call_compat(self.inst.read_float, reg_addr, functioncode=3, number_of_registers=2, byteorder=bo_prev))
+                        if is_sane_float(v):
+                            return v, prev
+                    except Exception:
+                        pass
+
         # Try configured byteorder first (if any)
         if self.float_byteorder:
             bo = get_byteorder_by_name(self.float_byteorder)
@@ -236,10 +254,17 @@ class MrSignalClient:
     def set_output(self, *, enable: bool, output_select: int, value: float) -> None:
         """Set output select + float value + enable."""
         # Order chosen to minimize unexpected output while changing mode/value:
-        # 1) Select mode, 2) set value, 3) enable/disable.
+        #   - If disabling: disable output FIRST (fast safety action)
+        #   - Then apply mode/value (optional but useful for preloading)
+        #   - If enabling: enable output LAST
+        if not bool(enable):
+            self._write_u16(REG_OUTPUT_ON, 0, signed=False)
+
         self._write_u16(REG_OUTPUT_SELECT, int(output_select), signed=False)
         self._write_float(REG_OUTPUT_VALUE_FLOAT, float(value))
-        self._write_u16(REG_OUTPUT_ON, 1 if enable else 0, signed=False)
+
+        if bool(enable):
+            self._write_u16(REG_OUTPUT_ON, 1, signed=False)
 
     def set_enable(self, enable: bool) -> None:
         self._write_u16(REG_OUTPUT_ON, 1 if enable else 0, signed=False)

@@ -7,12 +7,19 @@ import subprocess
 import threading
 import time
 import math
+import queue
 from typing import Optional
 
 import can
 
 import config
 from can_metrics import BusLoadMeter
+
+# Optional dashboard-only state (PAT switching matrix)
+try:
+    from pat_matrix import PatSwitchMatrixState
+except Exception:  # pragma: no cover
+    PatSwitchMatrixState = None  # type: ignore
 
 
 def setup_can_interface(channel: str, bitrate: int, *, do_setup: bool = True, log_fn=print) -> Optional[can.BusABC]:
@@ -411,6 +418,7 @@ def can_rx_loop(
     cmd_queue,
     stop_event: threading.Event,
     watchdog,
+    pat_matrix: "PatSwitchMatrixState | None" = None,
     busload: BusLoadMeter | None = None,
     log_fn=print,
 ) -> None:
@@ -420,7 +428,11 @@ def can_rx_loop(
     """
 
     log_fn("CAN RX thread started.")
-    drop = 0
+    # Keep separate counters so logs reflect whether we are dropping *incoming*
+    # frames (worst case) or dropping *oldest buffered* frames to make room for
+    # the newest command (preferred under backpressure).
+    drop_oldest = 0
+    drop_newest = 0
 
     # Only control frames should be forwarded to the device thread.
     # This prevents unrelated bus chatter from filling the bounded queue and
@@ -458,6 +470,13 @@ def can_rx_loop(
         except Exception:
             pass
 
+        # Capture PAT switching-matrix frames for the dashboard (do not enqueue).
+        if pat_matrix is not None:
+            try:
+                pat_matrix.maybe_update(arb, data)
+            except Exception:
+                pass
+
         # Ignore non-control frames to keep the control path responsive.
         if arb not in ctrl_ids:
             continue
@@ -465,7 +484,27 @@ def can_rx_loop(
         # Non-blocking enqueue; never stall CAN recv due to slow devices.
         try:
             cmd_queue.put_nowait((arb, data))
+        except queue.Full:
+            # Prefer dropping the *oldest* queued command so the newest state
+            # update wins (better for knob/slider style controls).
+            try:
+                cmd_queue.get_nowait()
+                drop_oldest += 1
+            except queue.Empty:
+                pass
+
+            try:
+                cmd_queue.put_nowait((arb, data))
+            except queue.Full:
+                # Queue is still full (consumer is extremely behind). Drop this
+                # newest frame as a last resort.
+                drop_newest += 1
+                if drop_newest in (1, 10, 100) or (drop_newest % 500 == 0):
+                    log_fn(
+                        f"CAN RX: command queue saturated; dropped NEWEST frame {drop_newest} times "
+                        f"(also dropped {drop_oldest} OLDEST frames to make room)"
+                    )
+            except Exception:
+                drop_newest += 1
         except Exception:
-            drop += 1
-            if drop in (1, 10, 100) or (drop % 500 == 0):
-                log_fn(f"CAN RX: command queue full; dropped {drop} frames")
+            drop_newest += 1

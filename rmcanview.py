@@ -27,6 +27,8 @@ from typing import Callable, Optional
 import can
 import serial
 
+import config
+
 
 SOF = 0x43  # 'C'
 EOF = 0x0D  # CR
@@ -162,7 +164,15 @@ class RmCanViewBus(can.BusABC):
             pass
 
         self._tx_lock = threading.Lock()
-        self._rx_q: "queue.Queue[can.Message]" = queue.Queue()
+        # Bounded queue protects against memory growth + runaway latency when
+        # the host cannot keep up with incoming CAN traffic.
+        try:
+            rx_max = int(getattr(config, "CAN_RMCANVIEW_RX_MAX", 2048) or 2048)
+        except Exception:
+            rx_max = 2048
+        if rx_max <= 0:
+            rx_max = 2048
+        self._rx_q: "queue.Queue[can.Message]" = queue.Queue(maxsize=rx_max)
         self._parser = _ByteCmdParser()
 
         self._run = threading.Event()
@@ -255,6 +265,7 @@ class RmCanViewBus(can.BusABC):
 
     def _rx_worker(self) -> None:
         """Read the serial stream and convert CAN frames into python-can Messages."""
+        drop_oldest = 0
         while self._run.is_set() and not self._is_shutdown:
             try:
                 chunk = self._ser.read(256)
@@ -271,6 +282,20 @@ class RmCanViewBus(can.BusABC):
                     # Do not block the reader thread; drop on extreme backpressure.
                     try:
                         self._rx_q.put_nowait(msg)
+                    except queue.Full:
+                        # Prefer dropping the oldest buffered frame so the newest
+                        # traffic (more relevant for control responsiveness) is kept.
+                        try:
+                            self._rx_q.get_nowait()
+                            drop_oldest += 1
+                        except Exception:
+                            pass
+                        try:
+                            self._rx_q.put_nowait(msg)
+                        except Exception:
+                            # Still full: drop newest
+                            if drop_oldest in (1, 10, 100) or (drop_oldest % 500 == 0):
+                                self._log(f"RMCAN: RX queue full; dropped oldest {drop_oldest} frames")
                     except Exception:
                         pass
 
