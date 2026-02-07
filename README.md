@@ -258,8 +258,8 @@ If you prefer to configure CAN at boot, set `CAN_SETUP=0` (in `config.py` or `/e
 Manual test:
 
 ```bash
-sudo ip link set can1 up type can bitrate 250000
-ip -details link show can1
+sudo ip link set can0 up type can bitrate 250000
+ip -details link show can0
 ```
 
 ### CANview USB (rmcanview)
