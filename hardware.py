@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import glob
 import math
 import threading
 import time
@@ -17,6 +18,7 @@ from gpiozero import LED
 import config
 from bk5491b import BK5491B, MmeterFunc
 from mrsignal import MrSignalClient, MrSignalStatus
+from usbtmc_file import UsbTmcFileInstrument, UsbTmcError
 
 
 class _NullRelay:
@@ -529,18 +531,47 @@ class HardwareManager:
     def _initialize_visa_devices(self) -> None:
         """Initializes both E-Load and AFG via PyVISA."""
         try:
-            self.resource_manager = pyvisa.ResourceManager()
+            # Prefer a configured backend so discovery/runtime are consistent.
+            # On Raspberry Pi this defaults to pyvisa-py (@py).
+            backend = str(getattr(config, "VISA_BACKEND", "") or "").strip()
+            try:
+                if backend:
+                    self.resource_manager = pyvisa.ResourceManager(backend)
+                else:
+                    self.resource_manager = pyvisa.ResourceManager()
+            except Exception:
+                # Best-effort fallback to pyvisa-py
+                self.resource_manager = pyvisa.ResourceManager("@py")
+                backend = "@py"
+
+            if backend:
+                print(f"[visa] backend: {backend}")
 
             # --- 1. E-LOAD (Scan for USBTMC / match pattern) ---
             try:
-                available_resources = list(self.resource_manager.list_resources())
+                available_resources = []
+                usb_resources = []
 
-                # CRITICAL SAFETY: Never probe ASRL resources when looking for an E-load.
-                # Many unrelated USB-serial devices show up as ASRL/dev/ttyUSB*::INSTR
-                # (including the 5491B DMM). Touching them via VISA can make them beep
-                # "bus command error" and stop responding. The E-load is USBTMC and
-                # should appear as a USB* resource.
-                usb_resources = [r for r in available_resources if str(r).startswith("USB")]
+                # USB enumeration can lag slightly at boot / after hotplug.
+                retries = int(getattr(config, "VISA_ENUM_RETRIES", 3) or 1)
+                delay_s = float(getattr(config, "VISA_ENUM_RETRY_DELAY_SEC", 0.5) or 0.0)
+                for i in range(max(1, retries)):
+                    try:
+                        available_resources = list(self.resource_manager.list_resources())
+                    except Exception:
+                        available_resources = []
+
+                    # CRITICAL SAFETY: Never probe ASRL resources when looking for an E-load.
+                    # Many unrelated USB-serial devices show up as ASRL/dev/ttyUSB*::INSTR
+                    # (including the 5491B DMM). Touching them via VISA can make them beep
+                    # "bus command error" and stop responding. The E-load is USBTMC and
+                    # should appear as a USB* resource.
+                    usb_resources = [r for r in available_resources if str(r).startswith("USB")]
+                    if usb_resources or (i >= max(1, retries) - 1):
+                        break
+                    if delay_s > 0:
+                        time.sleep(delay_s)
+
                 print(f"Scanning for E-Load in (USB only): {usb_resources}")
 
                 eload_pat = str(getattr(config, "ELOAD_VISA_ID", "") or "").strip()
@@ -610,6 +641,50 @@ class HardwareManager:
                         break
                     except Exception as e:
                         print(f"Skip E-LOAD ({resource_id}): {e}")
+
+                # --- Fallback: kernel USBTMC device nodes (/dev/usbtmc*) ---
+                # If PyVISA can't enumerate USB resources (missing libusb / permissions),
+                # we can still often talk to the load through the kernel driver.
+                if not self.e_load:
+                    usbtmc_nodes = sorted(glob.glob("/dev/usbtmc*"))
+                    if usbtmc_nodes:
+                        print(f"Attempting E-load fallback via /dev/usbtmc*: {usbtmc_nodes}")
+                    for p in usbtmc_nodes:
+                        dev2 = None
+                        try:
+                            dev2 = UsbTmcFileInstrument(p)
+                            # Mirror the VISA timeout configuration.
+                            try:
+                                dev2.timeout = int(getattr(config, "VISA_TIMEOUT_MS", 500))
+                            except Exception:
+                                pass
+                            dev_id = str(dev2.query("*IDN?")).strip()
+
+                            if eload_hints:
+                                low = (dev_id or "").lower()
+                                if not any(h in low for h in eload_hints):
+                                    print(f"E-Load USBTMC candidate rejected: {p} -> {dev_id}")
+                                    try:
+                                        dev2.close()
+                                    except Exception:
+                                        pass
+                                    continue
+
+                            print(f"E-LOAD FOUND (usbtmc): {dev_id} @ {p}")
+                            try:
+                                dev2.write("SYST:CLE")
+                            except Exception:
+                                pass
+                            self.e_load = dev2
+                            break
+                        except Exception as e:
+                            # Best-effort cleanup
+                            try:
+                                if dev2 is not None:
+                                    dev2.close()
+                            except Exception:
+                                pass
+                            print(f"Skip E-LOAD USBTMC ({p}): {e}")
             except Exception as e:
                 print(f"E-Load Scan Error: {e}")
 
@@ -640,6 +715,18 @@ class HardwareManager:
 
             if not self.e_load:
                 print("WARNING: E-LOAD not found.")
+                # Provide actionable hints only when we're clearly missing USB.
+                try:
+                    if 'usb_resources' in locals() and not usb_resources:
+                        print(
+                            "[visa] No USB VISA resources were enumerated. If your e-load is connected via USBTMC, try:\n"
+                            "  - Install OS deps: sudo ./scripts/pi_install.sh --easy   (or --install-os-deps)\n"
+                            "  - Check VISA backend + USB support: python3 -m pyvisa info\n"
+                            "  - Check the USB device is visible: lsusb\n"
+                            "  - If you installed new udev rules, unplug/replug the USB cable\n"
+                        )
+                except Exception:
+                    pass
             if not self.afg:
                 print("WARNING: AFG not found.")
 

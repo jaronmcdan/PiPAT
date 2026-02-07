@@ -34,8 +34,7 @@ sudo apt-get update
 sudo apt-get install -y \
   python3 python3-venv python3-pip python3-dev \
   can-utils \
-  libusb-1.0-0 \
-  usbutils
+  libusb-1.0-0
 
 # GPIO backends for gpiozero (recommended on Pi OS Bookworm)
 sudo apt-get install -y python3-lgpio
@@ -45,15 +44,6 @@ sudo apt-get install -y python3-lgpio
 
 # Ensure your user can access GPIO without sudo
 sudo usermod -aG gpio $USER
-
-# Ensure your user can access serial ports (USB-serial instruments) without sudo.
-# (Most bench gear shows up as /dev/ttyUSB* or /dev/ttyACM*.)
-sudo usermod -aG dialout $USER
-
-# Optional but recommended for USBTMC instruments (E-load) when running interactively
-# as a non-root user. If your distro doesn't have a "plugdev" group, you can skip
-# this and rely on the udev rule in the E-load troubleshooting section below.
-sudo usermod -aG plugdev $USER
 # Log out/in (or reboot) for group membership to take effect
 ```
 
@@ -342,11 +332,24 @@ This bundle includes:
 ### Install on the Pi
 
 1) Copy a release tarball to the Pi and extract it (see dist build below)
-2) Run:
+2) Run the easy installer (recommended):
 
 ```bash
 cd <extracted-folder>
-sudo ./scripts/pi_install.sh --install-os-deps --enable-service
+sudo ./scripts/pi_install.sh --easy
+```
+
+This will:
+- install OS dependencies (including libusb for USBTMC)
+- install udev rules so a non-root user can access the E-load over USB
+- add your user to dialout/plugdev/gpio groups
+- install + enable the systemd service
+
+Alternatively, you can run the pieces explicitly:
+
+```bash
+cd <extracted-folder>
+sudo ./scripts/pi_install.sh --install-os-deps --install-udev-rules --venv-system-site-packages --enable-service --add-user-groups
 ```
 
 ### Check logs
@@ -399,6 +402,8 @@ python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+
 2) **Dev / no-GPIO mode:** disable K1 entirely:
 
 ```bash
@@ -413,88 +418,6 @@ export GPIOZERO_PIN_FACTORY=mock
 python3 main.py
 ```
 
-
-### E-load not detected (no `USB*` VISA resources)
-
-If startup logs show something like:
-
-```
-Scanning for E-Load in (USB only): []
-WARNING: E-LOAD not found.
-```
-
-then PyVISA is only seeing serial resources (`ASRL/...`) and **no USBTMC instruments**.
-PiPAT intentionally scans **USB resources only** for the E-load for safety (it never probes
-random `/dev/ttyUSB*` ports via VISA).
-
-Checklist:
-
-1) Confirm the load is visible to Linux:
-
-```bash
-lsusb
-```
-
-You should see a line for the electronic load. For the B&K 8600 family, the default
-VID/PID in `config.py` is `0x2ec7:0x8800` (decimal `11975:34816`).
-
-2) Confirm PyVISA can see USB resources (use the pyvisa-py backend):
-
-```bash
-python3 - <<'PY'
-import pyvisa
-rm = pyvisa.ResourceManager("@py")
-print(rm.list_resources())
-PY
-```
-
-Tip: you can also sanity-check what PyVISA thinks is installed/available:
-
-```bash
-python3 -m pyvisa info
-```
-
-Look for lines like `USB INSTR: Available via PyUSB ... Backend: libusb1`.
-
-If this prints **no** `USB...` resources, the usual causes are:
-
-- missing OS libusb runtime (`libusb-1.0-0`)
-- USB permissions/udev rules preventing libusb from enumerating the device as a non-root user
-
-3) Fix USB permissions (recommended for interactive/dev runs)
-
-Create a udev rule that grants user access to the load’s USB interface.
-
-Example for B&K 8600 series (`VID=2ec7`, `PID=8800`):
-
-```bash
-sudo tee /etc/udev/rules.d/99-roi-usbtmc.rules >/dev/null <<'EOF'
-# BK Precision 8600 series (USBTMC)
-SUBSYSTEM=="usb", ATTR{idVendor}=="2ec7", ATTR{idProduct}=="8800", MODE:="0666"
-EOF
-
-sudo udevadm control --reload-rules
-sudo udevadm trigger
-
-# then unplug/replug the USB cable (or power-cycle the instrument)
-```
-
-4) Re-run step (2). Once you see a `USB...::INSTR` resource, set it explicitly:
-
-- `ELOAD_VISA_ID=<exact USB... resource string>` (in `/etc/roi/roi.env` or your shell)
-
-Copy/paste the full string from `rm.list_resources()`. Depending on backend/version,
-PyVISA may format VID/PID as hex (`0x...`) and may include or omit the USB interface
-number (the extra `::0::...` field).
-
-Notes:
-
-- If you run PiPAT via the included systemd unit, it runs as **root** by default, so you
-  generally won’t hit USB permission issues there.
-- If your electronic load enumerates as a **virtual COM port** (ASRL) instead of USBTMC,
-  PiPAT will not autodetect it in its current form. Prefer the instrument’s USBTMC interface,
-  or extend the code to support E-load over serial.
-
 ### Multimeter `UnicodeDecodeError`
 
 If the serial port returns non-ASCII garbage (e.g. noise at boot), this code now decodes with `errors='replace'` and flushes buffers before `*IDN?`.
@@ -506,6 +429,51 @@ If you still see issues, confirm:
 
 Double-check:
 - `K1_ACTIVE_LOW`
+
+---
+
+### E-load not detected (USBTMC)
+
+Symptoms:
+- You see `WARNING: E-LOAD not found.`
+- The log prints `Scanning for E-Load in (USB only): []` (no `USB*...::INSTR` resources)
+
+Quick triage:
+
+1) Confirm Linux sees the device:
+
+```bash
+lsusb
+```
+
+2) Run the built-in VISA/USBTMC diagnostics:
+
+```bash
+python3 scripts/visa_diag.py
+```
+
+If you see `/dev/usbtmc0` but no `USB*::INSTR` resources, PiPAT will also try the
+kernel-driver fallback automatically.
+
+Common fixes on a fresh Pi:
+
+- Install OS deps (libusb + usbutils):
+
+```bash
+sudo ./scripts/pi_install.sh --install-os-deps
+```
+
+- Install udev rules and replug the USB cable:
+
+```bash
+sudo ./scripts/pi_install.sh --install-udev-rules
+```
+
+Recommended (does everything):
+
+```bash
+sudo ./scripts/pi_install.sh --easy
+```
 
 ---
 

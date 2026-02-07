@@ -271,7 +271,10 @@ def _try_mrsignal_on_port(port: str) -> Tuple[bool, Optional[int]]:
 
 def _visa_rm() -> Optional[pyvisa.ResourceManager]:
     """Create a ResourceManager; prefer configured backend if set."""
-    backend = str(getattr(config, "AUTO_DETECT_VISA_BACKEND", "") or "").strip()
+    # Prefer the runtime backend if set; fall back to the autodetect backend.
+    backend = str(getattr(config, "VISA_BACKEND", "") or "").strip()
+    if not backend:
+        backend = str(getattr(config, "AUTO_DETECT_VISA_BACKEND", "") or "").strip()
     try:
         if backend:
             return pyvisa.ResourceManager(backend)
