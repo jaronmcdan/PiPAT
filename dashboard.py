@@ -425,9 +425,9 @@ def build_dashboard(hardware, *,
     k1_table.add_row("Backend", f"[dim]{backend}[/]")
     k1_table.add_row("Drive", _badge(drive_on, "ON", "OFF"))
     if pin_level is None:
-        k1_table.add_row("GPIO", "[dim]--[/]")
+        k1_table.add_row("Level", "[dim]--[/]")
     else:
-        k1_table.add_row("GPIO", _badge(bool(pin_level), "HIGH", "LOW"))
+        k1_table.add_row("Level", _badge(bool(pin_level), "HIGH", "LOW"))
 
     # --------------------
     # CAN panel

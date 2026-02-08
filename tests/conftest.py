@@ -1,7 +1,7 @@
 """Pytest configuration and dependency stubs.
 
 This repo targets Raspberry Pi hardware and optional third-party libs
-(python-can, pyserial, minimalmodbus, pyvisa, gpiozero...). The unit tests in
+(python-can, pyserial, minimalmodbus, pyvisa...). The unit tests in
 this suite focus on *core logic* and therefore provide lightweight stubs so the
 modules can be imported and exercised in CI/container environments.
 """

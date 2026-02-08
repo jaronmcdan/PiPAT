@@ -15,10 +15,10 @@ Usage: sudo $0 [--prefix /opt/roi]
 
 Optional:
   --easy                  Do the "make it work" path (os deps + udev + user groups)
-  --install-os-deps        Install recommended apt packages (python3-venv, can-utils, libusb, usbutils, lgpio)
+  --install-os-deps        Install recommended apt packages (python3-venv, can-utils, libusb, usbutils)
   --install-udev-rules     Install udev rules for USBTMC instruments (E-load)
-  --add-user-groups        Add the invoking user to dialout/plugdev/gpio (for interactive runs)
-  --venv-system-site-packages  Create the venv with --system-site-packages (needed to use apt-installed lgpio)
+  --add-user-groups        Add the invoking user to dialout/plugdev (for interactive runs)
+  --venv-system-site-packages  Create the venv with --system-site-packages
 
 Installs this project onto a Raspberry Pi:
 - Copies files into PREFIX
@@ -73,7 +73,6 @@ if [[ "$INSTALL_OS_DEPS" == "1" ]]; then
       can-utils \
       libusb-1.0-0 \
       usbutils \
-      python3-lgpio \
       rsync
   else
     echo "[ROI] WARNING: apt-get not found; skipping OS deps." >&2
@@ -113,8 +112,8 @@ if [[ "$ADD_USER_GROUPS" == "1" ]]; then
   # When invoked via sudo, SUDO_USER is the original user.
   TARGET_USER="${SUDO_USER:-}"
   if [[ -n "$TARGET_USER" && "$TARGET_USER" != "root" ]]; then
-    echo "[ROI] Adding $TARGET_USER to groups: dialout plugdev gpio"
-    usermod -aG dialout,plugdev,gpio "$TARGET_USER" || true
+    echo "[ROI] Adding $TARGET_USER to groups: dialout plugdev"
+    usermod -aG dialout,plugdev "$TARGET_USER" || true
     echo "[ROI] NOTE: You may need to log out/in for group changes to take effect."
   else
     echo "[ROI] Skipping user group changes (no SUDO_USER)"
@@ -144,7 +143,7 @@ if [[ -f "$PREFIX/requirements.txt" ]]; then
   "$PREFIX/.venv/bin/pip" install -r "$PREFIX/requirements.txt"
 else
   echo "[ROI] WARNING: requirements.txt missing; installing minimal deps"
-  "$PREFIX/.venv/bin/pip" install python-can pyserial pyvisa pyvisa-py pyusb gpiozero rich
+  "$PREFIX/.venv/bin/pip" install python-can pyserial pyvisa pyvisa-py pyusb rich
 fi
 
 # Env dir

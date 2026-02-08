@@ -1,12 +1,12 @@
 # ROI Instrument Bridge (Raspberry Pi)
 
-This project runs on a Raspberry Pi and bridges **CAN** control messages (SocketCAN by default) to lab instruments and local GPIO:
+This project runs on a Raspberry Pi and bridges **CAN** control messages (SocketCAN by default) to lab instruments and local I/O:
 
 - **E-load** via PyVISA (SCPI)
 - **Multimeter** (e.g., B&K Precision 5491B) via USB-serial
 - **AFG** via PyVISA (SCPI)
 - **MrSignal / LANYI MR2.0** via Modbus RTU (USB-serial)
-- **K1 Relay** (GPIO) for DUT power control
+- **K1 Relay** (USB-serial relay controller) for DUT power control
 - Optional terminal dashboard (Rich TUI)
 
 > Key files: `main.py`, `hardware.py`, `can_comm.py`, `device_comm.py`, `dashboard.py`, `config.py`
@@ -16,7 +16,7 @@ This project runs on a Raspberry Pi and bridges **CAN** control messages (Socket
 PiPAT runs **CAN RX** and **device/instrument control** in separate threads:
 
 - `can_comm.py` (`can_rx_loop`) reads CAN frames (from the configured backend) and enqueues *only* control frames.
-- `device_comm.py` (`device_command_loop`) dequeues commands and applies them to instruments/GPIO.
+- `device_comm.py` (`device_command_loop`) dequeues commands and applies them to instruments/K1.
 
 This keeps CAN reception responsive even when instrument I/O blocks.
 
@@ -35,16 +35,6 @@ sudo apt-get install -y \
   python3 python3-venv python3-pip python3-dev \
   can-utils \
   libusb-1.0-0
-
-# GPIO backends for gpiozero (recommended on Pi OS Bookworm)
-sudo apt-get install -y python3-lgpio
-
-# Optional (older stacks / alternates)
-# sudo apt-get install -y python3-rpi.gpio python3-pigpio
-
-# Ensure your user can access GPIO without sudo
-sudo usermod -aG gpio $USER
-# Log out/in (or reboot) for group membership to take effect
 ```
 
 ### 2) Create a virtualenv and install Python deps
@@ -72,7 +62,7 @@ The most common settings:
 - `CAN_TX_ENABLE`, `CAN_TX_PERIOD_MS` (regulate outgoing readback frames; default 50ms)
 - `DASH_FPS` (Rich TUI render rate; default 15)
 - `MEAS_POLL_PERIOD`, `STATUS_POLL_PERIOD` (instrument poll cadence; defaults 0.2s/1.0s)
-- `K1_PIN_BCM`, `K1_ACTIVE_LOW`, `K1_CAN_INVERT`, `K1_IDLE_DRIVE`
+- `K1_SERIAL_PORT`, `K1_SERIAL_RELAY_INDEX`, `K1_CAN_INVERT`, `K1_IDLE_DRIVE`
 - `K1_TIMEOUT_SEC` (watchdog timeout for K1)
 - `CONTROL_TIMEOUT_SEC` (or per-device timeouts)
 - `MULTI_METER_PATH`, `MULTI_METER_BAUD`
@@ -290,14 +280,16 @@ so PiPAT will issue a CAN controller reset on startup.
 
 PiPAT treats the relay as a **direct K1 drive output** controlled by CAN bit0 in `RLY_CTRL_ID`.
 
-If GPIO is unavailable (or `K1_ENABLE=0`), PiPAT falls back to a **no-op/mock relay driver** so the rest of the bridge can run.
-The UI reports only what the software is commanding and what the GPIO pin is doing.
+If the K1 relay controller is unavailable (or `K1_ENABLE=0`), PiPAT falls back to a
+**no-op/mock relay driver** so the rest of the bridge can run.
+The UI reports only what the software is commanding (and any available hardware readback).
 
 - There is **no NC/NO “DUT power” inference**.
 - If you need actual DUT power status, measure it (e.g., voltage sense, current sense, an auxiliary input).
 
 Relevant settings:
-- `K1_ACTIVE_LOW` — electrical polarity of the relay input (module dependent)
+- `K1_SERIAL_PORT` — serial path to the relay controller (recommended: a stable `/dev/serial/by-id/...` symlink)
+- `K1_SERIAL_RELAY_INDEX` — relay channel on the controller (1..8)
 - `K1_CAN_INVERT` — invert CAN bit0 before driving K1 (optional)
 - `K1_IDLE_DRIVE` — drive state to apply on watchdog timeout and (optionally) on startup
 - `K1_TIMEOUT_SEC` — watchdog timeout for K1 controls
@@ -343,7 +335,7 @@ sudo ./scripts/pi_install.sh --easy
 This will:
 - install OS dependencies (including libusb for USBTMC)
 - install udev rules so a non-root user can access the E-load over USB
-- add your user to dialout/plugdev/gpio groups
+- add your user to dialout/plugdev groups
 
 Then, if you want it running as an always-on service:
 
@@ -386,44 +378,25 @@ Output: `dist/roi-<version>.tar.gz`
 
 ## Troubleshooting
 
-### `gpiozero.exc.BadPinFactory: Unable to load any default pin factory!`
+### K1 relay controller not working
 
-This means gpiozero cannot find a working GPIO backend on this host (common when:
-running off-Pi, inside a container without GPIO access, missing `python3-lgpio`,
-or lacking permissions for `/dev/gpiomem`/`/dev/gpiochip*`).
+PiPAT drives **K1** via a USB-serial relay controller (Arduino-style), configured with
+`K1_SERIAL_PORT`.
 
-Options:
+If K1 isn't toggling:
 
-1) **Real GPIO on a Pi:** install `python3-lgpio` and ensure you are in the `gpio` group:
-
-```bash
-sudo apt-get install -y python3-lgpio
-sudo usermod -aG gpio $USER
-```
-
-**Virtualenv note:** apt-installed GPIO backends (like `python3-lgpio`) live in system site-packages. If you are running inside a venv and still see this error, recreate it with system site packages enabled:
-
-```bash
-rm -rf .venv
-python3 -m venv --system-site-packages .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-
-2) **Dev / no-GPIO mode:** disable K1 entirely:
-
-```bash
-export K1_ENABLE=0
-python3 main.py
-```
-
-3) **Dev / simulated GPIO:** run with gpiozero's mock pin factory:
-
-```bash
-export GPIOZERO_PIN_FACTORY=mock
-python3 main.py
-```
+- Confirm the controller is present:
+  ```bash
+  ls -l /dev/serial/by-id/
+  ```
+- Set `K1_SERIAL_PORT` to a stable by-id path (recommended) and choose the channel with
+  `K1_SERIAL_RELAY_INDEX`.
+- If you're relying on auto-detection, keep `AUTO_DETECT_ENABLE=1` and `AUTO_DETECT_K1_SERIAL=1`.
+- For dev / no-K1 mode, disable K1 entirely:
+  ```bash
+  export K1_ENABLE=0
+  python3 main.py
+  ```
 
 ### Multimeter `UnicodeDecodeError`
 
@@ -432,10 +405,12 @@ If you still see issues, confirm:
 - Correct `MULTI_METER_PATH` (`/dev/ttyUSB0`, `/dev/ttyUSB1`, etc.)
 - Correct baud (`MULTI_METER_BAUD`)
 
-### Relay does “the opposite”
+### Relay does “the opposite” or wrong channel
 
 Double-check:
-- `K1_ACTIVE_LOW`
+- `K1_CAN_INVERT` (inverts CAN bit0 before driving K1)
+- `K1_SERIAL_RELAY_INDEX` (relay channel number)
+- `K1_SERIAL_ON_CHAR` / `K1_SERIAL_OFF_CHAR` (if your controller uses a non-default command scheme)
 
 ---
 
