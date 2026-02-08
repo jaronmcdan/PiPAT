@@ -325,7 +325,8 @@ The dashboard’s bottom bar shows watchdog ages / timeouts when the TUI is enab
 ## Running as a service (always-on)
 
 This bundle includes:
-- `scripts/pi_install.sh` – installs into `/opt/roi`, creates a venv, installs deps, and optionally enables a systemd service
+- `scripts/pi_install.sh` – installs into `/opt/roi`, creates a venv, installs deps, and writes `/etc/roi/roi.env`
+- `scripts/service_install.sh` – installs/enables the systemd service
 - `systemd/roi.service` – systemd unit
 - `roi.env.example` – environment override template
 
@@ -343,13 +344,19 @@ This will:
 - install OS dependencies (including libusb for USBTMC)
 - install udev rules so a non-root user can access the E-load over USB
 - add your user to dialout/plugdev/gpio groups
-- install + enable the systemd service
+
+Then, if you want it running as an always-on service:
+
+```bash
+sudo ./scripts/service_install.sh --enable --start
+```
 
 Alternatively, you can run the pieces explicitly:
 
 ```bash
 cd <extracted-folder>
-sudo ./scripts/pi_install.sh --install-os-deps --install-udev-rules --venv-system-site-packages --enable-service --add-user-groups
+sudo ./scripts/pi_install.sh --install-os-deps --install-udev-rules --venv-system-site-packages --add-user-groups
+sudo ./scripts/service_install.sh --enable --start
 ```
 
 ### Check logs

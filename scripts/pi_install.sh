@@ -2,7 +2,6 @@
 set -euo pipefail
 
 PREFIX="/opt/roi"
-ENABLE_SERVICE="0"
 INSTALL_OS_DEPS="0"
 INSTALL_UDEV_RULES="0"
 ADD_USER_GROUPS="0"
@@ -12,10 +11,10 @@ EASY="0"
 
 usage() {
   cat <<EOF
-Usage: sudo $0 [--prefix /opt/roi] [--enable-service]
+Usage: sudo $0 [--prefix /opt/roi]
 
 Optional:
-  --easy                  Do the "make it work" path (os deps + udev + user groups + service)
+  --easy                  Do the "make it work" path (os deps + udev + user groups)
   --install-os-deps        Install recommended apt packages (python3-venv, can-utils, libusb, usbutils, lgpio)
   --install-udev-rules     Install udev rules for USBTMC instruments (E-load)
   --add-user-groups        Add the invoking user to dialout/plugdev/gpio (for interactive runs)
@@ -25,7 +24,7 @@ Installs this project onto a Raspberry Pi:
 - Copies files into PREFIX
 - Creates venv at PREFIX/.venv
 - Installs requirements
-- Optionally installs and enables systemd service 'roi'
+- Leaves systemd service install to scripts/service_install.sh
 EOF
 }
 
@@ -35,8 +34,6 @@ while [[ $# -gt 0 ]]; do
       EASY="1"; shift;;
     --prefix)
       PREFIX="$2"; shift 2;;
-    --enable-service)
-      ENABLE_SERVICE="1"; shift;;
     --install-os-deps)
       INSTALL_OS_DEPS="1"; shift;;
     --install-udev-rules)
@@ -58,7 +55,6 @@ if [[ "$EASY" == "1" ]]; then
   INSTALL_UDEV_RULES="1"
   ADD_USER_GROUPS="1"
   VENV_SYSTEM_SITE_PACKAGES="1"
-  ENABLE_SERVICE="1"
 fi
 
 if [[ "$(id -u)" != "0" ]]; then
@@ -158,25 +154,8 @@ if [[ ! -f /etc/roi/roi.env ]]; then
   cp -n "$PREFIX/roi.env.example" /etc/roi/roi.env || true
 fi
 
-# systemd unit
-if [[ -f "$PREFIX/systemd/roi.service" ]]; then
-  echo "[ROI] Installing systemd unit"
-  cp "$PREFIX/systemd/roi.service" /etc/systemd/system/roi.service
-  systemctl daemon-reload
-fi
-
-if [[ "$ENABLE_SERVICE" == "1" ]]; then
-  echo "[ROI] Enabling and starting service"
-  systemctl enable roi
-  systemctl restart roi
-  systemctl status roi --no-pager || true
-else
-  echo "[ROI] Service not enabled. To enable later:"
-  echo "  sudo systemctl enable roi"
-  echo "  sudo systemctl start roi"
-fi
-
 echo
 echo "[ROI] Done."
 echo "Edit /etc/roi/roi.env for per-Pi overrides (config.py provides defaults)."
-echo "Logs: sudo journalctl -u roi -f"
+echo "Run: sudo $PREFIX/.venv/bin/python $PREFIX/main.py"
+echo "(Optional service) sudo ./scripts/service_install.sh --prefix $PREFIX --enable --start"
