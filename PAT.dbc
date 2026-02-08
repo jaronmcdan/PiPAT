@@ -1,0 +1,235 @@
+VERSION ""
+
+
+NS_ : 
+	NS_DESC_
+	CM_
+	BA_DEF_
+	BA_
+	VAL_
+	CAT_DEF_
+	CAT_
+	FILTER
+	BA_DEF_DEF_
+	EV_DATA_
+	ENVVAR_DATA_
+	SGTYPE_
+	SGTYPE_VAL_
+	BA_DEF_SGTYPE_
+	BA_SGTYPE_
+	SIG_TYPE_REF_
+	VAL_TABLE_
+	SIG_GROUP_
+	SIG_VALTYPE_
+	SIGTYPE_VALTYPE_
+	BO_TX_BU_
+	BA_DEF_REL_
+	BA_REL_
+	BA_DEF_DEF_REL_
+	BU_SG_REL_
+	BU_EV_REL_
+	BU_BO_REL_
+	SG_MUL_VAL_
+
+BS_:
+
+BU_: PAT CTRL
+
+
+BO_ 2365581095 PAT_J0: 8 CTRL
+ SG_ J0_01_3A_LOAD : 0|2@1+ (1,0) [0|2] "" Vector__XXX
+ SG_ J0_02_5A_LOAD : 2|2@1+ (1,0) [0|2] "" Vector__XXX
+ SG_ J0_03_7A_LOAD : 4|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J0_04_12A_LOAD : 6|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J0_05_200MA_PULLUP : 8|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J0_06_12MA_PULLUP : 10|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J0_07_GND_LOAD : 12|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J0_08_METER_LOAD : 14|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J0_09_TEST_SUPPLY : 16|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J0_10_MAIN_SUPPLY : 18|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J0_11_FREQ_GEN : 20|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J0_12_PROBE : 22|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 2365581351 PAT_J1: 8 CTRL
+ SG_ J1_01 : 0|2@1+ (1,0) [0|2] "" Vector__XXX
+ SG_ J1_02 : 2|2@1+ (1,0) [0|2] "" Vector__XXX
+ SG_ J1_03 : 4|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J1_04 : 6|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J1_05 : 8|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J1_06 : 10|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J1_07 : 12|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J1_08 : 14|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J1_09 : 16|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J1_10 : 18|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J1_11 : 20|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J1_12 : 22|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 2365581607 PAT_J2: 8 CTRL
+ SG_ J2_01 : 0|2@1+ (1,0) [0|2] "" Vector__XXX
+ SG_ J2_02 : 2|2@1+ (1,0) [0|2] "" Vector__XXX
+ SG_ J2_03 : 4|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J2_04 : 6|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J2_05 : 8|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J2_06 : 10|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J2_07 : 12|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J2_08 : 14|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J2_09 : 16|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J2_10 : 18|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J2_11 : 20|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J2_12 : 22|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 2365581863 PAT_J3: 8 CTRL
+ SG_ J3_01 : 0|2@1+ (1,0) [0|2] "" Vector__XXX
+ SG_ J3_02 : 2|2@1+ (1,0) [0|2] "" Vector__XXX
+ SG_ J3_03 : 4|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J3_04 : 6|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J3_05 : 8|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J3_06 : 10|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J3_07 : 12|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J3_08 : 14|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J3_09 : 16|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J3_10 : 18|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J3_11 : 20|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J3_12 : 22|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 2365582119 PAT_J4: 8 CTRL
+ SG_ J4_01 : 0|2@1+ (1,0) [0|2] "" Vector__XXX
+ SG_ J4_02 : 2|2@1+ (1,0) [0|2] "" Vector__XXX
+ SG_ J4_03 : 4|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J4_04 : 6|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J4_05 : 8|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J4_06 : 10|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J4_07 : 12|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J4_08 : 14|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J4_09 : 16|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J4_10 : 18|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J4_11 : 20|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J4_12 : 22|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 2365582375 PAT_J5: 8 CTRL
+ SG_ J5_01 : 0|2@1+ (1,0) [0|2] "" Vector__XXX
+ SG_ J5_02 : 2|2@1+ (1,0) [0|2] "" Vector__XXX
+ SG_ J5_03 : 4|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J5_04 : 6|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J5_05 : 8|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J5_06 : 10|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J5_07 : 12|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J5_08 : 14|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J5_09 : 16|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J5_10 : 18|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J5_11 : 20|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ J5_12 : 22|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 2365521923 STAT_METER: 8 PAT
+ SG_ MeterVolts : 0|16@1+ (0.001,0) [0|0] "Volts" Vector__XXX
+ SG_ MeterCurrent : 16|16@1+ (0.001,0) [0|0] "Amps" Vector__XXX
+
+BO_ 2365521924 STAT_AMPS: 8 PAT
+ SG_ MeterAmps : 0|16@1+ (0.001,0) [0|0] "Volts" Vector__XXX
+ SG_ MeterSpare : 16|16@1+ (0.001,0) [0|0] "Amps" Vector__XXX
+
+BO_ 2365521929 STAT_METER_EXT: 8 PAT
+ SG_ MMETER_PRIMARY : 0|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ MMETER_SECONDARY : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 2365521930 STAT_METER_STATUS: 8 PAT
+ SG_ MMETER_FUNC : 0|8@1+ (1,0) [0|8] "" Vector__XXX
+ SG_ MMETER_SECONDARY_EN : 8|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ MMETER_AUTORANGE_EN : 9|1@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ MMETER_RELATIVE_EN : 10|1@1+ (1,0) [0|1] "" Vector__XXX
+
+BO_ 2365522176 CTRL_SUPPLY: 8 CTRL
+ SG_ PwrRemote : 0|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PwrEnable : 2|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PwrSetVoltage : 16|10@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ PwrSetCurrent : 32|10@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 2365522944 CTRL_LOAD: 8 CTRL
+ SG_ LdRemote : 0|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ LdEnable : 2|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ LdMode : 4|2@1- (1,0) [0|0] "" Vector__XXX
+ SG_ LdShort : 6|2@1- (1,0) [0|0] "" Vector__XXX
+ SG_ LdCurrentSet : 16|16@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ LdResistSet : 32|16@1- (1,0) [0|0] "" Vector__XXX
+
+BO_ 2365523200 CTRL_RLY: 8 CTRL
+ SG_ RLY_K1 : 0|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ RLY_K2 : 2|2@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ RLY_K3 : 4|2@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 2365523456 CTRL_METER: 8 CTRL
+ SG_ METER_MODE : 0|8@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ METER_RANGE : 8|8@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 2365523457 CTRL_METER_EXT: 8 CTRL
+ SG_ MMETER_EXT_OP : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ MMETER_EXT_ARG0 : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ MMETER_EXT_ARG1 : 16|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ MMETER_EXT_ARG2 : 24|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ MMETER_EXT_VALUE : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 2365523712 CTRL_AFG: 8 CTRL
+ SG_ AfgEnable : 0|8@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ AfgShape : 8|8@1+ (1,0) [0|2] "" Vector__XXX
+ SG_ AfgFreqSet : 16|32@1+ (1,0) [0|0] "Hz" Vector__XXX
+ SG_ AfgAmplSet : 48|16@1+ (1,0) [0|0] "mV" Vector__XXX
+
+BO_ 2365521925 STAT_AFG: 8 PAT
+ SG_ AfgOutputSts : 0|8@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ AfgShapeSts : 8|8@1+ (1,0) [0|2] "" Vector__XXX
+ SG_ AfgFreqRead : 16|32@1+ (1,0) [0|0] "Hz" Vector__XXX
+ SG_ AfgAmplRead : 48|16@1+ (1,0) [0|0] "mV" Vector__XXX
+
+BO_ 2365523713 CTRL_AFG_EXT: 8 CTRL
+ SG_ AfgOffsetSet : 0|16@1- (1,0) [-5000|5000] "mV" Vector__XXX
+ SG_ AfgDutySet : 16|8@1+ (1,0) [1|99] "%" Vector__XXX
+
+BO_ 2365521926 STAT_AFG_EXT: 8 PAT
+ SG_ AfgOffsetRead : 0|16@1- (1,0) [-5000|5000] "mV" Vector__XXX
+ SG_ AfgDutyRead : 16|8@1+ (1,0) [1|99] "%" Vector__XXX
+
+BO_ 2365523968 CTRL_MRSIGNAL: 8 CTRL
+ SG_ MrSignalEnable : 0|8@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ MrSignalMode : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ MrSignalSetValue : 16|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ MrSignalReserved : 48|16@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 2365521927 STAT_MRSIGNAL: 8 PAT
+ SG_ MrSignalOutputEnable : 0|8@1+ (1,0) [0|1] "" Vector__XXX
+ SG_ MrSignalOutputMode : 8|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ MrSignalOutputValue : 16|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ MrSignalStatusReserved : 48|16@1+ (1,0) [0|0] "" Vector__XXX
+
+BO_ 2365521928 STAT_MRSIGNAL_INPUT: 8 PAT
+ SG_ MrSignalInputValue : 0|32@1+ (1,0) [0|0] "" Vector__XXX
+ SG_ MrSignalInputReserved : 32|32@1+ (1,0) [0|0] "" Vector__XXX
+
+CM_ SG_ 2365523968 MrSignalMode "0=mA, 1=V, 4=mV, 6=24V";
+CM_ SG_ 2365521927 MrSignalOutputMode "0=mA, 1=V, 4=mV, 6=24V";
+
+SIG_VALTYPE_ 2365523968 MrSignalSetValue : 1;
+SIG_VALTYPE_ 2365521927 MrSignalOutputValue : 1;
+SIG_VALTYPE_ 2365521928 MrSignalInputValue : 1;
+CM_ BO_ 2365523457 "Extended multimeter control (op-code protocol).";
+CM_ SG_ 2365523457 MMETER_EXT_OP "Op code (see VAL_ mapping).";
+CM_ SG_ 2365523457 MMETER_EXT_ARG0 "Arg0 meaning depends on op (often function enum or 0xFF=current).";
+CM_ SG_ 2365523457 MMETER_EXT_ARG1 "Arg1 meaning depends on op.";
+CM_ SG_ 2365523457 MMETER_EXT_ARG2 "Arg2 reserved.";
+CM_ SG_ 2365523457 MMETER_EXT_VALUE "IEEE754 float32 little-endian; meaning depends on op.";
+
+CM_ BO_ 2365521929 "Extended multimeter readback: float32 primary + float32 secondary (secondary=NaN if disabled).";
+CM_ SG_ 2365521929 MMETER_PRIMARY "Primary reading (units depend on MMETER_FUNC).";
+CM_ SG_ 2365521929 MMETER_SECONDARY "Secondary reading (NaN if not present; units depend on secondary function).";
+
+CM_ BO_ 2365521930 "Multimeter status: function enum + flags (byte1 bits: 0=secondary,1=autorange,2=relative).";
+CM_ SG_ 2365521930 MMETER_FUNC "Function enum (see VAL_ mapping).";
+CM_ SG_ 2365521930 MMETER_SECONDARY_EN "Flag bit0: secondary display enabled.";
+CM_ SG_ 2365521930 MMETER_AUTORANGE_EN "Flag bit1: autorange enabled.";
+CM_ SG_ 2365521930 MMETER_RELATIVE_EN "Flag bit2: relative mode enabled.";
+
+VAL_ 2365521930 MMETER_FUNC 0 "VDC" 1 "VAC" 2 "IDC" 3 "IAC" 4 "RES" 5 "FREQ" 6 "PERIOD" 7 "DIODE" 8 "CONT" ;
+VAL_ 2365523457 MMETER_EXT_OP 1 "SetPrimaryFunction" 2 "SetAutorange" 3 "SetRange" 4 "SetNPLC" 5 "SetSecondaryEnable" 6 "SetSecondaryFunction" 7 "SetTriggerSource" 8 "BusTrigger" 9 "RelativeEnable" 10 "RelativeAcquire" ;
+
+SIG_VALTYPE_ 2365523457 MMETER_EXT_VALUE : 1;
+SIG_VALTYPE_ 2365521929 MMETER_PRIMARY : 1;
+SIG_VALTYPE_ 2365521929 MMETER_SECONDARY : 1;
