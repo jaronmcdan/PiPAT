@@ -13,8 +13,6 @@ import pyvisa
 import serial
 import os
 
-from gpiozero import LED
-
 import config
 from bk5491b import BK5491B, MmeterFunc
 from mrsignal import MrSignalClient, MrSignalStatus
@@ -22,11 +20,11 @@ from usbtmc_file import UsbTmcFileInstrument, UsbTmcError
 
 
 class _NullRelay:
-    """Fallback relay implementation used when GPIO is unavailable.
+    """Fallback relay implementation used when the K1 relay interface is unavailable.
 
-    Provides a minimal gpiozero-like interface (on/off/is_lit/pin) so the rest
-    of the application can run in dev environments, containers, or hosts that
-    lack Raspberry Pi GPIO support.
+    Provides a minimal relay interface (on/off/is_lit/pin) so the rest of the
+    application can run in dev environments, containers, or hosts that do not
+    have the K1 relay controller attached.
     """
 
     def __init__(self, initial_drive: bool = False):
@@ -47,39 +45,14 @@ class _NullRelay:
         return None
 
 
-def _is_raspberry_pi() -> bool:
-    """Best-effort detection for whether we're running on a Raspberry Pi."""
-
-    # Fast path: device-tree model (common on Raspberry Pi OS)
-    try:
-        with open("/proc/device-tree/model", "r", encoding="ascii", errors="ignore") as f:
-            s = (f.read() or "").lower()
-            if "raspberry pi" in s:
-                return True
-    except Exception:
-        pass
-
-    # Fallback: cpuinfo
-    try:
-        with open("/proc/cpuinfo", "r", encoding="ascii", errors="ignore") as f:
-            s = (f.read() or "").lower()
-            if "raspberry pi" in s:
-                return True
-            # Broadcom SoCs commonly used in Pi devices.
-            if "bcm270" in s or "bcm271" in s or "bcm283" in s:
-                return True
-    except Exception:
-        pass
-    return False
-
-
 class _SerialRelay:
     """Relay backend that toggles a channel via a USB-serial ASCII protocol.
 
     Designed for simple Arduino-based relay controllers that accept a single
     byte command to turn a relay channel ON/OFF.
 
-    Interface mirrors gpiozero.LED enough for this app: on/off/is_lit/pin.
+    Interface is intentionally LED-like (on/off/is_lit/pin) so the rest of the
+    app can treat K1 as a simple "drive output" regardless of implementation.
     """
 
     def __init__(
@@ -292,23 +265,6 @@ class HardwareManager:
                     print(f"WARNING: K1 serial relay unavailable ({port}); running with a mock relay. ({e})")
                     return False
 
-            # Helper: construct the Pi GPIO relay
-            def _try_gpio() -> bool:
-                try:
-                    self.relay = LED(
-                        config.K1_PIN_BCM,
-                        # active_high is the *electrical* polarity of the relay input.
-                        # If K1_ACTIVE_LOW=True, then LED.on() drives the pin LOW.
-                        active_high=not bool(getattr(config, "K1_ACTIVE_LOW", False)),
-                        # initial_value is whether LED is "on" (drive asserted).
-                        initial_value=bool(initial_drive),
-                    )
-                    self.relay_backend = "gpio"
-                    return True
-                except Exception as e:
-                    print(f"WARNING: K1 GPIO unavailable; {e}")
-                    return False
-
             # Backend selection
             if backend == "disabled":
                 self.relay = _NullRelay(initial_drive)
@@ -321,22 +277,18 @@ class HardwareManager:
                     self.relay = _NullRelay(initial_drive)
                     self.relay_backend = "mock"
             elif backend == "gpio":
-                if not _try_gpio():
+                # GPIO relay-hat support was removed. Treat this as a request for
+                # the standard K1 serial interface.
+                print("WARNING: K1_BACKEND='gpio' is no longer supported; using serial instead.")
+                if not _try_serial():
                     self.relay = _NullRelay(initial_drive)
                     self.relay_backend = "mock"
             else:
-                # auto
-                if _is_raspberry_pi():
-                    if not _try_gpio():
-                        if not _try_serial():
-                            self.relay = _NullRelay(initial_drive)
-                            self.relay_backend = "mock"
-                else:
-                    # Non-Pi: don't spam pin-factory fallbacks. Prefer serial if configured.
-                    if not _try_serial():
-                        print("WARNING: K1 GPIO unavailable (not a Raspberry Pi); set K1_SERIAL_PORT or use a mock relay.")
-                        self.relay = _NullRelay(initial_drive)
-                        self.relay_backend = "mock"
+                # auto: prefer the standard K1 serial relay interface everywhere.
+                if not _try_serial():
+                    print("WARNING: K1 serial relay not configured; set K1_SERIAL_PORT (or disable K1). Using mock relay.")
+                    self.relay = _NullRelay(initial_drive)
+                    self.relay_backend = "mock"
 
 
     def _maybe_detect_mmeter_scpi_style(self) -> None:
@@ -394,11 +346,11 @@ class HardwareManager:
 
     # --- Relay helpers ---
     def get_k1_drive(self) -> bool:
-        "Return the logical drive state we are commanding via gpiozero (ON/OFF)."
+        "Return the logical drive state we are commanding for K1 (ON/OFF)."
         return bool(self.relay.is_lit)
 
     def get_k1_pin_level(self):
-        "Return the raw GPIO level (True=HIGH, False=LOW) if available."
+        "Return the raw pin level (True=HIGH, False=LOW) if available."
         try:
             pin = getattr(self.relay, 'pin', None)
             if pin is None:

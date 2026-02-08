@@ -264,15 +264,13 @@ VISA_TIMEOUT_MS = _env_int("VISA_TIMEOUT_MS", 500)
 VISA_ENUM_RETRIES = _env_int("VISA_ENUM_RETRIES", 3)
 VISA_ENUM_RETRY_DELAY_SEC = _env_float("VISA_ENUM_RETRY_DELAY_SEC", 0.5)
 
-# --- GPIO / K1 relay drive ---
+# --- K1 relay drive ---
 K1_ENABLE = _env_bool("K1_ENABLE", True)
 
 # K1 backend selection.
 #
 # Values:
-#   - "auto" (default): On a Raspberry Pi, prefer GPIO. On non-Pi hosts,
-#                        prefer the USB-serial relay backend when configured.
-#   - "gpio":    Force Raspberry Pi GPIO via gpiozero.
+#   - "auto" (default): Prefer the standard USB-serial relay backend when configured.
 #   - "serial":  Force USB-serial relay backend (e.g. Arduino + relay board).
 #   - "mock":    Always use a mock relay (no hardware).
 #   - "disabled": Disable K1 entirely (same as K1_ENABLE=0).
@@ -291,12 +289,6 @@ K1_SERIAL_BOOT_DELAY_SEC = _env_float("K1_SERIAL_BOOT_DELAY_SEC", 2.0)
 # the default protocol: ON = '1'..'4', OFF = 'a'..'d'.
 K1_SERIAL_ON_CHAR = _env_str("K1_SERIAL_ON_CHAR", "")
 K1_SERIAL_OFF_CHAR = _env_str("K1_SERIAL_OFF_CHAR", "")
-K1_PIN_BCM = _env_int("K1_PIN_BCM", 26)
-
-# Relay input polarity:
-# - True  => relay input is active-low (GPIO LOW energizes coil)
-# - False => relay input is active-high
-K1_ACTIVE_LOW = _env_bool("K1_ACTIVE_LOW", False)
 
 # If True, invert the incoming CAN bit0 before driving K1.
 K1_CAN_INVERT = _env_bool("K1_CAN_INVERT", False)

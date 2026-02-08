@@ -964,13 +964,13 @@ def main() -> int:
                     except Exception:
                         k1_level = None
         
-                    gpio_str = "--" if k1_level is None else ("H" if bool(k1_level) else "L")
+                    level_str = "--" if k1_level is None else ("H" if bool(k1_level) else "L")
         
                     load_pct, rx_fps, tx_fps = busload.snapshot() if busload else (None, None, None)
                     bus_str = '--' if load_pct is None else f"{load_pct:.1f}%"
 
                     _log(
-                        f"K1={'ON' if k1_drive else 'OFF'} GPIO={gpio_str} Bus={bus_str} "
+                        f"K1={'ON' if k1_drive else 'OFF'} Level={level_str} Bus={bus_str} "
                         f"Load={int(snap.get('load_volts_mV', 0))/1000:.3f}V {int(snap.get('load_current_mA', 0))/1000:.3f}A "
                         f"Meter={int(snap.get('meter_current_mA', 0))/1000:.3f}A "
                         f"WD={wd.get('timed_out')}"
