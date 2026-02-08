@@ -303,3 +303,131 @@ def test_set_enable_writes_register(monkeypatch):
     assert inst._reg_map[REG_OUTPUT_ON] == 1
     c.set_enable(False)
     assert inst._reg_map[REG_OUTPUT_ON] == 0
+
+
+def test_mrsignal_close_swallow_serial_close_error():
+    """Cover MrSignalClient.close() exception swallow path."""
+    from mrsignal import MrSignalClient
+
+    class BadSerial:
+        def close(self):
+            raise RuntimeError("boom")
+
+    inst = type("Inst", (), {"serial": BadSerial()})()
+
+    c = MrSignalClient("p")
+    c.inst = inst
+    # Should not raise even though serial.close() blows up.
+    c.close()
+    assert c.inst is None
+
+
+def test_read_float_uses_prev_byteorder_without_inst_byteorder_attr(monkeypatch):
+    """Cover the prev-byteorder fast path when Instrument lacks .byteorder."""
+    import minimalmodbus
+    from mrsignal import MrSignalClient
+
+    inst = InstNoByteorder()
+    inst._floats[(1, minimalmodbus.BYTEORDER_BIG)] = 7.25
+
+    c = MrSignalClient("p", float_byteorder=None, float_byteorder_auto=True)
+    c.inst = inst
+    c._last_used_bo = "BYTEORDER_BIG"
+
+    v, bo = c._read_float(1)
+    assert v == 7.25
+    assert bo == "BYTEORDER_BIG"
+
+
+def test_read_float_prev_byteorder_exception_is_swallowed(monkeypatch):
+    """Cover the exception swallow path when using the previous auto-detected byteorder."""
+    import mrsignal
+    from mrsignal import MrSignalClient
+
+    class Inst(InstNoByteorder):
+        def read_float(self, reg, *, functioncode=3, number_of_registers=2, byteorder=None):
+            if byteorder is not None:
+                raise RuntimeError("bad")
+            return 1.0
+
+    inst = Inst()
+    c = MrSignalClient("p", float_byteorder=None, float_byteorder_auto=True)
+    c.inst = inst
+    c._last_used_bo = "BYTEORDER_BIG"
+
+    # Ensure we don't accidentally return from the auto-detect loop.
+    monkeypatch.setattr(mrsignal, "available_byteorders", lambda: [])
+
+    v, bo = c._read_float(0)
+    assert v == 1.0
+    assert bo == "DEFAULT"
+
+
+def test_read_float_configured_byteorder_exception_falls_back(monkeypatch):
+    """Cover the exception swallow path for configured byteorder reads."""
+    import minimalmodbus
+    from mrsignal import MrSignalClient
+
+    class Inst(InstNoByteorder):
+        def read_float(self, reg, *, functioncode=3, number_of_registers=2, byteorder=None):
+            if byteorder == minimalmodbus.BYTEORDER_BIG:
+                raise RuntimeError("bad")
+            return 2.0
+
+    inst = Inst()
+    c = MrSignalClient("p", float_byteorder="BYTEORDER_BIG", float_byteorder_auto=False)
+    c.inst = inst
+
+    v, bo = c._read_float(0)
+    assert v == 2.0
+    assert bo == "DEFAULT"
+
+
+def test_auto_detect_path_without_inst_byteorder_attr(monkeypatch):
+    """Cover the auto-detect loop branch that passes byteorder=... kwarg."""
+    import minimalmodbus
+    from mrsignal import MrSignalClient
+
+    inst = InstNoByteorder()
+    inst._floats[(0, minimalmodbus.BYTEORDER_BIG)] = float("nan")
+    inst._floats[(0, minimalmodbus.BYTEORDER_LITTLE)] = 3.5
+
+    c = MrSignalClient("p", float_byteorder=None, float_byteorder_auto=True)
+    c.inst = inst
+    c._last_used_bo = "DEFAULT"  # skip prev fast-path
+
+    v, bo = c._read_float(0)
+    assert v == 3.5
+    assert bo in {name for name, _ in __import__("mrsignal").available_byteorders()}
+
+
+def test_write_float_sets_inst_byteorder_when_supported(monkeypatch):
+    """Cover the write_float path for newer minimalmodbus Instrument.byteorder."""
+    import minimalmodbus
+    from mrsignal import MrSignalClient
+
+    inst = FakeInst()
+    c = MrSignalClient("p", float_byteorder="BYTEORDER_LITTLE", float_byteorder_auto=False)
+    c.inst = inst
+
+    bo = c._write_float(10, 1.25)
+    assert bo == "BYTEORDER_LITTLE"
+    assert inst._float_map[(10, minimalmodbus.BYTEORDER_LITTLE)] == 1.25
+
+
+def test_read_status_handles_input_float_failure(monkeypatch):
+    """Cover the input-value exception path in read_status()."""
+    from mrsignal import MrSignalClient, REG_OUTPUT_VALUE_FLOAT, REG_INPUT_VALUE_FLOAT
+
+    c = MrSignalClient("p")
+    c.inst = FakeInst()
+
+    def flaky(reg):
+        if reg == REG_INPUT_VALUE_FLOAT:
+            raise RuntimeError("nope")
+        return (1.0, "DEFAULT")
+
+    monkeypatch.setattr(c, "_read_float", flaky)
+    st = c.read_status()
+    assert st.output_value == 1.0
+    assert st.input_value is None

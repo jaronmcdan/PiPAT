@@ -1171,3 +1171,114 @@ def test_device_command_loop_other_id_and_idle_exception(monkeypatch):
     # Should apply the unknown id in the "other IDs" pass and swallow idle exceptions.
     device_comm.device_command_loop(Q(), hw, stop, log_fn=lambda s: None, idle_on_stop=True)
     assert 0x123 in called
+
+
+def test_mmeter_set_func_unsupported_function_logs():
+    """Cover the early-return branch for unsupported MmeterFunc values."""
+    from device_comm import DeviceCommandProcessor
+
+    hw = FakeHardware()
+    logs: list[str] = []
+    p = DeviceCommandProcessor(hw, log_fn=logs.append)
+
+    # 0xEE is outside our known mapping tables.
+    p._mmeter_set_func(0xEE)
+    assert hw.mmeter_func == 0  # unchanged
+    assert any("unsupported function" in m.lower() for m in logs)
+
+
+def test_mmeter_set_func_style_func_builds_candidates(monkeypatch):
+    """Cover the 'func' style candidate-building path (different from auto/conf)."""
+    from device_comm import DeviceCommandProcessor
+    from bk5491b import MmeterFunc
+
+    hw = FakeHardware()
+    hw.mmeter_scpi_style = "func"
+    hw.mmeter = FakeBKHelper(drain_script=[["0,No error"], ["0,No error"]])
+
+    p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
+    p._mmeter_set_func(int(MmeterFunc.VDC))
+
+    assert hw.mmeter_func == int(MmeterFunc.VDC)
+    # First candidate in 'func' style is the :FUNCtion ... form.
+    assert hw.mmeter.writes and hw.mmeter.writes[0].startswith(":FUNCtion")
+
+
+def test_handle_mmeter_ext_bad_float_unpack_is_swallowed(monkeypatch):
+    """Cover the struct.unpack() exception path in MMETER_CTRL_EXT handling."""
+    import config
+    from device_comm import DeviceCommandProcessor
+    from bk5491b import MmeterFunc
+
+    class BadBytes(bytes):
+        def __getitem__(self, key):
+            # Make data[4:8] the wrong length to trigger struct.error.
+            if isinstance(key, slice) and key.start == 4 and key.stop == 8:
+                return b""
+            return super().__getitem__(key)
+
+    hw = FakeHardware()
+    hw.multi_meter = True
+    hw.mmeter_func = int(MmeterFunc.VDC)
+    p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
+
+    payload = BadBytes(bytes([0x03, 0xFF, 0x00, 0x00, 1, 2, 3, 4]))
+    p.handle(int(config.MMETER_CTRL_EXT_ID), payload)
+
+    # It should still have processed the opcode and forced autorange off.
+    assert hw.mmeter_autorange is False
+
+
+def test_handle_mrsignal_unpack_error_returns_early():
+    """Cover the float-unpack failure branch in MrSignal CAN control."""
+    import config
+    from device_comm import DeviceCommandProcessor
+
+    class BadBytes(bytes):
+        def __getitem__(self, key):
+            if isinstance(key, slice) and key.start == 2 and key.stop == 6:
+                return b""  # wrong length for struct.unpack
+            return super().__getitem__(key)
+
+    hw = FakeHardware()
+    p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
+
+    # enable=1, output_select=1 (V), but float bytes will fail to unpack.
+    payload = BadBytes(bytes([1, 1, 0, 0, 0, 0]))
+    p.handle(int(config.MRSIGNAL_CTRL_ID), payload)
+
+    assert hw.mrs_calls == []
+
+
+def test_device_command_loop_watchdog_marks_mmeter_and_mrsignal(monkeypatch):
+    import config
+    import device_comm
+
+    q: queue.Queue[tuple[int, bytes]] = queue.Queue()
+    hw = FakeHardware()
+    stop = threading.Event()
+
+    handled: list[int] = []
+
+    def fake_handle(self, arb: int, data: bytes):
+        handled.append(int(arb))
+        # Stop after we see the MrSignal frame.
+        if int(arb) == int(config.MRSIGNAL_CTRL_ID):
+            stop.set()
+
+    monkeypatch.setattr(device_comm.DeviceCommandProcessor, "handle", fake_handle)
+
+    marks: list[str] = []
+
+    def mark(name: str):
+        marks.append(name)
+
+    q.put((int(config.MMETER_CTRL_ID), b"\x00\x00"))
+    q.put((int(config.MRSIGNAL_CTRL_ID), bytes([1, 1]) + struct.pack("<f", 1.0)))
+
+    device_comm.device_command_loop(q, hw, stop, log_fn=lambda s: None, watchdog_mark_fn=mark, idle_on_stop=False)
+
+    assert "mmeter" in marks
+    assert "mrsignal" in marks
+    assert int(config.MMETER_CTRL_ID) in handled
+    assert int(config.MRSIGNAL_CTRL_ID) in handled

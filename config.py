@@ -213,8 +213,19 @@ AUTO_DETECT_VISA_ASRL_ALLOW_PREFIXES = _env_str(
 # Prefer stable symlinks (when present)
 AUTO_DETECT_PREFER_BY_ID = _env_bool("AUTO_DETECT_PREFER_BY_ID", True)
 
-# Optional: force a PyVISA backend ("@py" for pyvisa-py). Empty => default.
-AUTO_DETECT_VISA_BACKEND = _env_str("AUTO_DETECT_VISA_BACKEND", "")
+# Optional: force a PyVISA backend ("@py" for pyvisa-py).
+#
+# We default to pyvisa-py because it works out-of-the-box on Raspberry Pi / Debian
+# without NI-VISA. If you have NI-VISA installed and want to use it, set this (and
+# VISA_BACKEND below) to an empty string or an NI-VISA library path.
+AUTO_DETECT_VISA_BACKEND = _env_str("AUTO_DETECT_VISA_BACKEND", "@py")
+
+# Runtime VISA backend for instrument I/O.
+#
+# HardwareManager uses this when opening VISA instruments (AFG + E-load). Keeping
+# this aligned with AUTO_DETECT_VISA_BACKEND avoids cases where discovery uses one
+# backend and runtime uses another.
+VISA_BACKEND = _env_str("VISA_BACKEND", AUTO_DETECT_VISA_BACKEND)
 
 # IDN matching hints (comma-separated, case-insensitive)
 AUTO_DETECT_MMETER_IDN_HINTS = _env_str("AUTO_DETECT_MMETER_IDN_HINTS", "multimeter,5491b")
@@ -246,6 +257,12 @@ AFG_VISA_ID = _env_str("AFG_VISA_ID", "ASRL/dev/ttyACM1::INSTR")
 # PyVISA I/O timeout (milliseconds). Lower values reduce "sluggish" feel when a
 # device is disconnected or slow to respond, at the cost of more timeouts.
 VISA_TIMEOUT_MS = _env_int("VISA_TIMEOUT_MS", 500)
+
+# USB devices can enumerate slightly after the process starts (especially on boot
+# or when starting under systemd). If the first VISA list_resources() call returns
+# no USB devices, we retry a few times before giving up.
+VISA_ENUM_RETRIES = _env_int("VISA_ENUM_RETRIES", 3)
+VISA_ENUM_RETRY_DELAY_SEC = _env_float("VISA_ENUM_RETRY_DELAY_SEC", 0.5)
 
 # --- GPIO / K1 relay drive ---
 K1_ENABLE = _env_bool("K1_ENABLE", True)

@@ -258,8 +258,8 @@ If you prefer to configure CAN at boot, set `CAN_SETUP=0` (in `config.py` or `/e
 Manual test:
 
 ```bash
-sudo ip link set can1 up type can bitrate 250000
-ip -details link show can1
+sudo ip link set can0 up type can bitrate 250000
+ip -details link show can0
 ```
 
 ### CANview USB (rmcanview)
@@ -325,18 +325,38 @@ The dashboard’s bottom bar shows watchdog ages / timeouts when the TUI is enab
 ## Running as a service (always-on)
 
 This bundle includes:
-- `scripts/pi_install.sh` – installs into `/opt/roi`, creates a venv, installs deps, and optionally enables a systemd service
+- `scripts/pi_install.sh` – installs into `/opt/roi`, creates a venv, installs deps, and writes `/etc/roi/roi.env`
+- `scripts/service_install.sh` – installs/enables the systemd service
 - `systemd/roi.service` – systemd unit
 - `roi.env.example` – environment override template
 
 ### Install on the Pi
 
 1) Copy a release tarball to the Pi and extract it (see dist build below)
-2) Run:
+2) Run the easy installer (recommended):
 
 ```bash
 cd <extracted-folder>
-sudo ./scripts/pi_install.sh --install-os-deps --enable-service
+sudo ./scripts/pi_install.sh --easy
+```
+
+This will:
+- install OS dependencies (including libusb for USBTMC)
+- install udev rules so a non-root user can access the E-load over USB
+- add your user to dialout/plugdev/gpio groups
+
+Then, if you want it running as an always-on service:
+
+```bash
+sudo ./scripts/service_install.sh --enable --start
+```
+
+Alternatively, you can run the pieces explicitly:
+
+```bash
+cd <extracted-folder>
+sudo ./scripts/pi_install.sh --install-os-deps --install-udev-rules --venv-system-site-packages --add-user-groups
+sudo ./scripts/service_install.sh --enable --start
 ```
 
 ### Check logs
@@ -416,6 +436,51 @@ If you still see issues, confirm:
 
 Double-check:
 - `K1_ACTIVE_LOW`
+
+---
+
+### E-load not detected (USBTMC)
+
+Symptoms:
+- You see `WARNING: E-LOAD not found.`
+- The log prints `Scanning for E-Load in (USB only): []` (no `USB*...::INSTR` resources)
+
+Quick triage:
+
+1) Confirm Linux sees the device:
+
+```bash
+lsusb
+```
+
+2) Run the built-in VISA/USBTMC diagnostics:
+
+```bash
+python3 scripts/visa_diag.py
+```
+
+If you see `/dev/usbtmc0` but no `USB*::INSTR` resources, PiPAT will also try the
+kernel-driver fallback automatically.
+
+Common fixes on a fresh Pi:
+
+- Install OS deps (libusb + usbutils):
+
+```bash
+sudo ./scripts/pi_install.sh --install-os-deps
+```
+
+- Install udev rules and replug the USB cable:
+
+```bash
+sudo ./scripts/pi_install.sh --install-udev-rules
+```
+
+Recommended (does everything):
+
+```bash
+sudo ./scripts/pi_install.sh --easy
+```
 
 ---
 
