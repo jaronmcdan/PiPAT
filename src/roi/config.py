@@ -428,3 +428,38 @@ CAN_BUS_LOAD_OVERHEAD_BITS = _env_int("CAN_BUS_LOAD_OVERHEAD_BITS", 48)
 # Regulate outgoing readback frames (ELOAD/MMETER/AFG status) to a fixed rate.
 CAN_TX_ENABLE = _env_bool("CAN_TX_ENABLE", True)
 CAN_TX_PERIOD_MS = _env_int("CAN_TX_PERIOD_MS", 50)
+
+# Advanced per-frame transmit periods (milliseconds).
+# These allow reducing CAN traffic without changing the overall TX scheduler tick.
+# By default they inherit CAN_TX_PERIOD_MS (legacy behavior).
+CAN_TX_PERIOD_MMETER_LEGACY_MS = _env_int("CAN_TX_PERIOD_MMETER_LEGACY_MS", CAN_TX_PERIOD_MS)
+CAN_TX_PERIOD_MMETER_EXT_MS = _env_int("CAN_TX_PERIOD_MMETER_EXT_MS", CAN_TX_PERIOD_MS)
+CAN_TX_PERIOD_MMETER_STATUS_MS = _env_int("CAN_TX_PERIOD_MMETER_STATUS_MS", CAN_TX_PERIOD_MS)
+CAN_TX_PERIOD_ELOAD_MS = _env_int("CAN_TX_PERIOD_ELOAD_MS", CAN_TX_PERIOD_MS)
+CAN_TX_PERIOD_AFG_EXT_MS = _env_int("CAN_TX_PERIOD_AFG_EXT_MS", CAN_TX_PERIOD_MS)
+CAN_TX_PERIOD_MRS_STATUS_MS = _env_int("CAN_TX_PERIOD_MRS_STATUS_MS", CAN_TX_PERIOD_MS)
+CAN_TX_PERIOD_MRS_INPUT_MS = _env_int("CAN_TX_PERIOD_MRS_INPUT_MS", CAN_TX_PERIOD_MS)
+
+# Optional: when enabled, a frame is also sent immediately when its payload changes
+# (still rate-limited by CAN_TX_SEND_ON_CHANGE_MIN_MS). Periodic keepalive still applies.
+CAN_TX_SEND_ON_CHANGE = _env_bool("CAN_TX_SEND_ON_CHANGE", False)
+CAN_TX_SEND_ON_CHANGE_MIN_MS = _env_int("CAN_TX_SEND_ON_CHANGE_MIN_MS", 0)
+
+# -----------------------------------------------------------------------------
+# CAN receive filtering (optional performance/CPU optimization)
+# -----------------------------------------------------------------------------
+# When set, ROI will attempt to apply kernel/driver-level filters (cbus.set_filters)
+# so only relevant frames are delivered to the Python process.
+#
+# Values:
+#   - "none"        : do not apply filters (default; preserves accurate bus-load meter)
+#   - "control"     : only deliver ROI control IDs
+#   - "control+pat" : control IDs + PAT_J0..PAT_J5 frames for the dashboard
+CAN_RX_KERNEL_FILTER_MODE = _env_str("CAN_RX_KERNEL_FILTER_MODE", "none").strip().lower()
+
+# -----------------------------------------------------------------------------
+# RM/Proemion CANview serial backend tuning
+# -----------------------------------------------------------------------------
+# pyserial.flush() waits for the OS serial TX buffer to drain; doing this on every
+# frame can severely limit throughput. Keep default True for backward compatibility.
+CAN_RMCANVIEW_FLUSH_EVERY_SEND = _env_bool("CAN_RMCANVIEW_FLUSH_EVERY_SEND", True)

@@ -10,6 +10,35 @@ ROI uses a bounded `queue.Queue` between the CAN RX thread and the device comman
 
 When `CAN_CMD_QUEUE_MAX` is full, ROI prefers to **drop the oldest queued command** to make room for the newest. This improves responsiveness for “knob/slider” controls where only the latest state matters.
 
+
+## CAN TX traffic shaping
+
+File: `src/roi/can/comm.py`, `src/roi/config.py`
+
+ROI’s TX loop supports per-frame publish periods so you can reduce CAN traffic without turning off periodic transmissions.
+
+Environment variables (milliseconds):
+
+- `CAN_TX_PERIOD_MMETER_LEGACY_MS`
+- `CAN_TX_PERIOD_MMETER_EXT_MS`
+- `CAN_TX_PERIOD_MMETER_STATUS_MS`
+- `CAN_TX_PERIOD_ELOAD_MS`
+- `CAN_TX_PERIOD_AFG_EXT_MS`
+- `CAN_TX_PERIOD_MRS_STATUS_MS`
+- `CAN_TX_PERIOD_MRS_INPUT_MS`
+
+Each defaults to `CAN_TX_PERIOD_MS` (legacy behavior).
+
+Optional: `CAN_TX_SEND_ON_CHANGE=1` sends a frame immediately when its payload changes (still rate-limited).
+
+## CAN RX kernel/driver filtering (optional)
+
+File: `src/roi/can/comm.py`
+
+When `CAN_RX_KERNEL_FILTER_MODE` is set, ROI attempts to apply driver/kernel-level CAN ID filters (`cbus.set_filters`) so only relevant frames are delivered to Python.
+
+This can significantly reduce CPU usage on a busy bus, but it also makes the bus-load estimator less accurate (because ROI can’t count what it can’t see).
+
 ## rmcanview adapter RX buffering
 
 File: `src/roi/can/rmcanview.py`
