@@ -13,10 +13,10 @@ import pyvisa
 import serial
 import os
 
-import config
-from bk5491b import BK5491B, MmeterFunc
-from mrsignal import MrSignalClient, MrSignalStatus
-from usbtmc_file import UsbTmcFileInstrument, UsbTmcError
+from .. import config
+from ..devices.bk5491b import BK5491B, MmeterFunc
+from ..devices.mrsignal import MrSignalClient, MrSignalStatus
+from ..devices.usbtmc_file import UsbTmcFileInstrument, UsbTmcError
 
 
 class _NullRelay:

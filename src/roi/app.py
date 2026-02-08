@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# main.py
+# app.py
 
 from __future__ import annotations
 
@@ -11,11 +11,11 @@ import time
 import queue
 from typing import Dict, Optional
 
-import config
-from can_metrics import BusLoadMeter
-from dashboard import HAVE_RICH, build_dashboard, console
-from hardware import HardwareManager
-from can_comm import (
+from . import config
+from .can.metrics import BusLoadMeter
+from .ui.dashboard import HAVE_RICH, build_dashboard, console
+from .core.hardware import HardwareManager
+from .can.comm import (
     OutgoingTxState,
     can_rx_loop,
     can_tx_loop,
@@ -24,13 +24,13 @@ from can_comm import (
 )
 
 # Dashboard-only: PAT switching matrix (PAT_J0..PAT_J5)
-from pat_matrix import PatSwitchMatrixState
-from device_comm import device_command_loop
+from .core.pat_matrix import PatSwitchMatrixState
+from .core.device_comm import device_command_loop
 
-from bk5491b import MmeterFunc, func_name, func_unit
+from .devices.bk5491b import MmeterFunc, func_name, func_unit
 
 # MrSignal register constants (used for stepwise polling that yields to control writes)
-from mrsignal import (
+from .devices.mrsignal import (
     REG_ID,
     REG_INPUT_VALUE_FLOAT,
     REG_OUTPUT_ON,
@@ -39,7 +39,7 @@ from mrsignal import (
     MrSignalStatus,
 )
 
-from device_discovery import autodetect_and_patch_config
+from .core.device_discovery import autodetect_and_patch_config
 
 try:
     from rich.live import Live
@@ -816,7 +816,7 @@ def main() -> int:
 
     # Print build tag early so we can verify which zip is actually running.
     try:
-        _log(f"PiPAT build: {getattr(config, 'BUILD_TAG', 'unknown')}")
+        _log(f"ROI build: {getattr(config, 'BUILD_TAG', 'unknown')}")
     except Exception:
         pass
 

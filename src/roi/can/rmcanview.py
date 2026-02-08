@@ -10,7 +10,7 @@ FTDI converter) and uses a framed binary protocol.
 Protocol reference:
   - "Proemion Byte Command Protocol" (Byte Command Manual)
 
-Only the subset needed by PiPAT is implemented:
+Only the subset needed by ROI is implemented:
   - Receive CAN data frames (11-bit and 29-bit IDs)
   - Transmit CAN data frames (11-bit and 29-bit IDs)
   - Optional basic setup (set CAN bitrate; force active mode)
@@ -27,7 +27,7 @@ from typing import Callable, Optional
 import can
 import serial
 
-import config
+from .. import config
 
 
 SOF = 0x43  # 'C'

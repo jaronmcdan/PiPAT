@@ -3,7 +3,7 @@
 Minimal, robust SCPI helper for the B&K Precision 5491B (and similar) bench DMMs
 over USB-serial.
 
-This module also defines the PiPAT CAN-side function enums and SCPI mappings.
+This module also defines the ROI CAN-side function enums and SCPI mappings.
 
 Why two SCPI "dialects"?
   - Some firmware / manuals use a classic SCPI tree with :FUNCtion, :VOLTage:DC:RANGe, etc.
@@ -12,7 +12,7 @@ Why two SCPI "dialects"?
     both primary and secondary display functions, and global CONF:RANGe:AUTO, etc.
     (see 5491/5492 remote operation manual section with dual display).
 
-PiPAT can be configured to use either dialect (or auto-detect) via config.MMETER_SCPI_STYLE.
+ROI can be configured to use either dialect (or auto-detect) via config.MMETER_SCPI_STYLE.
 
 Goals
   - tolerate command echo (common on USB-serial instruments)
@@ -98,7 +98,7 @@ FUNC_TO_SCPI_FUNC = {
 # IMPORTANT:
 #   For the 2831E/5491B family, the official manual documents a :FUNCtion tree,
 #   and B&K's "Added Commands" doc extends that with :FUNCtion2 for the secondary
-#   display. That dialect is what PiPAT uses by default.
+#   display. That dialect is what ROI uses by default.
 #
 #   We keep this mapping as an escape hatch for odd firmware variants, but it is
 #   NOT used unless you explicitly set MMETER_SCPI_STYLE=conf.
@@ -339,7 +339,7 @@ class BK5491B:
 
         return FetchResult(primary, secondary, line)
 
-    # Back-compat: earlier PiPAT code called this helper.
+    # Back-compat: earlier ROI code called this helper.
     # Return a tuple so callers can do: p, s, raw = query_values(...)
     def query_values(
         self,

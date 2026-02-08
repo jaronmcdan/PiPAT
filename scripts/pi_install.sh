@@ -14,16 +14,17 @@ usage() {
 Usage: sudo $0 [--prefix /opt/roi]
 
 Optional:
-  --easy                  Do the "make it work" path (os deps + udev + user groups)
-  --install-os-deps        Install recommended apt packages (python3-venv, can-utils, libusb, usbutils)
-  --install-udev-rules     Install udev rules for USBTMC instruments (E-load)
-  --add-user-groups        Add the invoking user to dialout/plugdev (for interactive runs)
+  --easy                       Do the "make it work" path (os deps + udev + user groups)
+  --install-os-deps            Install recommended apt packages (python3-venv, can-utils, libusb, usbutils)
+  --install-udev-rules         Install udev rules for USBTMC instruments (E-load)
+  --add-user-groups            Add the invoking user to dialout/plugdev (for interactive runs)
   --venv-system-site-packages  Create the venv with --system-site-packages
 
-Installs this project onto a Raspberry Pi:
-- Copies files into PREFIX
+Installs ROI onto a Raspberry Pi:
+- Copies this repo into PREFIX
 - Creates venv at PREFIX/.venv
-- Installs requirements
+- Installs ROI into that venv (pip install PREFIX/)
+- Writes /etc/roi/roi.env if missing (per-host config overrides)
 - Leaves systemd service install to scripts/service_install.sh
 EOF
 }
@@ -68,12 +69,7 @@ if [[ "$INSTALL_OS_DEPS" == "1" ]]; then
   echo "[ROI] Installing OS dependencies via apt"
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update
-    apt-get install -y \
-      python3 python3-venv python3-pip python3-dev \
-      can-utils \
-      libusb-1.0-0 \
-      usbutils \
-      rsync
+    apt-get install -y       python3 python3-venv python3-pip python3-dev       can-utils       libusb-1.0-0       usbutils       rsync
   else
     echo "[ROI] WARNING: apt-get not found; skipping OS deps." >&2
   fi
@@ -86,7 +82,7 @@ if [[ "$INSTALL_UDEV_RULES" == "1" ]]; then
   # BK Precision 8600 series (VID:PID 2ec7:8800) - allow both libusb (pyvisa-py)
   # and /dev/usbtmc* kernel driver access.
   cat >/etc/udev/rules.d/99-roi-usbtmc.rules <<'EOF'
-# ROI / PiPAT instrument access
+# ROI / instrument access
 
 # BK Precision 8600-series Electronic Load (USBTMC)
 # - "usb" rule covers libusb access (/dev/bus/usb/..)
@@ -122,14 +118,7 @@ fi
 
 echo "[ROI] Installing to: $PREFIX"
 mkdir -p "$PREFIX"
-rsync -a --delete \
-  --exclude ".git" \
-  --exclude ".venv" \
-  --exclude "venv" \
-  --exclude "__pycache__" \
-  --exclude "*.pyc" \
-  --exclude ".pytest_cache" \
-  "$SRC_DIR/" "$PREFIX/"
+rsync -a --delete   --exclude ".git"   --exclude ".venv"   --exclude "venv"   --exclude "__pycache__"   --exclude "*.pyc"   --exclude ".pytest_cache"   --exclude ".mypy_cache"   --exclude ".ruff_cache"   --exclude "dist"   --exclude "build"   "$SRC_DIR/" "$PREFIX/"
 
 echo "[ROI] Ensuring venv at $PREFIX/.venv"
 if [[ "$VENV_SYSTEM_SITE_PACKAGES" == "1" ]]; then
@@ -137,24 +126,21 @@ if [[ "$VENV_SYSTEM_SITE_PACKAGES" == "1" ]]; then
 else
   python3 -m venv "$PREFIX/.venv"
 fi
-"$PREFIX/.venv/bin/pip" install -U pip
 
-if [[ -f "$PREFIX/requirements.txt" ]]; then
-  "$PREFIX/.venv/bin/pip" install -r "$PREFIX/requirements.txt"
-else
-  echo "[ROI] WARNING: requirements.txt missing; installing minimal deps"
-  "$PREFIX/.venv/bin/pip" install python-can pyserial pyvisa pyvisa-py pyusb rich
-fi
+"$PREFIX/.venv/bin/pip" install -U pip setuptools wheel
+
+# Install ROI (and dependencies) into the venv.
+"$PREFIX/.venv/bin/pip" install "$PREFIX"
 
 # Env dir
 mkdir -p /etc/roi
 if [[ ! -f /etc/roi/roi.env ]]; then
-  echo "[ROI] Writing /etc/roi/roi.env (edit for per-Pi overrides)"
-  cp -n "$PREFIX/roi.env.example" /etc/roi/roi.env || true
+  echo "[ROI] Writing /etc/roi/roi.env (edit for per-host overrides)"
+  cp -n "$PREFIX/deploy/env/roi.env.example" /etc/roi/roi.env || true
 fi
 
 echo
 echo "[ROI] Done."
-echo "Edit /etc/roi/roi.env for per-Pi overrides (config.py provides defaults)."
-echo "Run: sudo $PREFIX/.venv/bin/python $PREFIX/main.py"
-echo "(Optional service) sudo ./scripts/service_install.sh --prefix $PREFIX --enable --start"
+echo "Edit /etc/roi/roi.env for per-host overrides (roi.config provides defaults)."
+echo "Run: sudo $PREFIX/.venv/bin/roi"
+echo "(Optional service) sudo $PREFIX/scripts/service_install.sh --prefix $PREFIX --enable --start"

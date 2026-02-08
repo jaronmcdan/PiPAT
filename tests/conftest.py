@@ -1,9 +1,9 @@
 """Pytest configuration and dependency stubs.
 
-This repo targets Raspberry Pi hardware and optional third-party libs
-(python-can, pyserial, minimalmodbus, pyvisa...). The unit tests in
-this suite focus on *core logic* and therefore provide lightweight stubs so the
-modules can be imported and exercised in CI/container environments.
+ROI targets Raspberry Pi hardware and optional third-party libs
+(python-can, pyserial, minimalmodbus, pyvisa...). The unit tests in this suite
+focus on *core logic* and therefore provide lightweight stubs so the modules can
+be imported and exercised in CI/container environments.
 """
 
 from __future__ import annotations
@@ -13,10 +13,11 @@ import types
 from pathlib import Path
 
 
-# Ensure repo root is importable.
+# Ensure src/ is importable (src layout).
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 
 def _install_stub(name: str, module: types.ModuleType) -> None:
@@ -32,7 +33,21 @@ serial_stub.PARITY_EVEN = "E"
 serial_stub.PARITY_ODD = "O"
 serial_stub.STOPBITS_ONE = 1
 serial_stub.STOPBITS_TWO = 2
+
+# Some modules import serial.tools.list_ports.
+tools_mod = types.ModuleType("serial.tools")
+list_ports_mod = types.ModuleType("serial.tools.list_ports")
+
+def _comports():
+    return []
+
+list_ports_mod.comports = _comports
+tools_mod.list_ports = list_ports_mod
+serial_stub.tools = tools_mod
+
 _install_stub("serial", serial_stub)
+_install_stub("serial.tools", tools_mod)
+_install_stub("serial.tools.list_ports", list_ports_mod)
 
 
 # --- Stub: minimalmodbus ------------------------------------------------------
@@ -133,32 +148,3 @@ def _default_bus_factory(**kwargs):
 
 can_stub.interface = types.SimpleNamespace(Bus=_default_bus_factory)
 _install_stub("can", can_stub)
-
-
-# --- Stub: hardware -----------------------------------------------------------
-# device_comm imports HardwareManager from hardware.py, which has heavy deps.
-# Provide a tiny placeholder type to satisfy imports.
-hardware_stub = types.ModuleType("hardware")
-
-
-class HardwareManager:  # pragma: no cover - used only for typing/imports
-    pass
-
-
-hardware_stub.HardwareManager = HardwareManager
-_install_stub("hardware", hardware_stub)
-
-
-# --- Stub: rmcanview ----------------------------------------------------------
-# We omit rmcanview.py from coverage and treat it as an optional backend.
-rmcanview_stub = types.ModuleType("rmcanview")
-
-
-class RmCanViewBus(can_stub.BusABC):
-    def __init__(self, channel, **kwargs):
-        self.channel = channel
-        self.kwargs = dict(kwargs)
-
-
-rmcanview_stub.RmCanViewBus = RmCanViewBus
-_install_stub("rmcanview", rmcanview_stub)

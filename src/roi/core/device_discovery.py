@@ -1,6 +1,6 @@
 """USB / VISA device discovery for Raspberry Pi.
 
-Goal: make PiPAT resilient to /dev/ttyUSB* renumbering.
+Goal: make ROI resilient to /dev/ttyUSB* renumbering.
 
 We try to discover:
   - MULTI_METER_PATH (USB-serial multimeter)
@@ -25,8 +25,8 @@ import pyvisa
 import serial
 from serial.tools import list_ports
 
-import config
-from mrsignal import MrSignalClient
+from .. import config
+from ..devices.mrsignal import MrSignalClient
 
 
 LogFn = Callable[[str], None]
@@ -329,7 +329,7 @@ class DiscoveryResult:
     afg_idn: Optional[str] = None
     eload_visa_id: Optional[str] = None
     eload_idn: Optional[str] = None
-    # Optional extras (not strictly required by PiPAT core, but useful on a closed system)
+    # Optional extras (not strictly required by ROI core, but useful on a closed system)
     can_channel: Optional[str] = None
     k1_serial_port: Optional[str] = None
 

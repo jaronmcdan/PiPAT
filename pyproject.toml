@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "roi"
+version = "0.1.0"
+description = "ROI (Remote Operational Equipment) instrument bridge"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "ROI Contributors"}]
+dependencies = [
+  "python-can>=4.0",
+  "pyserial>=3.5",
+  "pyvisa>=1.14",
+  "pyvisa-py>=0.7",
+  "minimalmodbus>=2.0",
+  "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "pytest-cov>=4.0",
+]
+
+[project.scripts]
+roi = "roi.app:main"
+roi-mmter-diag = "roi.tools.mmeter_diag:main"
+roi-visa-diag = "roi.tools.visa_diag:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.package-data]
+"roi.assets" = ["PAT.dbc"]

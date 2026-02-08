@@ -1,16 +1,16 @@
 [run]
 branch = False
-source = .
+source = roi
 
 omit =
     */tests/*
-    */dashboard.py
-    */device_discovery.py
-    */hardware.py
-    */main.py
-    */rmcanview.py
-    */scripts/*
-    */systemd/*
+    */roi/app.py
+    */roi/__main__.py
+    */roi/ui/dashboard.py
+    */roi/core/device_discovery.py
+    */roi/core/hardware.py
+    */roi/can/rmcanview.py
+    */roi/tools/*
 
 [report]
 exclude_lines =

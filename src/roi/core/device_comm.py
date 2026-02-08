@@ -6,11 +6,10 @@ import queue
 import struct
 import time
 import math
-from typing import Callable, Optional
+from typing import Callable, Optional, TYPE_CHECKING
 
-import config
-from hardware import HardwareManager
-from bk5491b import (
+from .. import config
+from ..devices.bk5491b import (
     FUNC_TO_SCPI_FUNC,
     FUNC_TO_SCPI_CONF,
     FUNC_TO_SCPI_FUNC2,
@@ -20,6 +19,9 @@ from bk5491b import (
     MmeterFunc,
     func_name,
 )
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .hardware import HardwareManager
 
 
 def _quantize_nplc(v: float) -> float:
@@ -45,7 +47,7 @@ class DeviceCommandProcessor:
 
     SHAPE_MAP = {0: "SIN", 1: "SQU", 2: "RAMP"}
 
-    def __init__(self, hardware: HardwareManager, *, log_fn: Callable[[str], None] = print):
+    def __init__(self, hardware: "HardwareManager", *, log_fn: Callable[[str], None] = print):
         self.hardware = hardware
         self.log = log_fn
 
@@ -314,7 +316,7 @@ class DeviceCommandProcessor:
                     pass
 
             # Legacy range byte:
-            # By default we **do not** apply it (matches historical PiPAT
+            # By default we **do not** apply it (matches historical ROI
             # behavior and avoids "BUS: BAD COMMAND" on meters that don't
             # support the per-subsystem :RANGe:AUTO commands).
             if bool(getattr(config, "MMETER_LEGACY_RANGE_ENABLE", False)):
@@ -571,7 +573,7 @@ class DeviceCommandProcessor:
 
 def device_command_loop(
     cmd_queue: "queue.Queue[tuple[int, bytes]]",
-    hardware: HardwareManager,
+    hardware: "HardwareManager",
     stop_event,
     *,
     log_fn: Callable[[str], None] = print,
@@ -584,7 +586,7 @@ def device_command_loop(
 
     Parameters
     - cmd_queue: receives (arb_id, data) tuples from the CAN RX thread.
-    - hardware: HardwareManager instance.
+    - hardware: "HardwareManager" instance.
     - stop_event: threading.Event used to signal shutdown.
     """
 

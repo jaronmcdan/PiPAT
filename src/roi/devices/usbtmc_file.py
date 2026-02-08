@@ -9,12 +9,12 @@ Why it exists:
   - The Linux kernel's `usbtmc` driver can expose compatible instruments as
     /dev/usbtmc0, /dev/usbtmc1, ... which can be used without PyUSB.
 
-We only implement the tiny subset of the PyVISA instrument API that PiPAT
+We only implement the tiny subset of the PyVISA instrument API that ROI
 uses (`write`, `read`, `query`, `close`, plus a `timeout` attribute).
 
 This code is intentionally conservative:
   - ASCII encoding with replacement on decode
-  - single-threaded per-device use (PiPAT already uses locks)
+  - single-threaded per-device use (ROI already uses locks)
   - bounded reads with select()-based timeouts
 """
 

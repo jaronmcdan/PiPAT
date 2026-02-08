@@ -4,15 +4,15 @@ After=network.target
 
 [Service]
 Type=simple
-# Easiest/safest for SocketCAN bring-up since main.py calls sudo ip link set ...
+# Running as root is the simplest approach for CAN bring-up (SocketCAN).
 User=root
 WorkingDirectory=/opt/roi
 EnvironmentFile=-/etc/roi/roi.env
 Environment=PYTHONUNBUFFERED=1
-# Avoid Rich trying to do fancy terminal control in journald
+# Avoid Rich trying to do terminal control in journald
 Environment=TERM=dumb
 Environment=ROI_HEADLESS=1
-ExecStart=/opt/roi/.venv/bin/python /opt/roi/main.py
+ExecStart=/opt/roi/.venv/bin/roi
 Restart=on-failure
 RestartSec=2
 

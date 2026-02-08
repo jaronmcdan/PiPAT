@@ -1,19 +1,22 @@
-"""Runtime configuration for ROI Instrument Bridge.
+"""Runtime configuration for ROI (Remote Operational Equipment).
 
 All values in this file can be overridden via environment variables.
-This is useful when running as a systemd service, where /etc/roi/roi.env
-can hold per-Pi settings.
+This is useful when running as a systemd service, where `/etc/roi/roi.env`
+can hold per-host overrides.
 
-Parsing rules:
+Parsing rules
 - booleans: 1/0, true/false, yes/no, on/off
-- integers: decimal by default; "0x" prefix is allowed for hex
+- integers: decimal by default; `0x` prefix is allowed for hex
 - floats: standard Python float format
+
+Design note
+This module is intentionally *side-effect free* (no I/O). Importing `roi.config`
+must be safe in CI, unit tests, and on machines with no hardware attached.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 
 def _env_str(name: str, default: str) -> str:
@@ -55,12 +58,19 @@ def _env_bool(name: str, default: bool) -> bool:
     return default
 
 
-# Build / version tag to make it obvious which zip is running.
-# You can override via env var PIPAT_BUILD_TAG.
-BUILD_TAG = _env_str("PIPAT_BUILD_TAG", "2026-02-05-perf-ctrl-ui-v1-can-auto")
+# -----------------------------------------------------------------------------
+# Build / version tag
+# -----------------------------------------------------------------------------
+
+# A free-form tag to make it obvious which build is running (showed in logs).
+# Override via env var ROI_BUILD_TAG.
+BUILD_TAG = _env_str("ROI_BUILD_TAG", "dev")
 
 
-# --- Hardware Identifiers ---
+# -----------------------------------------------------------------------------
+# Multimeter (B&K Precision 2831E / 5491B) over USB-serial
+# -----------------------------------------------------------------------------
+
 MULTI_METER_PATH = _env_str("MULTI_METER_PATH", "/dev/ttyUSB0")
 MULTI_METER_BAUD = _env_int("MULTI_METER_BAUD", 38400)
 MULTI_METER_TIMEOUT = _env_float("MULTI_METER_TIMEOUT", 1.0)
@@ -90,49 +100,38 @@ MULTI_METER_FETCH_CMDS = _env_str(
 
 # SCPI dialect for the 2831E/5491B bench multimeters.
 #
-# The official 2831E/5491B user manual documents a classic SCPI tree rooted at
-# :FUNCtion and the per-subsystem configuration commands (:VOLTage, :CURRent,
-# :RESistance, :FREQuency, :PERiod, etc.).
-#
-# There is also an "added commands" document (for firmware after Sep 2010)
-# that adds secondary display control via :FUNCtion2 and :FUNCtion2:STATe.
-#
-# PiPAT primarily uses this "func" dialect.
-#
 # Values:
 #   - "auto" (default): choose a working dialect (tries "conf" then "func")
 #   - "func": force :FUNCtion / :VOLTage/:CURRent... dialect
 #   - "conf": force CONF:... / CONFigure:... dialect
 MMETER_SCPI_STYLE = _env_str("MMETER_SCPI_STYLE", "auto").strip().lower()
 
-# After any control command that changes measurement mode/range/etc, PiPAT
-# pauses background meter polling briefly so the instrument can settle.
+# After any control command that changes measurement mode/range/etc, ROI pauses
+# background meter polling briefly so the instrument can settle.
 MMETER_CONTROL_SETTLE_SEC = _env_float("MMETER_CONTROL_SETTLE_SEC", 0.30)
 
 # Enable extra multimeter SCPI logging (useful for diagnosing "BUS" errors).
 MMETER_DEBUG = _env_bool("MMETER_DEBUG", False)
 
 # Legacy CAN frame compatibility: the original MMETER_CTRL_ID frame includes a
-# 2nd byte often called "range". Historically PiPAT did **not** apply it to the
+# 2nd byte often called "range". Historically ROI did **not** apply it to the
 # instrument (it only stored it).
-#
-# Some 5491B firmware variants will throw a front-panel "BUS: BAD COMMAND" if we
-# try to drive autorange with an unsupported SCPI command. To preserve legacy
-# behavior (and avoid surprises), this defaults to False.
 MMETER_LEGACY_RANGE_ENABLE = _env_bool("MMETER_LEGACY_RANGE_ENABLE", False)
 
 # If True, query and drain the multimeter error queue on startup.
-# Useful if you've been experimenting with SCPI and the front panel is showing
-# a persistent "BUS" error message.
 MMETER_CLEAR_ERRORS_ON_STARTUP = _env_bool("MMETER_CLEAR_ERRORS_ON_STARTUP", True)
 
 # If we don't yet know the correct fetch command, we will probe at this
 # interval (seconds) to avoid spamming the meter with unknown commands.
 MULTI_METER_PROBE_BACKOFF_SEC = _env_float("MULTI_METER_PROBE_BACKOFF_SEC", 2.0)
 
-# --- Optional USB auto-detection (Raspberry Pi) ---
-# When enabled, main.py will scan /dev/serial/by-id + PyVISA resources at startup
-# and patch these config values at runtime:
+
+# -----------------------------------------------------------------------------
+# Optional USB / VISA auto-detection (Raspberry Pi)
+# -----------------------------------------------------------------------------
+
+# When enabled, `roi.app` will scan /dev/serial/by-id + PyVISA resources at
+# startup and patch these config values at runtime:
 #   - MULTI_METER_PATH
 #   - MRSIGNAL_PORT
 #   - K1_SERIAL_PORT
@@ -143,116 +142,66 @@ AUTO_DETECT_ENABLE = _env_bool("AUTO_DETECT_ENABLE", True)
 AUTO_DETECT_VERBOSE = _env_bool("AUTO_DETECT_VERBOSE", True)
 
 # If True, prefer mapping by /dev/serial/by-id (name matching) and avoid probing
-# *unknown* serial ports. This is ideal for closed systems where the USB devices
-# are known and rarely change.
+# *unknown* serial ports.
 AUTO_DETECT_BYID_ONLY = _env_bool("AUTO_DETECT_BYID_ONLY", False)
 
 # Sub-features
 AUTO_DETECT_MMETER = _env_bool("AUTO_DETECT_MMETER", True)
 AUTO_DETECT_MRSIGNAL = _env_bool("AUTO_DETECT_MRSIGNAL", True)
+AUTO_DETECT_K1_SERIAL = _env_bool("AUTO_DETECT_K1_SERIAL", True)
+AUTO_DETECT_CANVIEW = _env_bool("AUTO_DETECT_CANVIEW", True)
+
 AUTO_DETECT_VISA = _env_bool("AUTO_DETECT_VISA", True)
 AUTO_DETECT_AFG = _env_bool("AUTO_DETECT_AFG", True)
 AUTO_DETECT_ELOAD = _env_bool("AUTO_DETECT_ELOAD", True)
 
-# Serial device selection hints (comma-separated, case-insensitive)
-# These are matched against the /dev/serial/by-id symlink names.
-AUTO_DETECT_MMETER_BYID_HINTS = _env_str(
-    "AUTO_DETECT_MMETER_BYID_HINTS",
-    _env_str("AUTO_DETECT_MMETER_IDN_HINTS", "multimeter,5491b"),
-)
-AUTO_DETECT_MRSIGNAL_BYID_HINTS = _env_str(
-    "AUTO_DETECT_MRSIGNAL_BYID_HINTS",
-    "mr.signal,lanyi,mr2",
-)
-AUTO_DETECT_K1_BYID_HINTS = _env_str(
-    "AUTO_DETECT_K1_BYID_HINTS",
-    "arduino,micro,relay",
-)
-AUTO_DETECT_CANVIEW_BYID_HINTS = _env_str(
-    "AUTO_DETECT_CANVIEW_BYID_HINTS",
-    "canview,rm_canview,proemion",
-)
-# AFG USB-serial adapters typically include "AFG" and/or a model number.
-AUTO_DETECT_AFG_BYID_HINTS = _env_str(
-    "AUTO_DETECT_AFG_BYID_HINTS",
-    "afg",
+# IDN matching hints (comma-separated, case-insensitive)
+AUTO_DETECT_MMETER_IDN_HINTS = _env_str("AUTO_DETECT_MMETER_IDN_HINTS", "multimeter,5491b")
+AUTO_DETECT_AFG_IDN_HINTS = _env_str("AUTO_DETECT_AFG_IDN_HINTS", "afg,function,generator,arb")
+AUTO_DETECT_ELOAD_IDN_HINTS = _env_str(
+    "AUTO_DETECT_ELOAD_IDN_HINTS",
+    "load,eload,electronic load,dl,it,bk,b&k,b&k precision,bk precision,8600",
 )
 
-# Optional extra device detection targets
-AUTO_DETECT_K1_SERIAL = _env_bool("AUTO_DETECT_K1_SERIAL", True)
-AUTO_DETECT_CANVIEW = _env_bool("AUTO_DETECT_CANVIEW", True)
+# By-id name matching hints (comma-separated, case-insensitive).
+# These are matched against the /dev/serial/by-id symlink names.
+AUTO_DETECT_MMETER_BYID_HINTS = _env_str("AUTO_DETECT_MMETER_BYID_HINTS", AUTO_DETECT_MMETER_IDN_HINTS)
+AUTO_DETECT_MRSIGNAL_BYID_HINTS = _env_str("AUTO_DETECT_MRSIGNAL_BYID_HINTS", "mr.signal,lanyi,mr2,mrsignal")
+AUTO_DETECT_K1_BYID_HINTS = _env_str("AUTO_DETECT_K1_BYID_HINTS", "arduino,micro,relay")
+AUTO_DETECT_CANVIEW_BYID_HINTS = _env_str("AUTO_DETECT_CANVIEW_BYID_HINTS", "canview,rm_canview,proemion")
+AUTO_DETECT_AFG_BYID_HINTS = _env_str("AUTO_DETECT_AFG_BYID_HINTS", "afg")
 
 # VISA/serial probing safety:
 # - Probing ASRL resources sends *IDN? over a serial port. If the baud is wrong
-#   for some attached device, that device may show an error. We therefore:
-#     - allow ASRL probing to be disabled
-#     - use a configurable baud
-#     - skip known serial ports already claimed by other devices
+#   for some attached device, that device may show an error.
 AUTO_DETECT_VISA_PROBE_ASRL = _env_bool("AUTO_DETECT_VISA_PROBE_ASRL", True)
 AUTO_DETECT_ASRL_BAUD = _env_int("AUTO_DETECT_ASRL_BAUD", 115200)
 
 # Comma-separated device-node prefixes to exclude from ASRL probing.
-# (e.g. the Pi's onboard UARTs or console serial ports)
 AUTO_DETECT_VISA_ASRL_EXCLUDE_PREFIXES = _env_str(
     "AUTO_DETECT_VISA_ASRL_EXCLUDE_PREFIXES",
-    # NOTE: many USB-serial instruments (like the 5491B DMM) are /dev/ttyUSB*.
-    # Probing those as VISA ASRL at the wrong baud can make them beep and/or
-    # enter an error state. Default: exclude USB-serial ports.
     "/dev/ttyAMA,/dev/ttyS,/dev/ttyUSB",
 )
 
 # Comma-separated device-node prefixes to *allow* for ASRL probing.
-# If set, only these serial devices will be probed via VISA. This is the
-# safest way to avoid poking non-SCPI USB-serial devices.
-# Default: only probe CDC-ACM devices (many bench instruments show up as ttyACM*).
+# If set, only these serial devices will be probed via VISA.
 AUTO_DETECT_VISA_ASRL_ALLOW_PREFIXES = _env_str(
     "AUTO_DETECT_VISA_ASRL_ALLOW_PREFIXES",
     "/dev/ttyACM",
 )
 
-# Prefer stable symlinks (when present)
+# Prefer stable by-id symlinks when present.
 AUTO_DETECT_PREFER_BY_ID = _env_bool("AUTO_DETECT_PREFER_BY_ID", True)
 
 # Optional: force a PyVISA backend ("@py" for pyvisa-py).
-#
-# We default to pyvisa-py because it works out-of-the-box on Raspberry Pi / Debian
-# without NI-VISA. If you have NI-VISA installed and want to use it, set this (and
-# VISA_BACKEND below) to an empty string or an NI-VISA library path.
 AUTO_DETECT_VISA_BACKEND = _env_str("AUTO_DETECT_VISA_BACKEND", "@py")
 
 # Runtime VISA backend for instrument I/O.
-#
-# HardwareManager uses this when opening VISA instruments (AFG + E-load). Keeping
-# this aligned with AUTO_DETECT_VISA_BACKEND avoids cases where discovery uses one
-# backend and runtime uses another.
 VISA_BACKEND = _env_str("VISA_BACKEND", AUTO_DETECT_VISA_BACKEND)
-
-# IDN matching hints (comma-separated, case-insensitive)
-AUTO_DETECT_MMETER_IDN_HINTS = _env_str("AUTO_DETECT_MMETER_IDN_HINTS", "multimeter,5491b")
-AUTO_DETECT_AFG_IDN_HINTS = _env_str("AUTO_DETECT_AFG_IDN_HINTS", "afg,function,generator,arb")
-AUTO_DETECT_ELOAD_IDN_HINTS = _env_str("AUTO_DETECT_ELOAD_IDN_HINTS", "load,eload,electronic load,dl,it,bk,b&k,b&k precision,bk precision,8600")
-
-# By-id name matching hints (comma-separated, case-insensitive)
-#
-# These are used to map /dev/serial/by-id entries to device roles *without*
-# touching the port. This is the safest method for a closed system.
-#
-# Defaults are intentionally conservative. Adjust to match your actual
-# /dev/serial/by-id names.
-AUTO_DETECT_MMETER_BYID_HINTS = _env_str("AUTO_DETECT_MMETER_BYID_HINTS", AUTO_DETECT_MMETER_IDN_HINTS)
-AUTO_DETECT_MRSIGNAL_BYID_HINTS = _env_str("AUTO_DETECT_MRSIGNAL_BYID_HINTS", "mr.signal,lanyi,mrsignal")
-AUTO_DETECT_K1_BYID_HINTS = _env_str("AUTO_DETECT_K1_BYID_HINTS", "arduino,arduino_micro,relay")
-AUTO_DETECT_CANVIEW_BYID_HINTS = _env_str("AUTO_DETECT_CANVIEW_BYID_HINTS", "canview,rm_canview,proemion")
-# Keep this tight by default; many serial devices will match generic words.
-AUTO_DETECT_AFG_BYID_HINTS = _env_str("AUTO_DETECT_AFG_BYID_HINTS", "afg")
-
-# Additional auto-detect sub-features
-AUTO_DETECT_K1_SERIAL = _env_bool("AUTO_DETECT_K1_SERIAL", True)
-AUTO_DETECT_CANVIEW = _env_bool("AUTO_DETECT_CANVIEW", True)
 
 # VISA Resource IDs (PyVISA)
 ELOAD_VISA_ID = _env_str("ELOAD_VISA_ID", "USB0::11975::34816::*::0::INSTR")
-AFG_VISA_ID = _env_str("AFG_VISA_ID", "ASRL/dev/ttyACM1::INSTR")
+AFG_VISA_ID = _env_str("AFG_VISA_ID", "ASRL/dev/ttyACM0::INSTR")
 
 # PyVISA I/O timeout (milliseconds). Lower values reduce "sluggish" feel when a
 # device is disconnected or slow to respond, at the cost of more timeouts.
@@ -264,7 +213,11 @@ VISA_TIMEOUT_MS = _env_int("VISA_TIMEOUT_MS", 500)
 VISA_ENUM_RETRIES = _env_int("VISA_ENUM_RETRIES", 3)
 VISA_ENUM_RETRY_DELAY_SEC = _env_float("VISA_ENUM_RETRY_DELAY_SEC", 0.5)
 
-# --- K1 relay drive ---
+
+# -----------------------------------------------------------------------------
+# K1 relay drive
+# -----------------------------------------------------------------------------
+
 K1_ENABLE = _env_bool("K1_ENABLE", True)
 
 # K1 backend selection.
@@ -285,8 +238,8 @@ K1_SERIAL_RELAY_INDEX = _env_int("K1_SERIAL_RELAY_INDEX", 1)
 K1_SERIAL_BOOT_DELAY_SEC = _env_float("K1_SERIAL_BOOT_DELAY_SEC", 2.0)
 
 # Optional explicit command bytes for the serial backend.
-# If left empty, PiPAT will generate them from K1_SERIAL_RELAY_INDEX using
-# the default protocol: ON = '1'..'4', OFF = 'a'..'d'.
+# If left empty, ROI will generate them from K1_SERIAL_RELAY_INDEX using the
+# default protocol: ON = '1'..'4', OFF = 'a'..'d'.
 K1_SERIAL_ON_CHAR = _env_str("K1_SERIAL_ON_CHAR", "")
 K1_SERIAL_OFF_CHAR = _env_str("K1_SERIAL_OFF_CHAR", "")
 
@@ -297,7 +250,11 @@ K1_CAN_INVERT = _env_bool("K1_CAN_INVERT", False)
 # and (optionally) on program startup.
 K1_IDLE_DRIVE = _env_bool("K1_IDLE_DRIVE", False)
 
-# --- CAN Bus ---
+
+# -----------------------------------------------------------------------------
+# CAN bus
+# -----------------------------------------------------------------------------
+
 # CAN backend:
 #   socketcan = Linux SocketCAN netdev (e.g. can0/can1)
 #   rmcanview  = RM/Proemion CANview USB/RS232 gateways via serial (Byte Command Protocol)
@@ -313,33 +270,30 @@ CAN_CHANNEL = _env_str("CAN_CHANNEL", "can0")
 CAN_SERIAL_BAUD = _env_int("CAN_SERIAL_BAUD", 115200)
 CAN_BITRATE = _env_int("CAN_BITRATE", 250000)
 
-# If True, main.py will try to bring the CAN interface up.
+# If True, ROI will try to bring the CAN interface up.
 #   - socketcan: runs `ip link set <CAN_CHANNEL> up type can bitrate <CAN_BITRATE>`
 #   - rmcanview: configures adapter CAN bitrate + forces active mode
 CAN_SETUP = _env_bool("CAN_SETUP", True)
 
-# If True and CAN_INTERFACE="rmcanview", PiPAT will issue a CAN controller reset
+# If True and CAN_INTERFACE="rmcanview", ROI will issue a CAN controller reset
 # on startup to clear any latched error status in the gateway.
 CAN_CLEAR_ERRORS_ON_INIT = _env_bool("CAN_CLEAR_ERRORS_ON_INIT", CAN_SETUP)
 
 # Max number of incoming CAN control frames buffered between the CAN RX thread
-# and the device command worker. Keeping this bounded ensures the CAN RX loop
-# never blocks on slow instrument I/O.
+# and the device command worker.
 CAN_CMD_QUEUE_MAX = _env_int("CAN_CMD_QUEUE_MAX", 256)
 
 # For CAN_INTERFACE="rmcanview": max number of received frames buffered inside
 # the adapter driver (between the serial reader thread and python-can recv()).
-#
-# When the host cannot keep up with incoming traffic (busy bus + slow consumer),
-# the buffer would otherwise grow without bound and add seconds of latency.
-# Keeping this bounded makes the system "fail fast" by dropping the oldest
-# frames under extreme backpressure (newest traffic is generally more useful
-# for control responsiveness).
 CAN_RMCANVIEW_RX_MAX = _env_int("CAN_RMCANVIEW_RX_MAX", 2048)
 
-# --- Control watchdog ---
+
+# -----------------------------------------------------------------------------
+# Control watchdog / timeouts
+# -----------------------------------------------------------------------------
+
 # If a given device doesn't receive its control message within the timeout,
-# we drive that device back to its configured idle state.
+# ROI drives that device back to its configured idle state.
 CONTROL_TIMEOUT_SEC = _env_float("CONTROL_TIMEOUT_SEC", 2.0)
 
 # Extra grace before declaring a *hard* timeout (beyond CONTROL_TIMEOUT_SEC).
@@ -349,18 +303,13 @@ WATCHDOG_GRACE_SEC = _env_float("WATCHDOG_GRACE_SEC", 0.25)
 
 # Timeout used for the "CAN" freshness indicator (any CAN message received).
 CAN_TIMEOUT_SEC = _env_float("CAN_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
+
 K1_TIMEOUT_SEC = _env_float("K1_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
 ELOAD_TIMEOUT_SEC = _env_float("ELOAD_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
 AFG_TIMEOUT_SEC = _env_float("AFG_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
 MMETER_TIMEOUT_SEC = _env_float("MMETER_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
 
-# Timeout for the *dashboard-only* PAT switching matrix footer (PAT_J0..PAT_J5).
-#
-# The PAT matrix view is driven by passively snooping PAT_Jx frames on the CAN
-# bus. If those frames stop arriving (PAT offline, bus disconnected, etc.), the
-# dashboard would otherwise keep showing the last captured (stale) matrix.
-#
-# Set <= 0 to disable stale blanking and always show the last seen values.
+# Timeout for the dashboard-only PAT switching matrix footer (PAT_J0..PAT_J5).
 PAT_MATRIX_TIMEOUT_SEC = _env_float("PAT_MATRIX_TIMEOUT_SEC", CAN_TIMEOUT_SEC)
 
 # If True, apply idle states immediately on startup before processing controls.
@@ -370,7 +319,10 @@ APPLY_IDLE_ON_STARTUP = _env_bool("APPLY_IDLE_ON_STARTUP", True)
 ROI_HEADLESS = _env_bool("ROI_HEADLESS", False)
 
 
-# --- Dashboard / polling ---
+# -----------------------------------------------------------------------------
+# Dashboard / polling
+# -----------------------------------------------------------------------------
+
 # DASH_FPS controls only the Rich TUI render rate (it does NOT affect CAN).
 DASH_FPS = _env_int("DASH_FPS", 15)
 
@@ -380,7 +332,10 @@ MEAS_POLL_PERIOD = _env_float("MEAS_POLL_PERIOD", 0.2)      # fast measurements 
 STATUS_POLL_PERIOD = _env_float("STATUS_POLL_PERIOD", 1.0)  # slow status (setpoints/mode)
 
 
-# --- Optional idle behavior for instruments ---
+# -----------------------------------------------------------------------------
+# Instrument idle behavior
+# -----------------------------------------------------------------------------
+
 # E-load: idle means input off and short off.
 ELOAD_IDLE_INPUT_ON = _env_bool("ELOAD_IDLE_INPUT_ON", False)
 ELOAD_IDLE_SHORT_ON = _env_bool("ELOAD_IDLE_SHORT_ON", False)
@@ -390,8 +345,9 @@ AFG_IDLE_OUTPUT_ON = _env_bool("AFG_IDLE_OUTPUT_ON", False)
 
 # MrSignal / LANYI MR2.0 (Modbus RTU over USB-serial)
 MRSIGNAL_ENABLE = _env_bool("MRSIGNAL_ENABLE", True)
+
 # Default is /dev/ttyUSB1 to avoid colliding with the multimeter default (/dev/ttyUSB0).
-MRSIGNAL_PORT = _env_str("MRSIGNAL_PORT", "/dev/ttyACM0")
+MRSIGNAL_PORT = _env_str("MRSIGNAL_PORT", "/dev/ttyUSB1")
 MRSIGNAL_BAUD = _env_int("MRSIGNAL_BAUD", 9600)
 MRSIGNAL_SLAVE_ID = _env_int("MRSIGNAL_SLAVE_ID", 1)
 MRSIGNAL_PARITY = _env_str("MRSIGNAL_PARITY", "N")  # N/E/O
@@ -417,6 +373,10 @@ MRSIGNAL_TIMEOUT_SEC = _env_float("MRSIGNAL_TIMEOUT_SEC", CONTROL_TIMEOUT_SEC)
 MRSIGNAL_POLL_PERIOD = _env_float("MRSIGNAL_POLL_PERIOD", STATUS_POLL_PERIOD)
 
 
+# -----------------------------------------------------------------------------
+# CAN IDs
+# -----------------------------------------------------------------------------
+
 # --- CAN IDs (Control) ---
 LOAD_CTRL_ID = 0x0CFF0400
 RLY_CTRL_ID = 0x0CFF0500
@@ -441,7 +401,10 @@ MRSIGNAL_READ_STATUS_ID = 0x0CFF0007
 MRSIGNAL_READ_INPUT_ID = 0x0CFF0008
 
 
-# --- CAN bus load estimator (dashboard) ---
+# -----------------------------------------------------------------------------
+# CAN bus load estimator (dashboard)
+# -----------------------------------------------------------------------------
+
 # Enabled by default; set to 0 to hide/disable bus load calculation.
 CAN_BUS_LOAD_ENABLE = _env_bool("CAN_BUS_LOAD_ENABLE", True)
 
@@ -458,7 +421,10 @@ CAN_BUS_LOAD_SMOOTH_ALPHA = _env_float("CAN_BUS_LOAD_SMOOTH_ALPHA", 0.25)
 CAN_BUS_LOAD_OVERHEAD_BITS = _env_int("CAN_BUS_LOAD_OVERHEAD_BITS", 48)
 
 
-# --- CAN transmit behavior ---
+# -----------------------------------------------------------------------------
+# CAN transmit behavior
+# -----------------------------------------------------------------------------
+
 # Regulate outgoing readback frames (ELOAD/MMETER/AFG status) to a fixed rate.
 CAN_TX_ENABLE = _env_bool("CAN_TX_ENABLE", True)
 CAN_TX_PERIOD_MS = _env_int("CAN_TX_PERIOD_MS", 50)

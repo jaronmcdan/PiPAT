@@ -2,7 +2,7 @@
 """mmeter_diag.py - quick SCPI smoke test for the B&K Precision 2831E/5491B.
 
 This script is intentionally minimal and uses the same BK5491B helper that
-PiPAT uses. It's useful when the meter front panel shows a persistent "BUS"
+ROI uses. It's useful when the meter front panel shows a persistent "BUS"
 error or when you want to confirm which SCPI commands your meter supports.
 
 It will:
@@ -12,7 +12,7 @@ It will:
   4) optionally enable secondary display (FUNC2) when supported
   5) fetch readings (tries MULTI_METER_FETCH_CMDS)
 
-Run it with the same user as PiPAT.
+Run it with the same user as ROI.
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ import argparse
 import serial
 import time
 
-import config
-from bk5491b import BK5491B
+from .. import config
+from ..devices.bk5491b import BK5491B
 
 
 def _looks_conf(resp: str) -> bool:
@@ -107,7 +107,7 @@ def main() -> int:
         else:
             print("Skipping FUNC2 test (conf dialect)")
 
-        # Fetch (try the same list PiPAT uses)
+        # Fetch (try the same list ROI uses)
         cmds = [
             c.strip()
             for c in str(getattr(config, "MULTI_METER_FETCH_CMDS", ":FETC?,READ?")).split(",")

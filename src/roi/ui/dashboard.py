@@ -8,13 +8,13 @@ from rich import box
 import os
 import re
 
-import config
+from .. import config
 
-from bk5491b import func_name
+from ..devices.bk5491b import func_name
 
 # Optional: PAT switch-matrix J0 pin labels (parsed from PAT.dbc if available)
 try:
-    from pat_matrix import j0_pin_names as _pat_j0_pin_names
+    from ..core.pat_matrix import j0_pin_names as _pat_j0_pin_names
 except Exception:
     _pat_j0_pin_names = lambda: {}
 

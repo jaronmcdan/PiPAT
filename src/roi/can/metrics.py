@@ -15,7 +15,7 @@ class BusLoadMeter:
 
     It counts:
       - RX frames observed by this SocketCAN interface
-      - TX frames sent by PiPAT (recorded in software)
+      - TX frames sent by ROI (recorded in software)
     """
 
     def __init__(

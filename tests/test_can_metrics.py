@@ -4,7 +4,7 @@ import time
 
 
 def test_busload_disabled():
-    from can_metrics import BusLoadMeter
+    from roi.can.metrics import BusLoadMeter
 
     m = BusLoadMeter(bitrate=250_000, enabled=False)
     m.record_rx(8)
@@ -13,7 +13,7 @@ def test_busload_disabled():
 
 
 def test_busload_basic_counts(monkeypatch):
-    from can_metrics import BusLoadMeter
+    from roi.can.metrics import BusLoadMeter
 
     t = 1000.0
 
@@ -52,7 +52,7 @@ def test_busload_basic_counts(monkeypatch):
 
 
 def test_busload_smoothing_converges(monkeypatch):
-    from can_metrics import BusLoadMeter
+    from roi.can.metrics import BusLoadMeter
 
     # Use a very small bitrate so values are obvious.
     t = 0.0

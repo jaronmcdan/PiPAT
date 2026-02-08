@@ -28,7 +28,7 @@ class FakeSerial:
 
 
 def test_extract_floats_filters_bad():
-    from bk5491b import _extract_floats
+    from roi.devices.bk5491b import _extract_floats
 
     assert _extract_floats("abc") == []
     assert _extract_floats("1,2") == [1.0, 2.0]
@@ -36,7 +36,7 @@ def test_extract_floats_filters_bad():
 
 
 def test_query_line_skips_echo_and_empty():
-    from bk5491b import BK5491B
+    from roi.devices.bk5491b import BK5491B
 
     # Instrument echoes command, then returns a response.
     ser = FakeSerial(
@@ -52,7 +52,7 @@ def test_query_line_skips_echo_and_empty():
 
 
 def test_fetch_values_overload_to_nan():
-    from bk5491b import BK5491B
+    from roi.devices.bk5491b import BK5491B
 
     ser = FakeSerial([b"9.9E37, 1.0\n"])
     dmm = BK5491B(ser)
@@ -62,7 +62,7 @@ def test_fetch_values_overload_to_nan():
 
 
 def test_query_values_tuple_shape():
-    from bk5491b import BK5491B
+    from roi.devices.bk5491b import BK5491B
 
     ser = FakeSerial([b"1.0,2.0\n"])
     dmm = BK5491B(ser)
@@ -73,7 +73,7 @@ def test_query_values_tuple_shape():
 
 
 def test_system_error_uses_correct_scpi():
-    from bk5491b import BK5491B
+    from roi.devices.bk5491b import BK5491B
 
     ser = FakeSerial([b"0,No error\n"])
     dmm = BK5491B(ser)
@@ -82,7 +82,7 @@ def test_system_error_uses_correct_scpi():
 
 
 def test_drain_errors_preview(monkeypatch):
-    from bk5491b import BK5491B
+    from roi.devices.bk5491b import BK5491B
 
     logs: list[str] = []
     ser = FakeSerial(
@@ -102,7 +102,7 @@ def test_drain_errors_preview(monkeypatch):
 
 
 def test_write_respects_clear_input_and_delay(monkeypatch):
-    from bk5491b import BK5491B
+    from roi.devices.bk5491b import BK5491B
 
     slept: list[float] = []
 
@@ -119,7 +119,7 @@ def test_write_respects_clear_input_and_delay(monkeypatch):
 
 
 def test_func_helpers():
-    from bk5491b import MmeterFunc, func_name, func_unit
+    from roi.devices.bk5491b import MmeterFunc, func_name, func_unit
 
     assert func_name(MmeterFunc.VDC) == "VDC"
     assert func_unit(MmeterFunc.VDC) == "V"
@@ -127,7 +127,7 @@ def test_func_helpers():
 
 
 def test_func_unit_covers_more_branches():
-    from bk5491b import MmeterFunc, func_unit
+    from roi.devices.bk5491b import MmeterFunc, func_unit
 
     assert func_unit(MmeterFunc.IDC) == "A"
     assert func_unit(MmeterFunc.IAC) == "A"
@@ -139,7 +139,7 @@ def test_func_unit_covers_more_branches():
 
 
 def test_extract_floats_exception_path(monkeypatch):
-    import bk5491b
+    import roi.devices.bk5491b as bk5491b
 
     # Force float(...) to raise for a specific token to exercise the exception path.
     import builtins
@@ -164,7 +164,7 @@ class RaisingSerial(FakeSerial):
 
 
 def test_write_swallow_serial_exceptions_and_delay(monkeypatch):
-    from bk5491b import BK5491B
+    from roi.devices.bk5491b import BK5491B
 
     slept: list[float] = []
 
@@ -181,7 +181,7 @@ def test_write_swallow_serial_exceptions_and_delay(monkeypatch):
 
 
 def test_query_line_can_return_empty(monkeypatch):
-    from bk5491b import BK5491B
+    from roi.devices.bk5491b import BK5491B
 
     # No non-empty line is returned.
     ser = RaisingSerial([b"", b"", b""])
@@ -190,7 +190,7 @@ def test_query_line_can_return_empty(monkeypatch):
 
 
 def test_drain_errors_breaks_on_empty_line():
-    from bk5491b import BK5491B
+    from roi.devices.bk5491b import BK5491B
 
     # system_error() will see no response and return ""; drain should stop.
     ser = FakeSerial([b"", b""])
@@ -199,7 +199,7 @@ def test_drain_errors_breaks_on_empty_line():
 
 
 def test_fetch_values_empty_and_non_numeric_and_secondary_overload():
-    from bk5491b import BK5491B
+    from roi.devices.bk5491b import BK5491B
 
     # Empty response
     ser1 = FakeSerial([b"", b""])
@@ -229,7 +229,7 @@ def test_fetch_values_empty_and_non_numeric_and_secondary_overload():
 
 def test_query_line_respects_delay(monkeypatch):
     """Cover the query_line() delay_s > 0 branch."""
-    from bk5491b import BK5491B
+    from roi.devices.bk5491b import BK5491B
 
     slept: list[float] = []
 

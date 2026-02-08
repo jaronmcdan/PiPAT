@@ -6,7 +6,7 @@ import os
 
 def test_env_helpers(monkeypatch):
     # Import fresh so helpers are defined.
-    import config
+    import roi.config as config
 
     # _env_str
     monkeypatch.delenv("X_STR", raising=False)
@@ -56,6 +56,6 @@ def test_env_helpers(monkeypatch):
 def test_config_import_is_stable(monkeypatch):
     # Ensure that importing config with different env values works and doesn't crash.
     monkeypatch.setenv("CAN_INTERFACE", "socketcan")
-    import config
+    import roi.config as config
     importlib.reload(config)
     assert isinstance(config.CAN_INTERFACE, str)

@@ -12,12 +12,12 @@ from typing import Optional
 
 import can
 
-import config
-from can_metrics import BusLoadMeter
+from .. import config
+from .metrics import BusLoadMeter
 
 # Optional dashboard-only state (PAT switching matrix)
 try:
-    from pat_matrix import PatSwitchMatrixState
+    from ..core.pat_matrix import PatSwitchMatrixState
 except Exception:  # pragma: no cover
     PatSwitchMatrixState = None  # type: ignore
 
@@ -60,7 +60,7 @@ def setup_can_interface(channel: str, bitrate: int, *, do_setup: bool = True, lo
     # --- RM/Proemion CANview (Byte Command Protocol over serial) ---
     if iface in ("rmcanview", "rm-canview", "proemion"):
         try:
-            from rmcanview import RmCanViewBus
+            from .rmcanview import RmCanViewBus
 
             serial_baud = int(getattr(config, "CAN_SERIAL_BAUD", 115200))
             clear_err = bool(getattr(config, "CAN_CLEAR_ERRORS_ON_INIT", True))

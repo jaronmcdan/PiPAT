@@ -12,11 +12,14 @@ frames so the Rich dashboard can display a compact "matrix" bar.
 
 from __future__ import annotations
 
+import builtins
+import re
 import threading
 import time
+from importlib.resources import files as resource_files
 from pathlib import Path
-import re
 from typing import Dict, List, Optional
+
 
 # NOTE on IDs:
 #
@@ -38,8 +41,8 @@ PAT_J_STRIDE = 0x100
 PAT_J_COUNT = 6
 
 
-def _parse_j0_pin_names_from_dbc(dbc_path: Path) -> Dict[int, str]:
-    """Best-effort parse of J0 pin labels from a DBC file.
+def _parse_j0_pin_names_from_dbc_text(txt: str) -> Dict[int, str]:
+    """Best-effort parse of J0 pin labels from a DBC file (text).
 
     We look for a `BO_ ... PAT_J0:` section and then extract signals of the form:
 
@@ -48,15 +51,10 @@ def _parse_j0_pin_names_from_dbc(dbc_path: Path) -> Dict[int, str]:
     returning a mapping of {1: "3A_LOAD", 2: "5A_LOAD", ...}.
     """
 
-    try:
-        txt = dbc_path.read_text(errors="ignore")
-    except Exception:
-        return {}
-
     in_j0 = False
     out: Dict[int, str] = {}
     sig_re = re.compile(r"\bSG_\s+J0_(\d{2})_([A-Za-z0-9_]+)\s*:")
-    for raw in txt.splitlines():
+    for raw in (txt or "").splitlines():
         line = raw.strip()
         if not line:
             continue
@@ -84,30 +82,53 @@ def _parse_j0_pin_names_from_dbc(dbc_path: Path) -> Dict[int, str]:
     return out
 
 
+
+
+def _parse_j0_pin_names_from_dbc(path: Path) -> Dict[int, str]:
+    """Best-effort parse of J0 pin labels from a DBC file on disk.
+
+    This helper exists mainly for local development and unit tests.
+    Production code prefers the packaged resource lookup.
+    """
+    try:
+        txt = Path(path).read_text(errors="ignore")
+    except Exception:
+        return {}
+    try:
+        return _parse_j0_pin_names_from_dbc_text(txt)
+    except Exception:
+        return {}
+def _read_packaged_pat_dbc_text() -> str | None:
+    """Read the packaged PAT.dbc (if included in the installed package)."""
+    try:
+        return resource_files("roi.assets").joinpath("PAT.dbc").read_text(errors="ignore")
+    except Exception:
+        return None
+
+
 def j0_pin_names() -> Dict[int, str]:
     """Return a {pin_index: label} mapping for PAT_J0.
 
-    Prefer parsing the local PAT.dbc shipped with the repo. Falls back to a
-    small hardcoded mapping if the DBC is missing or doesn't match.
+    Prefer parsing the packaged PAT.dbc shipped with ROI. Falls back to a small
+    hardcoded mapping if the DBC is missing or doesn't match.
     """
 
     # Cache on first call.
     global _J0_PIN_NAMES  # type: ignore
     try:
         cached = _J0_PIN_NAMES  # type: ignore
-        if isinstance(cached, dict) and cached:
-            return dict(cached)
+        if isinstance(cached, builtins.dict) and cached:
+            return cached.copy()
     except Exception:
         pass
 
     names: Dict[int, str] = {}
-    try:
-        here = Path(__file__).resolve().parent
-        dbc = here / "PAT.dbc"
-        if dbc.exists():
-            names = _parse_j0_pin_names_from_dbc(dbc)
-    except Exception:
-        names = {}
+    txt = _read_packaged_pat_dbc_text()
+    if txt:
+        try:
+            names = _parse_j0_pin_names_from_dbc_text(txt)
+        except Exception:
+            names = {}
 
     if not names:
         # Fallback mapping (matches the PAT.dbc in this repo as of Feb 2026).
@@ -127,10 +148,10 @@ def j0_pin_names() -> Dict[int, str]:
         }
 
     try:
-        _J0_PIN_NAMES = dict(names)  # type: ignore
+        _J0_PIN_NAMES = names.copy()  # type: ignore
     except Exception:
         pass
-    return dict(names)
+    return names.copy()
 
 
 def pat_j_ids() -> set[int]:
