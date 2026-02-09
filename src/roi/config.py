@@ -326,6 +326,9 @@ ROI_HEADLESS = _env_bool("ROI_HEADLESS", False)
 # DASH_FPS controls only the Rich TUI render rate (it does NOT affect CAN).
 DASH_FPS = _env_int("DASH_FPS", 15)
 
+# Headless main-loop cadence (seconds). This does NOT affect instrument polling or CAN.
+HEADLESS_LOOP_PERIOD_S = _env_float("HEADLESS_LOOP_PERIOD_S", 0.1)
+
 # Instrument polling cadence (seconds). These govern how often values update on the dashboard
 # and how frequently outgoing readback frames can change.
 MEAS_POLL_PERIOD = _env_float("MEAS_POLL_PERIOD", 0.2)      # fast measurements (V/I, meter)
