@@ -319,6 +319,27 @@ APPLY_IDLE_ON_STARTUP = _env_bool("APPLY_IDLE_ON_STARTUP", True)
 ROI_HEADLESS = _env_bool("ROI_HEADLESS", False)
 
 
+# ----------------------------------------------------------------------------
+# Web dashboard (read-only)
+# ----------------------------------------------------------------------------
+
+# A lightweight, dependency-free web UI to view device status + diagnostics.
+# Disabled by default.
+ROI_WEB_ENABLE = _env_bool("ROI_WEB_ENABLE", False)
+ROI_WEB_HOST = _env_str("ROI_WEB_HOST", "0.0.0.0")
+ROI_WEB_PORT = _env_int("ROI_WEB_PORT", 8080)
+
+# Optional bearer token for basic access control.
+# If set, clients must provide either:
+#   - Authorization: Bearer <token>
+#   - ?token=<token>
+ROI_WEB_TOKEN = _env_str("ROI_WEB_TOKEN", "")
+
+# In-memory diagnostics ring buffer settings (used by the web UI).
+ROI_WEB_DIAG_MAX_EVENTS = _env_int("ROI_WEB_DIAG_MAX_EVENTS", 250)
+ROI_WEB_DIAG_DEDUPE_WINDOW_S = _env_float("ROI_WEB_DIAG_DEDUPE_WINDOW_S", 0.75)
+
+
 # -----------------------------------------------------------------------------
 # Dashboard / polling
 # -----------------------------------------------------------------------------

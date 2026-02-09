@@ -207,6 +207,8 @@ class HardwareManager:
         # VISA
         self.resource_manager = None
         self.e_load = None
+        self.e_load_id: Optional[str] = None
+        self.e_load_resource: Optional[str] = None
 
         # Locks (Thread Safety)
         self.eload_lock = threading.Lock()
@@ -590,6 +592,8 @@ class HardwareManager:
                         except Exception:
                             pass
                         self.e_load = dev
+                        self.e_load_id = dev_id or None
+                        self.e_load_resource = str(resource_id)
                         break
                     except Exception as e:
                         print(f"Skip E-LOAD ({resource_id}): {e}")
@@ -628,6 +632,8 @@ class HardwareManager:
                             except Exception:
                                 pass
                             self.e_load = dev2
+                            self.e_load_id = dev_id or None
+                            self.e_load_resource = str(p)
                             break
                         except Exception as e:
                             # Best-effort cleanup
@@ -761,7 +767,10 @@ class HardwareManager:
             return
         try:
             with self.afg_lock:
-                self.afg.write(f"SOUR1:OUTP {'ON' if config.AFG_IDLE_OUTPUT_ON else 'OFF'}")
+                try:
+                    self.afg.write(f"OUTP1 {'ON' if config.AFG_IDLE_OUTPUT_ON else 'OFF'}")
+                except Exception:
+                    self.afg.write(f"SOUR1:OUTP {'ON' if config.AFG_IDLE_OUTPUT_ON else 'OFF'}")
             self.afg_output = bool(config.AFG_IDLE_OUTPUT_ON)
         except Exception:
             pass

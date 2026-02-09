@@ -257,7 +257,12 @@ class DeviceCommandProcessor:
             try:
                 with self.hardware.afg_lock:
                     if self.hardware.afg_output != enable:
-                        self.hardware.afg.write(f"SOUR1:OUTP {'ON' if enable else 'OFF'}")
+                        try:
+                            # GW Instek AFG-2000/2100 uses OUTP1 (not SOUR1:OUTP).
+                            self.hardware.afg.write(f"OUTP1 {'ON' if enable else 'OFF'}")
+                        except Exception:
+                            # Fallback for other SCPI dialects.
+                            self.hardware.afg.write(f"SOUR1:OUTP {'ON' if enable else 'OFF'}")
                         self.hardware.afg_output = enable
                     if self.hardware.afg_shape != shape_idx:
                         shape_str = self.SHAPE_MAP.get(shape_idx, "SIN")
@@ -286,7 +291,12 @@ class DeviceCommandProcessor:
             try:
                 with self.hardware.afg_lock:
                     if self.hardware.afg_offset != offset_mV:
-                        self.hardware.afg.write(f"SOUR1:VOLT:OFFS {offset_V}")
+                        try:
+                            # GW Instek AFG-2000/2100 uses SOUR1:DCO for DC offset.
+                            self.hardware.afg.write(f"SOUR1:DCO {offset_V}")
+                        except Exception:
+                            # Fallback for other SCPI dialects.
+                            self.hardware.afg.write(f"SOUR1:VOLT:OFFS {offset_V}")
                         self.hardware.afg_offset = offset_mV
                     if self.hardware.afg_duty != duty_cycle:
                         self.hardware.afg.write(f"SOUR1:SQU:DCYC {duty_cycle}")

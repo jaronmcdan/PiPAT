@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import argparse
 import re
+import socket
 import sys
 import threading
 import time
 import queue
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from . import config
 from .can.metrics import BusLoadMeter
@@ -41,6 +42,10 @@ from .devices.mrsignal import (
 
 from .core.device_discovery import autodetect_and_patch_config
 
+# Web dashboard + diagnostics
+from .core.diagnostics import Diagnostics
+from .web import WebDashboardServer, WebServerConfig
+
 try:
     from rich.live import Live
 except Exception:
@@ -64,7 +69,40 @@ def _i16_clamp(x: int) -> int:
 
 
 def _log(msg: str) -> None:
+    # Print to the primary console first.
     (console.log if HAVE_RICH else print)(msg)
+
+    # Also mirror into the in-memory diagnostics log if enabled.
+    try:
+        diag: Diagnostics | None = globals().get("_DIAGNOSTICS")  # type: ignore[assignment]
+        if diag is None:
+            return
+
+        s = str(msg or "")
+        low = s.lower()
+        level = "info"
+        if (" error" in low) or low.startswith("error") or ("failed" in low) or ("exception" in low):
+            level = "error"
+        elif (" warn" in low) or ("warning" in low):
+            level = "warn"
+
+        # Best-effort source extraction from bracket prefix: "[mmeter] ..."
+        source = "roi"
+        if s.startswith("["):
+            end = s.find("]")
+            if 1 < end <= 24:
+                cand = s[1:end].strip()
+                if cand and all(ch.isalnum() or ch in "_-" for ch in cand):
+                    source = cand
+
+        diag.log(s, level=level, source=source)
+    except Exception:
+        # Never let diagnostics break the control plane.
+        return
+
+
+# Set by main() when diagnostics are enabled.
+_DIAGNOSTICS: Diagnostics | None = None
 
 
 class ControlWatchdog:
@@ -132,7 +170,19 @@ class ControlWatchdog:
             }
 
     def enforce(self, hardware: HardwareManager) -> None:
+        """Enforce per-key timeouts and apply idle behavior.
+
+        **Important:** hardware idle actions can block (VISA / serial timeouts),
+        so we must *not* hold the watchdog lock while performing them.
+        Otherwise, readers (Rich UI / web dashboard) can hang while waiting for
+        snapshot() to acquire the lock.
+        """
+
         now = time.monotonic()
+
+        # Decide what needs idling while holding the lock, then perform the
+        # potentially-blocking device calls outside the lock.
+        to_idle: list[str] = []
         with self._lock:
             for key, timeout_s in self._timeouts.items():
                 last = self._last_seen.get(key)
@@ -147,23 +197,28 @@ class ControlWatchdog:
                     if not self._timed_out.get(key, False):
                         # Transition into timeout => apply idle once
                         self._timed_out[key] = True
-                        if key == "can":
-                            # Indicator only; we don't apply device idles on generic CAN silence.
-                            pass
-                        elif key == "k1":
-                            hardware.set_k1_idle()
-                        elif key == "eload":
-                            hardware.apply_idle_eload()
-                        elif key == "afg":
-                            hardware.apply_idle_afg()
-                        elif key == "mmeter":
-                            # Nothing safety-critical to command on timeout.
-                            pass
-                        elif key == "mrsignal":
-                            hardware.apply_idle_mrsignal()
-
+                        if key != "can":
+                            to_idle.append(str(key))
                 else:
                     self._timed_out[key] = False
+
+        # Apply idles outside the lock.
+        for key in to_idle:
+            try:
+                if key == "k1":
+                    hardware.set_k1_idle()
+                elif key == "eload":
+                    hardware.apply_idle_eload()
+                elif key == "afg":
+                    hardware.apply_idle_afg()
+                elif key == "mmeter":
+                    # Nothing safety-critical to command on timeout.
+                    pass
+                elif key == "mrsignal":
+                    hardware.apply_idle_mrsignal()
+            except Exception:
+                # Watchdog must never crash the control plane.
+                pass
 
 class TelemetryState:
     """Thread-safe snapshot of instrument telemetry for the dashboard and logs.
@@ -329,6 +384,7 @@ def instrument_poll_loop(
     stop_event: threading.Event,
     status_period_s: float,
     meas_period_s: float,
+    diagnostics: Diagnostics | None = None,
 ) -> None:
     """Poll instruments in the background so the UI render loop stays snappy."""
 
@@ -347,6 +403,20 @@ def instrument_poll_loop(
         meas_period_s = 0.2
 
     _log(f"Instrument poll thread started (meas={meas_period_s:.3f}s, status={status_period_s:.3f}s).")
+
+    def _ok(key: str) -> None:
+        try:
+            if diagnostics is not None:
+                diagnostics.mark_ok(key)
+        except Exception:
+            pass
+
+    def _err(key: str, exc: BaseException, *, where: str = "") -> None:
+        try:
+            if diagnostics is not None:
+                diagnostics.mark_error(key, exc, where=where)
+        except Exception:
+            pass
 
     last_status = 0.0
     last_mrs = 0.0
@@ -467,16 +537,19 @@ def instrument_poll_loop(
                                 s_func = int(getattr(hardware, "mmeter_func2", func_i)) & 0xFF
                                 s_unit = func_unit(s_func)
                                 mmeter_secondary_str = f"{mm_secondary:g} {s_unit}".strip()
+
+                            # We successfully talked to the multimeter.
+                            _ok("mmeter")
                         else:
                             # If we were probing (unknown cmd) and didn't get a value,
                             # back off before trying the next candidate.
                             if not known_cmd:
                                 mmeter_next_probe = now_m + mmeter_backoff_s
 
-                except Exception:
+                except Exception as e:
                     if not str(getattr(hardware, "mmeter_fetch_cmd", "") or "").strip():
                         mmeter_next_probe = now_m + mmeter_backoff_s
-                    pass
+                    _err("mmeter", e, where="meas")
 
             # E-Load measurement
             if hardware.e_load:
@@ -500,8 +573,9 @@ def instrument_poll_loop(
                         load_volts_mV = int(float(v_str) * 1000)
                         load_current_mA = int(float(i_str) * 1000)
                         tx_state.update_eload(load_volts_mV, load_current_mA)
-                except Exception:
-                    pass
+                        _ok("eload")
+                except Exception as e:
+                    _err("eload", e, where="meas")
 
             if (
                 (meter_current_mA is not None)
@@ -590,8 +664,9 @@ def instrument_poll_loop(
                                 load_stat_res = hardware.e_load.query("RES?").strip()
                             finally:
                                 hardware.eload_lock.release()
-                except Exception:
-                    pass
+                    _ok("eload")
+                except Exception as e:
+                    _err("eload", e, where="status")
 
             if hardware.afg:
                 try:
@@ -599,7 +674,12 @@ def instrument_poll_loop(
                     # control writes are only blocked for a single VISA transaction.
                     if hardware.afg_lock.acquire(timeout=0.0):
                         try:
-                            afg_out_str = hardware.afg.query("SOUR1:OUTP?").strip()
+                            try:
+                                # GW Instek AFG-2000/2100 series uses OUTP1? (not SOUR1:OUTP?).
+                                afg_out_str = hardware.afg.query("OUTP1?").strip()
+                            except Exception:
+                                # Fallback for other SCPI dialects.
+                                afg_out_str = hardware.afg.query("SOUR1:OUTP?").strip()
                         finally:
                             hardware.afg_lock.release()
                     if afg_out_str is not None and str(afg_out_str).strip() != "":
@@ -624,7 +704,12 @@ def instrument_poll_loop(
                             hardware.afg_lock.release()
                     if hardware.afg_lock.acquire(timeout=0.0):
                         try:
-                            afg_offset_str = hardware.afg.query("SOUR1:VOLT:OFFS?").strip()
+                            try:
+                                # GW Instek AFG-2000/2100 series uses SOUR1:DCO? for DC offset.
+                                afg_offset_str = hardware.afg.query("SOUR1:DCO?").strip()
+                            except Exception:
+                                # Fallback for other SCPI dialects.
+                                afg_offset_str = hardware.afg.query("SOUR1:VOLT:OFFS?").strip()
                         finally:
                             hardware.afg_lock.release()
                     if hardware.afg_lock.acquire(timeout=0.0):
@@ -637,8 +722,9 @@ def instrument_poll_loop(
                         off_mv = _i16_clamp(int(float(afg_offset_str) * 1000))
                         duty_pct = max(0, min(100, int(float(afg_duty_str))))
                         tx_state.update_afg_ext(off_mv, duty_pct)
-                except Exception:
-                    pass
+                    _ok("afg")
+                except Exception as e:
+                    _err("afg", e, where="status")
 
             # MrSignal (MR2.0) status/input
             mrs_id_str = None
@@ -762,6 +848,9 @@ def instrument_poll_loop(
                         if st.float_byteorder:
                             mrs_bo_str = str(st.float_byteorder)
 
+                        # We successfully talked to MrSignal.
+                        _ok("mrsignal")
+
                         # CAN readback publisher state
                         try:
                             # Use the last-known value if the float read failed; output_on/off
@@ -777,8 +866,11 @@ def instrument_poll_loop(
                                 tx_state.update_mrsignal_input(float(st.input_value))
                         except Exception:
                             pass
-                except Exception:
-                    pass
+                except Exception as e:
+                    # "mrsignal busy" just means the device thread is actively
+                    # writing (we intentionally skip polling to avoid lock contention).
+                    if "mrsignal busy" not in str(e).lower():
+                        _err("mrsignal", e, where="status")
             telemetry.update_status(
                 load_stat_func=load_stat_func,
                 load_stat_curr=load_stat_curr,
@@ -817,11 +909,29 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--headless", action="store_true", help="Disable Rich TUI (better for systemd)")
     p.add_argument("--no-can-setup", action="store_true", help="Do not run 'ip link set ... up type can ...'")
     p.add_argument("--no-auto-detect", action="store_true", help="Disable USB/VISA auto-detection at startup")
+    p.add_argument("--web", action="store_true", help="Enable the read-only web dashboard")
+    p.add_argument("--web-host", default=None, help="Web dashboard bind host (default: ROI_WEB_HOST)")
+    p.add_argument("--web-port", type=int, default=None, help="Web dashboard port (default: ROI_WEB_PORT)")
+    p.add_argument("--web-token", default=None, help="Optional bearer token for web dashboard (default: ROI_WEB_TOKEN)")
     return p.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+
+    # Process start time (monotonic) for uptime/health calculations.
+    process_start_mono = time.monotonic()
+
+    # Enable in-memory diagnostics (used by the web dashboard). This is cheap
+    # enough to keep on even when the web UI is disabled.
+    global _DIAGNOSTICS
+    try:
+        _DIAGNOSTICS = Diagnostics(
+            max_events=int(getattr(config, "ROI_WEB_DIAG_MAX_EVENTS", 250)),
+            dedupe_window_s=float(getattr(config, "ROI_WEB_DIAG_DEDUPE_WINDOW_S", 0.75)),
+        )
+    except Exception:
+        _DIAGNOSTICS = None
 
     # Print build tag early so we can verify which zip is actually running.
     try:
@@ -868,6 +978,9 @@ def main() -> int:
     afg_offset_str, afg_duty_str = "0", "50"
     # Decide UI mode
     headless = bool(args.headless or config.ROI_HEADLESS or (not sys.stdout.isatty()) or (not HAVE_RICH) or (Live is None))
+
+    # Optional web dashboard (started later, stopped in finally).
+    web_server: WebDashboardServer | None = None
 
     try:
         hardware.initialize_devices()
@@ -950,10 +1063,219 @@ def main() -> int:
         telemetry = TelemetryState()
         poll_thread = threading.Thread(
             target=instrument_poll_loop,
-            args=(hardware, tx_state, telemetry, stop_event, status_period, meas_period),
+            args=(hardware, tx_state, telemetry, stop_event, status_period, meas_period, _DIAGNOSTICS),
             daemon=True,
         )
         poll_thread.start()
+
+        # ------------------------------------------------------------------
+        # Web dashboard (read-only)
+        # ------------------------------------------------------------------
+        web_enable = bool(getattr(args, "web", False)) or bool(getattr(config, "ROI_WEB_ENABLE", False))
+        if web_enable:
+            host = (
+                str(getattr(args, "web_host", "") or "")
+                if getattr(args, "web_host", None) is not None
+                else str(getattr(config, "ROI_WEB_HOST", "0.0.0.0") or "0.0.0.0")
+            )
+            port = (
+                int(getattr(args, "web_port", 0) or 0)
+                if getattr(args, "web_port", None) is not None
+                else int(getattr(config, "ROI_WEB_PORT", 8080) or 8080)
+            )
+            token = (
+                str(getattr(args, "web_token", "") or "")
+                if getattr(args, "web_token", None) is not None
+                else str(getattr(config, "ROI_WEB_TOKEN", "") or "")
+            )
+
+            def _snapshot() -> Dict[str, Any]:
+                # IMPORTANT: Do NOT do instrument I/O here. Only read cached state.
+                try:
+                    host_name = socket.gethostname()
+                except Exception:
+                    host_name = "roi"
+
+                def _short_can_channel(can_channel: str) -> str:
+                    """Shorten long /dev/serial/by-id CAN paths for display.
+
+                    Mirrors the Rich dashboard behaviour (ui/dashboard.py) but
+                    keeps this snapshot dependency-free.
+                    """
+
+                    ch = str(can_channel or "").strip()
+                    if not ch:
+                        return "--"
+
+                    iface = str(getattr(config, "CAN_INTERFACE", "socketcan") or "socketcan").strip().lower()
+                    if iface not in ("rmcanview", "rm-canview", "proemion"):
+                        return ch
+
+                    base = ch.rsplit("/", 1)[-1]
+                    low = base.lower()
+                    if "canview" in low:
+                        idx = low.find("canview")
+                        s = base[idx:]
+                        s = re.sub(r"-if\d+.*$", "", s)
+                        s = re.sub(r"[_-]port\d+$", "", s)
+                        return s
+                    return base
+
+                # PAT display metadata (used by the web dashboard to match the Rich TUI)
+                pat_timeout_s: float | None = None
+                try:
+                    pat_timeout_s = float(getattr(config, "PAT_MATRIX_TIMEOUT_SEC", getattr(config, "CAN_TIMEOUT_SEC", 2.0)))
+                except Exception:
+                    pat_timeout_s = None
+
+                pat_j0_names: Dict[int, str] = {}
+                try:
+                    from .core.pat_matrix import j0_pin_names as _j0_pin_names
+
+                    pat_j0_names = _j0_pin_names() or {}
+                except Exception:
+                    pat_j0_names = {}
+
+                # Bus metrics
+                load_pct, rx_fps, tx_fps = (None, None, None)
+                try:
+                    if busload is not None:
+                        load_pct, rx_fps, tx_fps = busload.snapshot()
+                except Exception:
+                    pass
+
+                # K1 state
+                k1_drive = None
+                k1_level = None
+                try:
+                    k1_drive = bool(hardware.get_k1_drive())
+                except Exception:
+                    try:
+                        k1_drive = bool(getattr(hardware.relay, "is_lit", False))
+                    except Exception:
+                        k1_drive = None
+                try:
+                    k1_level = hardware.get_k1_pin_level()
+                except Exception:
+                    k1_level = None
+
+                # Device summaries
+                devices: Dict[str, Any] = {}
+                devices["can"] = {
+                    "present": True,
+                    "interface": str(getattr(config, "CAN_INTERFACE", "socketcan")),
+                    "channel": str(getattr(config, "CAN_CHANNEL", "can0")),
+                    "channel_short": _short_can_channel(str(getattr(config, "CAN_CHANNEL", "can0"))),
+                    "bitrate": int(getattr(config, "CAN_BITRATE", 500000)),
+                    "bus_load_pct": load_pct,
+                    "rx_fps": rx_fps,
+                    "tx_fps": tx_fps,
+                }
+
+                devices["k1"] = {
+                    "present": True,
+                    "backend": str(getattr(hardware, "relay_backend", "")),
+                    "drive": k1_drive,
+                    "pin_level": k1_level,
+                }
+
+                devices["mmeter"] = {
+                    "present": bool(getattr(hardware, "multi_meter", None)),
+                    "id": str(getattr(hardware, "mmeter_id", "") or ""),
+                    "scpi_style": str(getattr(hardware, "mmeter_scpi_style", "") or ""),
+                    "fetch_cmd": str(getattr(hardware, "mmeter_fetch_cmd", "") or ""),
+                    "func": func_name(int(getattr(hardware, "mmeter_func", int(MmeterFunc.VDC))) & 0xFF),
+                    "autorange": bool(getattr(hardware, "mmeter_autorange", True)),
+                    "range_value": float(getattr(hardware, "mmeter_range_value", 0.0) or 0.0),
+                    "nplc": float(getattr(hardware, "mmeter_nplc", 1.0) or 1.0),
+                    "rel": bool(getattr(hardware, "mmeter_rel_enabled", False)),
+                    "trig": int(getattr(hardware, "mmeter_trig_source", 0) or 0) & 0xFF,
+                    "func2": func_name(int(getattr(hardware, "mmeter_func2", int(MmeterFunc.VDC))) & 0xFF),
+                    "func2_enabled": bool(getattr(hardware, "mmeter_func2_enabled", False)),
+                    "path": str(getattr(config, "MULTI_METER_PATH", "")),
+                }
+
+                devices["eload"] = {
+                    "present": bool(getattr(hardware, "e_load", None)),
+                    "id": str(getattr(hardware, "e_load_id", "") or ""),
+                    "resource": str(getattr(hardware, "e_load_resource", "") or "")
+                    or str(getattr(getattr(hardware, "e_load", None), "resource_name", "") or ""),
+                    # Last commanded state (used as a fallback when status polling is stale)
+                    "cmd_enabled": int(getattr(hardware, "e_load_enabled", 0) or 0),
+                    "cmd_mode": int(getattr(hardware, "e_load_mode", 0) or 0),
+                    "cmd_short": int(getattr(hardware, "e_load_short", 0) or 0),
+                    "cmd_csetting_mA": int(getattr(hardware, "e_load_csetting", 0) or 0),
+                    "cmd_rsetting_mOhm": int(getattr(hardware, "e_load_rsetting", 0) or 0),
+                }
+
+                devices["afg"] = {
+                    "present": bool(getattr(hardware, "afg", None)),
+                    "id": str(getattr(hardware, "afg_id", "") or ""),
+                    "resource": str(getattr(config, "AFG_VISA_ID", "") or ""),
+                    # Last commanded state (used as a fallback when status polling is stale)
+                    "cmd_output": bool(getattr(hardware, "afg_output", False)),
+                    "cmd_shape": int(getattr(hardware, "afg_shape", 0) or 0),
+                    "cmd_freq_hz": int(getattr(hardware, "afg_freq", 0) or 0),
+                    "cmd_ampl_mVpp": int(getattr(hardware, "afg_ampl", 0) or 0),
+                    "cmd_offset_mV": int(getattr(hardware, "afg_offset", 0) or 0),
+                    "cmd_duty": int(getattr(hardware, "afg_duty", 0) or 0),
+                }
+
+                devices["mrsignal"] = {
+                    "present": bool(getattr(hardware, "mrsignal", None)),
+                    "id": getattr(hardware, "mrsignal_id", None),
+                    "port": str(getattr(config, "MRSIGNAL_PORT", "") or ""),
+                    # Last known state (status thread updates these; safe to read)
+                    "cmd_output_on": bool(getattr(hardware, "mrsignal_output_on", False)),
+                    "cmd_output_select": int(getattr(hardware, "mrsignal_output_select", 0) or 0),
+                    "cmd_output_value": float(getattr(hardware, "mrsignal_output_value", 0.0) or 0.0),
+                    "cmd_input_value": float(getattr(hardware, "mrsignal_input_value", 0.0) or 0.0),
+                    "cmd_float_byteorder": str(getattr(hardware, "mrsignal_float_byteorder", "") or ""),
+                }
+
+                devices["pat"] = {"present": True}
+
+                diag_payload: Dict[str, Any] = {"events": [], "health": {}}
+                try:
+                    if _DIAGNOSTICS is not None:
+                        diag_payload = _DIAGNOSTICS.snapshot()
+                except Exception:
+                    pass
+
+                snap: Dict[str, Any] = {
+                    "host": host_name,
+                    "time_unix": time.time(),
+                    "build_tag": str(getattr(config, "BUILD_TAG", "unknown")),
+                    "uptime_s": float(time.monotonic() - process_start_mono),
+                    "config": {
+                        "roi_headless": bool(headless),
+                        "can_interface": str(getattr(config, "CAN_INTERFACE", "socketcan")),
+                        "can_channel": str(getattr(config, "CAN_CHANNEL", "can0")),
+                        "can_bitrate": int(getattr(config, "CAN_BITRATE", 500000)),
+                        "status_poll_period_s": float(status_period),
+                        "meas_poll_period_s": float(meas_period),
+                    },
+                    "devices": devices,
+                    "telemetry": telemetry.snapshot(),
+                    "watchdog": watchdog.snapshot(),
+                    "pat_matrix": pat_matrix.snapshot() if pat_matrix is not None else {},
+                    "pat_meta": {
+                        "timeout_s": pat_timeout_s,
+                        "j0_pin_names": pat_j0_names,
+                    },
+                    "diagnostics": diag_payload,
+                }
+                return snap
+
+            try:
+                web_server = WebDashboardServer(
+                    cfg=WebServerConfig(host=str(host), port=int(port), token=str(token)),
+                    get_snapshot=_snapshot,
+                    log_fn=_log,
+                )
+                web_server.start()
+            except Exception as e:
+                _log(f"[web] error: {e}")
         
         # Headless loop (no rich Live)
         if headless:
@@ -1045,6 +1367,12 @@ def main() -> int:
     except KeyboardInterrupt:
         return 0
     finally:
+        try:
+            if web_server is not None:
+                web_server.stop()
+        except Exception:
+            pass
+
         stop_event.set()
         try:
             if "can_rx_thread" in locals():
