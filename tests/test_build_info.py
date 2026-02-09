@@ -41,8 +41,20 @@ def _clear_build_info_caches(monkeypatch: pytest.MonkeyPatch):
     build_info.get_version.cache_clear()
 
 
-def test_get_revision_unknown_without_sources():
+def test_get_revision_unknown_without_sources(monkeypatch: pytest.MonkeyPatch):
+    """If env + generated module are absent AND we're not in a git checkout, we report unknown.
+
+    This test must be deterministic: it should pass whether the working tree happens to be a
+    real git repo or not. So we explicitly pretend there is no git root for this test.
+    """
+
     from roi import build_info
+
+    # Ensure the git-discovery branch can't find a .git directory/file from either
+    # the module path or the current working directory.
+    monkeypatch.setattr(build_info, "_find_git_root", lambda *_a, **_k: None)
+    build_info.get_revision_full.cache_clear()
+    build_info.get_revision.cache_clear()
 
     assert build_info.get_revision() == "unknown"
 
