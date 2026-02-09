@@ -144,3 +144,76 @@ def test_id_to_index_out_of_range_is_handled():
     s = pat_matrix.PatSwitchMatrixState()
     # One past the last valid PAT_Jx id.
     assert s._id_to_index(pat_matrix.PAT_J_BASE_ID + (pat_matrix.PAT_J_STRIDE * pat_matrix.PAT_J_COUNT)) is None
+
+
+def test_parse_j0_pin_names_from_dbc_text_int_exception_is_swallowed(monkeypatch):
+    """Cover the defensive int() conversion exception path."""
+
+    # A line that *does* match the regex, so we reach the int() conversion.
+    txt = """
+BO_ 123 PAT_J0: 8 Vector__XXX
+ SG_ J0_01_GOOD : 0|2@1+ (1,0) [0|3] \"\" Vector__XXX
+"""
+
+    def boom_int(x):
+        raise ValueError("boom")
+
+    # Patch only inside this module; the function under test uses the global name `int`.
+    monkeypatch.setattr(pat_matrix, "int", boom_int, raising=False)
+
+    out = pat_matrix._parse_j0_pin_names_from_dbc_text(txt)
+    assert out == {}
+
+
+
+def test_parse_j0_pin_names_wrapper_returns_empty_on_parse_exception(monkeypatch, tmp_path):
+    """Cover the wrapper's try/except around the text parser."""
+
+    dbc = tmp_path / "x.dbc"
+    dbc.write_text(
+        """
+BO_ 123 PAT_J0: 8 Vector__XXX
+ SG_ J0_01_FIRST : 0|2@1+ (1,0) [0|3] \"\" Vector__XXX
+""",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        pat_matrix,
+        "_parse_j0_pin_names_from_dbc_text",
+        lambda _txt: (_ for _ in ()).throw(RuntimeError("boom")),
+        raising=False,
+    )
+
+    assert pat_matrix._parse_j0_pin_names_from_dbc(dbc) == {}
+
+
+def test_read_packaged_pat_dbc_text_exception_returns_none(monkeypatch):
+    """Cover the packaged resource read exception path."""
+
+    monkeypatch.setattr(pat_matrix, "resource_files", lambda _pkg: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert pat_matrix._read_packaged_pat_dbc_text() is None
+
+
+def test_j0_pin_names_cache_assignment_exception_is_swallowed(monkeypatch):
+    """Cover the defensive cache write try/except."""
+
+    if hasattr(pat_matrix, "_J0_PIN_NAMES"):
+        delattr(pat_matrix, "_J0_PIN_NAMES")
+
+    class FlakyCopy(dict):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self._calls = 0
+
+        def copy(self):
+            self._calls += 1
+            if self._calls == 1:
+                raise RuntimeError("copy")
+            return super().copy()
+
+    monkeypatch.setattr(pat_matrix, "_read_packaged_pat_dbc_text", lambda: "whatever", raising=False)
+    monkeypatch.setattr(pat_matrix, "_parse_j0_pin_names_from_dbc_text", lambda _txt: FlakyCopy({1: "X"}), raising=False)
+
+    names = pat_matrix.j0_pin_names()
+    assert names.get(1) == "X"

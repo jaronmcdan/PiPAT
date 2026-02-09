@@ -345,6 +345,46 @@ def test_mmeter_set_func_skips_empty_candidate(monkeypatch):
     assert hw.mmeter_func == int(MmeterFunc.VDC)
 
 
+def test_mmeter_set_func_dedup_continue_branch(monkeypatch):
+    """Cover the duplicate-elision `continue` inside candidate de-duplication.
+
+    The production candidate generator is careful to avoid duplicates, so this
+    test forces the de-dup `if k in seen: continue` branch by patching the
+    module-local `set` factory used to build the `seen` container.
+    """
+
+    from roi.core import device_comm
+    from roi.devices.bk5491b import MmeterFunc
+
+    hw = FakeHardware()
+    helper = FakeBKHelper(drain_script=[["0,No error"], ["0,No error"]])
+    hw.mmeter = helper
+
+    class FakeSet:
+        def __init__(self):
+            self._s = set()
+            self._calls = 0
+
+        def __contains__(self, item):
+            # First membership check reports "already seen" to trigger the
+            # continue branch; subsequent checks behave normally.
+            self._calls += 1
+            if self._calls == 1:
+                return True
+            return item in self._s
+
+        def add(self, item):
+            self._s.add(item)
+
+    monkeypatch.setattr(device_comm, "set", FakeSet, raising=False)
+
+    p = device_comm.DeviceCommandProcessor(hw, log_fn=lambda s: None)
+    p._mmeter_set_func(int(MmeterFunc.VDC))
+
+    assert hw.mmeter_func == int(MmeterFunc.VDC)
+    assert helper.writes, "expected at least one SCPI write"
+
+
 def test_handle_relay_and_invert(monkeypatch):
     import roi.config as config
     from roi.core.device_comm import DeviceCommandProcessor
