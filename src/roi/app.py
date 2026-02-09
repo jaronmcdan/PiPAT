@@ -1086,6 +1086,46 @@ def main() -> int:
                 except Exception:
                     host_name = "roi"
 
+                def _short_can_channel(can_channel: str) -> str:
+                    """Shorten long /dev/serial/by-id CAN paths for display.
+
+                    Mirrors the Rich dashboard behaviour (ui/dashboard.py) but
+                    keeps this snapshot dependency-free.
+                    """
+
+                    ch = str(can_channel or "").strip()
+                    if not ch:
+                        return "--"
+
+                    iface = str(getattr(config, "CAN_INTERFACE", "socketcan") or "socketcan").strip().lower()
+                    if iface not in ("rmcanview", "rm-canview", "proemion"):
+                        return ch
+
+                    base = ch.rsplit("/", 1)[-1]
+                    low = base.lower()
+                    if "canview" in low:
+                        idx = low.find("canview")
+                        s = base[idx:]
+                        s = re.sub(r"-if\d+.*$", "", s)
+                        s = re.sub(r"[_-]port\d+$", "", s)
+                        return s
+                    return base
+
+                # PAT display metadata (used by the web dashboard to match the Rich TUI)
+                pat_timeout_s: float | None = None
+                try:
+                    pat_timeout_s = float(getattr(config, "PAT_MATRIX_TIMEOUT_SEC", getattr(config, "CAN_TIMEOUT_SEC", 2.0)))
+                except Exception:
+                    pat_timeout_s = None
+
+                pat_j0_names: Dict[int, str] = {}
+                try:
+                    from .core.pat_matrix import j0_pin_names as _j0_pin_names
+
+                    pat_j0_names = _j0_pin_names() or {}
+                except Exception:
+                    pat_j0_names = {}
+
                 # Bus metrics
                 load_pct, rx_fps, tx_fps = (None, None, None)
                 try:
@@ -1115,6 +1155,7 @@ def main() -> int:
                     "present": True,
                     "interface": str(getattr(config, "CAN_INTERFACE", "socketcan")),
                     "channel": str(getattr(config, "CAN_CHANNEL", "can0")),
+                    "channel_short": _short_can_channel(str(getattr(config, "CAN_CHANNEL", "can0"))),
                     "bitrate": int(getattr(config, "CAN_BITRATE", 500000)),
                     "bus_load_pct": load_pct,
                     "rx_fps": rx_fps,
@@ -1134,6 +1175,13 @@ def main() -> int:
                     "scpi_style": str(getattr(hardware, "mmeter_scpi_style", "") or ""),
                     "fetch_cmd": str(getattr(hardware, "mmeter_fetch_cmd", "") or ""),
                     "func": func_name(int(getattr(hardware, "mmeter_func", int(MmeterFunc.VDC))) & 0xFF),
+                    "autorange": bool(getattr(hardware, "mmeter_autorange", True)),
+                    "range_value": float(getattr(hardware, "mmeter_range_value", 0.0) or 0.0),
+                    "nplc": float(getattr(hardware, "mmeter_nplc", 1.0) or 1.0),
+                    "rel": bool(getattr(hardware, "mmeter_rel_enabled", False)),
+                    "trig": int(getattr(hardware, "mmeter_trig_source", 0) or 0) & 0xFF,
+                    "func2": func_name(int(getattr(hardware, "mmeter_func2", int(MmeterFunc.VDC))) & 0xFF),
+                    "func2_enabled": bool(getattr(hardware, "mmeter_func2_enabled", False)),
                     "path": str(getattr(config, "MULTI_METER_PATH", "")),
                 }
 
@@ -1142,18 +1190,37 @@ def main() -> int:
                     "id": str(getattr(hardware, "e_load_id", "") or ""),
                     "resource": str(getattr(hardware, "e_load_resource", "") or "")
                     or str(getattr(getattr(hardware, "e_load", None), "resource_name", "") or ""),
+                    # Last commanded state (used as a fallback when status polling is stale)
+                    "cmd_enabled": int(getattr(hardware, "e_load_enabled", 0) or 0),
+                    "cmd_mode": int(getattr(hardware, "e_load_mode", 0) or 0),
+                    "cmd_short": int(getattr(hardware, "e_load_short", 0) or 0),
+                    "cmd_csetting_mA": int(getattr(hardware, "e_load_csetting", 0) or 0),
+                    "cmd_rsetting_mOhm": int(getattr(hardware, "e_load_rsetting", 0) or 0),
                 }
 
                 devices["afg"] = {
                     "present": bool(getattr(hardware, "afg", None)),
                     "id": str(getattr(hardware, "afg_id", "") or ""),
                     "resource": str(getattr(config, "AFG_VISA_ID", "") or ""),
+                    # Last commanded state (used as a fallback when status polling is stale)
+                    "cmd_output": bool(getattr(hardware, "afg_output", False)),
+                    "cmd_shape": int(getattr(hardware, "afg_shape", 0) or 0),
+                    "cmd_freq_hz": int(getattr(hardware, "afg_freq", 0) or 0),
+                    "cmd_ampl_mVpp": int(getattr(hardware, "afg_ampl", 0) or 0),
+                    "cmd_offset_mV": int(getattr(hardware, "afg_offset", 0) or 0),
+                    "cmd_duty": int(getattr(hardware, "afg_duty", 0) or 0),
                 }
 
                 devices["mrsignal"] = {
                     "present": bool(getattr(hardware, "mrsignal", None)),
                     "id": getattr(hardware, "mrsignal_id", None),
                     "port": str(getattr(config, "MRSIGNAL_PORT", "") or ""),
+                    # Last known state (status thread updates these; safe to read)
+                    "cmd_output_on": bool(getattr(hardware, "mrsignal_output_on", False)),
+                    "cmd_output_select": int(getattr(hardware, "mrsignal_output_select", 0) or 0),
+                    "cmd_output_value": float(getattr(hardware, "mrsignal_output_value", 0.0) or 0.0),
+                    "cmd_input_value": float(getattr(hardware, "mrsignal_input_value", 0.0) or 0.0),
+                    "cmd_float_byteorder": str(getattr(hardware, "mrsignal_float_byteorder", "") or ""),
                 }
 
                 devices["pat"] = {"present": True}
@@ -1175,11 +1242,17 @@ def main() -> int:
                         "can_interface": str(getattr(config, "CAN_INTERFACE", "socketcan")),
                         "can_channel": str(getattr(config, "CAN_CHANNEL", "can0")),
                         "can_bitrate": int(getattr(config, "CAN_BITRATE", 500000)),
+                        "status_poll_period_s": float(status_period),
+                        "meas_poll_period_s": float(meas_period),
                     },
                     "devices": devices,
                     "telemetry": telemetry.snapshot(),
                     "watchdog": watchdog.snapshot(),
                     "pat_matrix": pat_matrix.snapshot() if pat_matrix is not None else {},
+                    "pat_meta": {
+                        "timeout_s": pat_timeout_s,
+                        "j0_pin_names": pat_j0_names,
+                    },
                     "diagnostics": diag_payload,
                 }
                 return snap
