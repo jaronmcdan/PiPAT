@@ -413,7 +413,7 @@ def test_handle_afg_primary_and_ext(monkeypatch):
     # Primary: enable=1, shape=2 (RAMP), freq=100, ampl=2000mV
     data = bytes([1, 2]) + struct.pack("<I", 100) + struct.pack("<H", 2000)
     p.handle(int(config.AFG_CTRL_ID), data)
-    assert "SOUR1:OUTP ON" in hw.afg.commands[0]
+    assert "OUTP1 ON" in hw.afg.commands[0]
     assert any("SOUR1:FUNC" in c for c in hw.afg.commands)
     assert any("SOUR1:FREQ 100" in c for c in hw.afg.commands)
     assert any("SOUR1:AMPL 2.0" in c for c in hw.afg.commands)
@@ -421,7 +421,7 @@ def test_handle_afg_primary_and_ext(monkeypatch):
     # Extended: offset=-100mV, duty=250 -> clamped to 99
     ext = struct.pack("<h", -100) + bytes([250])
     p.handle(int(config.AFG_CTRL_EXT_ID), ext)
-    assert any("SOUR1:VOLT:OFFS -0.1" in c for c in hw.afg.commands)
+    assert any("SOUR1:DCO -0.1" in c for c in hw.afg.commands)
     assert any("SOUR1:SQU:DCYC 99" in c for c in hw.afg.commands)
 
 
