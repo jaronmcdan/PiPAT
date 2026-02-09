@@ -224,7 +224,8 @@ class RmCanViewBus(can.BusABC):
         with self._tx_lock:
             try:
                 self._ser.write(frame)
-                self._ser.flush()
+                if bool(getattr(config, "CAN_RMCANVIEW_FLUSH_EVERY_SEND", True)):
+                    self._ser.flush()
             except Exception as e:
                 raise can.CanOperationError(str(e)) from e
 
@@ -403,7 +404,8 @@ class RmCanViewBus(can.BusABC):
         with self._tx_lock:
             try:
                 self._ser.write(frame)
-                self._ser.flush()
+                if bool(getattr(config, "CAN_RMCANVIEW_FLUSH_EVERY_SEND", True)):
+                    self._ser.flush()
             except Exception as e:
                 self._log(f"RMCAN: failed to send cmd 0x{cmd:02X}: {e}")
 

@@ -800,8 +800,17 @@ def instrument_poll_loop(
                 ts=now_m,
             )
 
-        # Short wait to avoid pegging a core.
-        stop_event.wait(timeout=0.01)
+        # Adaptive wait: sleep until the next scheduled poll to avoid waking up
+        # hundreds of times per second when periods are slow.
+        now2 = time.monotonic()
+        next_status_due = (last_status + status_period_s) if status_period_s > 0 else float("inf")
+        next_due = min(next_meas, next_status_due)
+        sleep_s = max(0.0, float(next_due) - float(now2))
+        # Always yield at least a tiny amount if we're "due now" to avoid a tight spin
+        # when I/O is failing fast.
+        if sleep_s <= 0:
+            sleep_s = 0.001
+        stop_event.wait(timeout=sleep_s)
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="ROI Instrument Bridge")
@@ -928,7 +937,16 @@ def main() -> int:
             dash_fps = 15
         if dash_fps <= 0:
             dash_fps = 10
-        
+
+        # In headless/systemd mode we don't need a high-rate UI loop, but we still
+        # want to enforce watchdog timeouts reasonably promptly.
+        try:
+            headless_tick_s = float(getattr(config, "HEADLESS_LOOP_PERIOD_S", 0.1))
+        except Exception:
+            headless_tick_s = 0.1
+        if headless_tick_s <= 0:
+            headless_tick_s = 0.1
+
         telemetry = TelemetryState()
         poll_thread = threading.Thread(
             target=instrument_poll_loop,
@@ -976,7 +994,7 @@ def main() -> int:
                         f"WD={wd.get('timed_out')}"
                     )
         
-                stop_event.wait(timeout=0.1)
+                stop_event.wait(timeout=headless_tick_s)
         
         # Rich TUI loop
         else:

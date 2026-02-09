@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import struct
+from dataclasses import dataclass
 import subprocess
 import threading
 import time
 import math
 import queue
-from typing import Optional
+from typing import Optional, Callable
 
 import can
 
@@ -222,18 +223,267 @@ def can_tx_loop(
     busload: BusLoadMeter | None = None,
     log_fn=print,
 ) -> None:
-    """Publish outgoing readback frames at a fixed period (e.g., 50 ms)."""
+    """Publish outgoing readback frames at a fixed period.
+
+    Notes
+    - ``period_s`` is the TX scheduler *tick* (resolution). This is typically
+      0.05s (50 ms). Individual frames can be sent slower via per-frame
+      ``CAN_TX_PERIOD_*_MS`` settings in roi.config.
+    - This loop never touches instruments; it only publishes the latest values
+      from ``OutgoingTxState``.
+    """
+
+    def _ms_to_s(ms: float, *, default_s: float) -> float:
+        try:
+            v = float(ms)
+        except Exception:
+            return float(default_s)
+        if v <= 0:
+            return 0.0
+        return float(v) / 1000.0
+
+    def _cfg_period_s(attr: str, *, default_s: float) -> float:
+        try:
+            ms = getattr(config, attr)
+        except Exception:
+            ms = None
+        if ms is None:
+            return float(default_s)
+        return _ms_to_s(ms, default_s=float(default_s))
 
     try:
-        period_s = float(period_s)
+        tick_s = float(period_s)
     except Exception:
-        period_s = 0.05
+        tick_s = 0.05
 
-    if period_s <= 0:
+    if tick_s <= 0:
         log_fn("TX thread disabled (period <= 0).")
         return
 
-    log_fn(f"TX thread started (period={period_s*1000:.0f} ms).")
+    # Optional "send on change" (still rate limited).
+    send_on_change = bool(getattr(config, "CAN_TX_SEND_ON_CHANGE", False))
+    min_change_s = _ms_to_s(float(getattr(config, "CAN_TX_SEND_ON_CHANGE_MIN_MS", 0)), default_s=0.0)
+
+    @dataclass
+    class _TxTask:
+        name: str
+        arbitration_id: int
+        period_s: float
+        present_fn: Callable[[tuple], bool]
+        build_payload_fn: Callable[[tuple], Optional[bytes]]
+        is_extended_id: bool = True
+
+        # State
+        present_last: bool = False
+        last_payload: bytes | None = None
+        last_sent: float = 0.0
+        next_due: float = 0.0
+
+        def mark_absent(self, now: float) -> None:
+            self.present_last = False
+            self.last_payload = None
+            self.last_sent = 0.0
+            # Force immediate send once the signal returns.
+            self.next_due = float(now)
+
+    # Build scheduler tasks (per-frame periods default to CAN_TX_PERIOD_MS).
+    default_period_s = float(tick_s)
+
+    tasks: list[_TxTask] = []
+
+    def add_task(
+        *,
+        name: str,
+        arb_id: int,
+        period_attr: str,
+        present_fn: Callable[[tuple], bool],
+        build_payload_fn: Callable[[tuple], Optional[bytes]],
+    ) -> None:
+        p_s = _cfg_period_s(period_attr, default_s=default_period_s)
+        if p_s <= 0:
+            log_fn(f"TX {name} disabled ({period_attr} <= 0).")
+            return
+        tasks.append(
+            _TxTask(
+                name=name,
+                arbitration_id=int(arb_id),
+                period_s=float(p_s),
+                present_fn=present_fn,
+                build_payload_fn=build_payload_fn,
+                is_extended_id=True,
+                present_last=False,
+                last_payload=None,
+                last_sent=0.0,
+                next_due=0.0,  # send ASAP once present
+            )
+        )
+
+    # Snapshot tuple indices (to keep builder functions readable).
+    # snapshot() returns:
+    #   0 meter_current_mA
+    #   1 mmeter_primary
+    #   2 mmeter_secondary
+    #   3 mmeter_func
+    #   4 mmeter_flags
+    #   5 load_volts_mV
+    #   6 load_current_mA
+    #   7 afg_offset_mV
+    #   8 afg_duty_pct
+    #   9 mrs_status
+    #  10 mrs_input
+
+    def _present_meter(snap: tuple) -> bool:
+        return snap[0] is not None
+
+    def _build_meter(snap: tuple) -> Optional[bytes]:
+        mA = snap[0]
+        if mA is None:
+            return None
+        u16 = _u16_clamp(int(mA))
+        return int(u16).to_bytes(2, "little") + (b"\x00" * 6)
+
+    def _present_mmeter_ext(snap: tuple) -> bool:
+        return snap[1] is not None
+
+    def _build_mmeter_ext(snap: tuple) -> Optional[bytes]:
+        primary = snap[1]
+        if primary is None:
+            return None
+        secondary = snap[2]
+        p = float(primary)
+        s = float("nan") if (secondary is None) else float(secondary)
+        return struct.pack("<ff", p, s)
+
+    def _present_mmeter_status(snap: tuple) -> bool:
+        return (snap[3] is not None) and (snap[4] is not None)
+
+    def _build_mmeter_status(snap: tuple) -> Optional[bytes]:
+        func = snap[3]
+        flags = snap[4]
+        if func is None or flags is None:
+            return None
+        payload = bytearray(8)
+        payload[0] = int(func) & 0xFF
+        payload[1] = int(flags) & 0xFF
+        return bytes(payload)
+
+    def _present_eload(snap: tuple) -> bool:
+        return (snap[5] is not None) and (snap[6] is not None)
+
+    def _build_eload(snap: tuple) -> Optional[bytes]:
+        v = snap[5]
+        i = snap[6]
+        if v is None or i is None:
+            return None
+        v_u16 = _u16_clamp(int(v))
+        i_u16 = _u16_clamp(int(i))
+        return (
+            int(v_u16).to_bytes(2, "little")
+            + int(i_u16).to_bytes(2, "little")
+            + (b"\x00" * 4)
+        )
+
+    def _present_afg_ext(snap: tuple) -> bool:
+        return (snap[7] is not None) and (snap[8] is not None)
+
+    def _build_afg_ext(snap: tuple) -> Optional[bytes]:
+        off = snap[7]
+        duty = snap[8]
+        if off is None or duty is None:
+            return None
+        off_mv = _i16_clamp(int(off))
+        duty_pct_i = max(0, min(100, int(duty)))
+        payload = bytearray(struct.pack("<h", off_mv))
+        payload.append(duty_pct_i & 0xFF)
+        payload.extend([0] * 5)
+        return bytes(payload)
+
+    def _present_mrs_status(snap: tuple) -> bool:
+        return snap[9] is not None
+
+    def _build_mrs_status(snap: tuple) -> Optional[bytes]:
+        st = snap[9]
+        if st is None:
+            return None
+        on_i, mode_i, out_val = st
+        payload = bytearray(8)
+        payload[0] = 1 if int(on_i) else 0
+        payload[1] = int(mode_i) & 0xFF
+        payload[2:6] = struct.pack("<f", float(out_val))
+        return bytes(payload)
+
+    def _present_mrs_input(snap: tuple) -> bool:
+        return snap[10] is not None
+
+    def _build_mrs_input(snap: tuple) -> Optional[bytes]:
+        v = snap[10]
+        if v is None:
+            return None
+        payload = bytearray(8)
+        payload[0:4] = struct.pack("<f", float(v))
+        return bytes(payload)
+
+    # Register tasks (IDs are extended IDs).
+    add_task(
+        name="MMETER",
+        arb_id=int(getattr(config, "MMETER_READ_ID", 0x0CFF0004)),
+        period_attr="CAN_TX_PERIOD_MMETER_LEGACY_MS",
+        present_fn=_present_meter,
+        build_payload_fn=_build_meter,
+    )
+    add_task(
+        name="MMETER_EXT",
+        arb_id=int(getattr(config, "MMETER_READ_EXT_ID", 0x0CFF0009)),
+        period_attr="CAN_TX_PERIOD_MMETER_EXT_MS",
+        present_fn=_present_mmeter_ext,
+        build_payload_fn=_build_mmeter_ext,
+    )
+    add_task(
+        name="MMETER_STATUS",
+        arb_id=int(getattr(config, "MMETER_STATUS_ID", 0x0CFF000A)),
+        period_attr="CAN_TX_PERIOD_MMETER_STATUS_MS",
+        present_fn=_present_mmeter_status,
+        build_payload_fn=_build_mmeter_status,
+    )
+    add_task(
+        name="ELOAD",
+        arb_id=int(getattr(config, "ELOAD_READ_ID", 0x0CFF0003)),
+        period_attr="CAN_TX_PERIOD_ELOAD_MS",
+        present_fn=_present_eload,
+        build_payload_fn=_build_eload,
+    )
+    add_task(
+        name="AFG_EXT",
+        arb_id=int(getattr(config, "AFG_READ_EXT_ID", 0x0CFF0006)),
+        period_attr="CAN_TX_PERIOD_AFG_EXT_MS",
+        present_fn=_present_afg_ext,
+        build_payload_fn=_build_afg_ext,
+    )
+    add_task(
+        name="MRSIGNAL_STATUS",
+        arb_id=int(getattr(config, "MRSIGNAL_READ_STATUS_ID", 0x0CFF0007)),
+        period_attr="CAN_TX_PERIOD_MRS_STATUS_MS",
+        present_fn=_present_mrs_status,
+        build_payload_fn=_build_mrs_status,
+    )
+    add_task(
+        name="MRSIGNAL_INPUT",
+        arb_id=int(getattr(config, "MRSIGNAL_READ_INPUT_ID", 0x0CFF0008)),
+        period_attr="CAN_TX_PERIOD_MRS_INPUT_MS",
+        present_fn=_present_mrs_input,
+        build_payload_fn=_build_mrs_input,
+    )
+
+    # Friendly startup log (includes per-frame periods so tuning is obvious in logs).
+    try:
+        sched = ", ".join([f"{t.name}={t.period_s*1000:.0f}ms" for t in tasks])
+    except Exception:
+        sched = ""
+    soc = "on-change" if send_on_change else "periodic-only"
+    if sched:
+        log_fn(f"TX thread started (tick={tick_s*1000:.0f} ms, {soc}; {sched}).")
+    else:
+        log_fn(f"TX thread started (tick={tick_s*1000:.0f} ms, {soc}).")
 
     next_t = time.monotonic()
     err_count = 0
@@ -246,172 +496,80 @@ def can_tx_loop(
             continue
 
         # Advance the schedule first; this avoids drift if send() takes time.
-        next_t += period_s
-        if next_t < now - (10.0 * period_s):
-            next_t = now + period_s
+        next_t += tick_s
+        if next_t < now - (10.0 * tick_s):
+            next_t = now + tick_s
 
-        (
-            meter_current_mA,
-            mmeter_primary,
-            mmeter_secondary,
-            mmeter_func,
-            mmeter_flags,
-            load_volts_mV,
-            load_current_mA,
-            afg_offset_mV,
-            afg_duty_pct,
-            mrs_status,
-            mrs_input,
-        ) = tx_state.snapshot()
+        snap = tx_state.snapshot()
 
-        # Send each frame independently; one failure should not block others.
-        if meter_current_mA is not None:
+        for task in tasks:
             try:
-                u16 = _u16_clamp(meter_current_mA)
-                msg = can.Message(
-                    arbitration_id=int(config.MMETER_READ_ID),
-                    data=list(int(u16).to_bytes(2, "little")) + [0] * 6,
-                    is_extended_id=True,
-                )
-                cbus.send(msg)
-                if busload:
-                    try:
-                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
-                    except Exception:
-                        pass
-            except Exception as e:
-                err_count += 1
-                if err_count in (1, 10, 100):
-                    log_fn(f"TX MMETER send error (count={err_count}): {e}")
+                present = bool(task.present_fn(snap))
+            except Exception:
+                present = False
 
-        # Extended multimeter float readback
-        if mmeter_primary is not None:
+            if not present:
+                task.mark_absent(now)
+                continue
+
+            # If it was absent and is now present, force an immediate send.
+            if not task.present_last:
+                task.present_last = True
+                task.next_due = float(now)
+
+            due = now >= float(task.next_due)
+
+            # Only build payload when needed. (Saves CPU on long periods.)
+            payload: bytes | None = None
+            if due or send_on_change:
+                try:
+                    payload = task.build_payload_fn(snap)
+                except Exception:
+                    payload = None
+
+            if payload is None:
+                # Treat as absent; clears last_payload so the next good payload sends immediately.
+                task.mark_absent(now)
+                continue
+
+            changed = (task.last_payload is None) or (payload != task.last_payload)
+
+            # Decide whether to send.
+            do_send = False
+            if due:
+                do_send = True
+            elif send_on_change and changed:
+                if min_change_s <= 0:
+                    do_send = True
+                else:
+                    if (now - float(task.last_sent)) >= float(min_change_s):
+                        do_send = True
+
+            if not do_send:
+                continue
+
             try:
-                p = float(mmeter_primary)
-                s = float('nan') if (mmeter_secondary is None) else float(mmeter_secondary)
-                payload = bytearray(struct.pack("<ff", p, s))
                 msg = can.Message(
-                    arbitration_id=int(getattr(config, "MMETER_READ_EXT_ID", 0x0CFF0009)),
+                    arbitration_id=int(task.arbitration_id),
                     data=payload,
-                    is_extended_id=True,
+                    is_extended_id=bool(task.is_extended_id),
                 )
                 cbus.send(msg)
                 if busload:
                     try:
-                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
+                        busload.record_tx(len(payload))
                     except Exception:
                         pass
+
+                task.last_payload = payload
+                task.last_sent = float(now)
+                # Next periodic keepalive
+                task.next_due = float(now) + float(task.period_s)
+
             except Exception as e:
                 err_count += 1
-                if err_count in (1, 10, 100):
-                    log_fn(f"TX MMETER_EXT send error (count={err_count}): {e}")
-
-        # Multimeter status: func + flags
-        if (mmeter_func is not None) and (mmeter_flags is not None):
-            try:
-                payload = bytearray(8)
-                payload[0] = int(mmeter_func) & 0xFF
-                payload[1] = int(mmeter_flags) & 0xFF
-                msg = can.Message(
-                    arbitration_id=int(getattr(config, "MMETER_STATUS_ID", 0x0CFF000A)),
-                    data=payload,
-                    is_extended_id=True,
-                )
-                cbus.send(msg)
-                if busload:
-                    try:
-                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
-                    except Exception:
-                        pass
-            except Exception as e:
-                err_count += 1
-                if err_count in (1, 10, 100):
-                    log_fn(f"TX MMETER_STATUS send error (count={err_count}): {e}")
-
-        if (load_volts_mV is not None) and (load_current_mA is not None):
-            try:
-                v_u16 = _u16_clamp(load_volts_mV)
-                i_u16 = _u16_clamp(load_current_mA)
-                data = (
-                    list(int(v_u16).to_bytes(2, "little"))
-                    + list(int(i_u16).to_bytes(2, "little"))
-                    + [0] * 4
-                )
-                msg = can.Message(arbitration_id=int(config.ELOAD_READ_ID), data=data, is_extended_id=True)
-                cbus.send(msg)
-                if busload:
-                    try:
-                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
-                    except Exception:
-                        pass
-            except Exception as e:
-                err_count += 1
-                if err_count in (1, 10, 100):
-                    log_fn(f"TX ELOAD send error (count={err_count}): {e}")
-
-        if (afg_offset_mV is not None) and (afg_duty_pct is not None):
-            try:
-                off_mv = _i16_clamp(afg_offset_mV)
-                duty_pct_i = max(0, min(100, int(afg_duty_pct)))
-                payload = bytearray(struct.pack("<h", off_mv))
-                payload.append(duty_pct_i & 0xFF)
-                payload.extend([0] * 5)
-                msg = can.Message(arbitration_id=int(config.AFG_READ_EXT_ID), data=payload, is_extended_id=True)
-                cbus.send(msg)
-                if busload:
-                    try:
-                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
-                    except Exception:
-                        pass
-            except Exception as e:
-                err_count += 1
-                if err_count in (1, 10, 100):
-                    log_fn(f"TX AFG_EXT send error (count={err_count}): {e}")
-
-        # MrSignal readback (status + input)
-        if mrs_status is not None:
-            try:
-                on_i, mode_i, out_val = mrs_status
-                payload = bytearray(8)
-                payload[0] = 1 if int(on_i) else 0
-                payload[1] = int(mode_i) & 0xFF
-                payload[2:6] = struct.pack("<f", float(out_val))
-                msg = can.Message(
-                    arbitration_id=int(getattr(config, "MRSIGNAL_READ_STATUS_ID", 0x0CFF0007)),
-                    data=payload,
-                    is_extended_id=True,
-                )
-                cbus.send(msg)
-                if busload:
-                    try:
-                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
-                    except Exception:
-                        pass
-            except Exception as e:
-                err_count += 1
-                if err_count in (1, 10, 100):
-                    log_fn(f"TX MRSIGNAL_STATUS send error (count={err_count}): {e}")
-
-        if mrs_input is not None:
-            try:
-                payload = bytearray(8)
-                payload[0:4] = struct.pack("<f", float(mrs_input))
-                msg = can.Message(
-                    arbitration_id=int(getattr(config, "MRSIGNAL_READ_INPUT_ID", 0x0CFF0008)),
-                    data=payload,
-                    is_extended_id=True,
-                )
-                cbus.send(msg)
-                if busload:
-                    try:
-                        busload.record_tx(len(msg.data) if msg.data is not None else 0)
-                    except Exception:
-                        pass
-            except Exception as e:
-                err_count += 1
-                if err_count in (1, 10, 100):
-                    log_fn(f"TX MRSIGNAL_INPUT send error (count={err_count}): {e}")
-
+                if err_count in (1, 10, 100) or (err_count % 500 == 0):
+                    log_fn(f"TX {task.name} send error (count={err_count}): {e}")
 
 def can_rx_loop(
     cbus: can.BusABC,
@@ -446,6 +604,38 @@ def can_rx_loop(
         int(getattr(config, "LOAD_CTRL_ID", 0)),
         int(getattr(config, "MRSIGNAL_CTRL_ID", 0x0CFF0800)),
     }
+
+    # Optional: apply driver/kernel-level CAN ID filters (reduces CPU on busy buses).
+    # NOTE: When filters are enabled, the bus-load estimator (if enabled) will only
+    # observe the filtered subset of traffic.
+    filter_mode = str(getattr(config, "CAN_RX_KERNEL_FILTER_MODE", "none") or "none").strip().lower()
+    if filter_mode not in ("", "none", "off", "0", "false"):
+        filt_ids: set[int] = set()
+
+        if filter_mode in ("control", "ctrl", "control_only"):
+            filt_ids = {int(i) for i in ctrl_ids if int(i) != 0}
+        elif filter_mode in ("control+pat", "control_pat", "pat", "ctrl+pat"):
+            filt_ids = {int(i) for i in ctrl_ids if int(i) != 0}
+            try:
+                from ..core.pat_matrix import pat_j_ids as _pat_j_ids
+
+                filt_ids |= set(int(i) for i in _pat_j_ids())
+            except Exception:
+                pass
+        else:
+            log_fn(f"CAN_RX_KERNEL_FILTER_MODE={filter_mode!r} not recognized; ignoring.")
+            filt_ids = set()
+
+        if filt_ids:
+            try:
+                # python-can filter format: {"can_id": ..., "can_mask": ...}
+                # Use a full 29-bit mask for extended IDs.
+                filters = [{"can_id": int(i) & 0x1FFFFFFF, "can_mask": 0x1FFFFFFF} for i in filt_ids]
+                cbus.set_filters(filters)
+                log_fn(f"CAN RX kernel filter enabled ({filter_mode}): {len(filters)} IDs.")
+            except Exception as e:
+                log_fn(f"CAN RX kernel filter requested ({filter_mode}) but could not be applied: {e}")
+
 
     while not stop_event.is_set():
         try:
