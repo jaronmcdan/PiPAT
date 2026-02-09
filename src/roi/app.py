@@ -933,11 +933,20 @@ def main() -> int:
     except Exception:
         _DIAGNOSTICS = None
 
-    # Print build tag early so we can verify which zip is actually running.
+    # Print version + revision early so we can verify which build is actually running.
+    build_tag = str(getattr(config, "BUILD_TAG", "unknown"))
+    build_rev = "unknown"
     try:
-        _log(f"ROI build: {getattr(config, 'BUILD_TAG', 'unknown')}")
+        from .build_info import build_banner, get_revision
+
+        build_rev = get_revision(short=True)
+        _log(build_banner(build_tag=build_tag))
     except Exception:
-        pass
+        # Fallback: at least show the configured build tag.
+        try:
+            _log(f"ROI build: {build_tag}")
+        except Exception:
+            pass
 
     # Optional: auto-detect device connection paths on Raspberry Pi so we
     # don't depend on /dev/ttyUSB0 style numbering.
@@ -1245,7 +1254,8 @@ def main() -> int:
                 snap: Dict[str, Any] = {
                     "host": host_name,
                     "time_unix": time.time(),
-                    "build_tag": str(getattr(config, "BUILD_TAG", "unknown")),
+                    "build_tag": str(build_tag),
+                    "build_rev": str(build_rev),
                     "uptime_s": float(time.monotonic() - process_start_mono),
                     "config": {
                         "roi_headless": bool(headless),
