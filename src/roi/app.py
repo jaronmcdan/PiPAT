@@ -170,7 +170,19 @@ class ControlWatchdog:
             }
 
     def enforce(self, hardware: HardwareManager) -> None:
+        """Enforce per-key timeouts and apply idle behavior.
+
+        **Important:** hardware idle actions can block (VISA / serial timeouts),
+        so we must *not* hold the watchdog lock while performing them.
+        Otherwise, readers (Rich UI / web dashboard) can hang while waiting for
+        snapshot() to acquire the lock.
+        """
+
         now = time.monotonic()
+
+        # Decide what needs idling while holding the lock, then perform the
+        # potentially-blocking device calls outside the lock.
+        to_idle: list[str] = []
         with self._lock:
             for key, timeout_s in self._timeouts.items():
                 last = self._last_seen.get(key)
@@ -185,23 +197,28 @@ class ControlWatchdog:
                     if not self._timed_out.get(key, False):
                         # Transition into timeout => apply idle once
                         self._timed_out[key] = True
-                        if key == "can":
-                            # Indicator only; we don't apply device idles on generic CAN silence.
-                            pass
-                        elif key == "k1":
-                            hardware.set_k1_idle()
-                        elif key == "eload":
-                            hardware.apply_idle_eload()
-                        elif key == "afg":
-                            hardware.apply_idle_afg()
-                        elif key == "mmeter":
-                            # Nothing safety-critical to command on timeout.
-                            pass
-                        elif key == "mrsignal":
-                            hardware.apply_idle_mrsignal()
-
+                        if key != "can":
+                            to_idle.append(str(key))
                 else:
                     self._timed_out[key] = False
+
+        # Apply idles outside the lock.
+        for key in to_idle:
+            try:
+                if key == "k1":
+                    hardware.set_k1_idle()
+                elif key == "eload":
+                    hardware.apply_idle_eload()
+                elif key == "afg":
+                    hardware.apply_idle_afg()
+                elif key == "mmeter":
+                    # Nothing safety-critical to command on timeout.
+                    pass
+                elif key == "mrsignal":
+                    hardware.apply_idle_mrsignal()
+            except Exception:
+                # Watchdog must never crash the control plane.
+                pass
 
 class TelemetryState:
     """Thread-safe snapshot of instrument telemetry for the dashboard and logs.

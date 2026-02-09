@@ -97,6 +97,7 @@ _INDEX_HTML = """<!doctype html>
 
 <script>
   let paused = false;
+  let inFlight = false;
   const pauseBtn = document.getElementById('pauseBtn');
   const copyBtn = document.getElementById('copyBtn');
   const meta = document.getElementById('meta');
@@ -104,6 +105,13 @@ _INDEX_HTML = """<!doctype html>
   const cards = document.getElementById('cards');
   const eventsPre = document.getElementById('events');
   const rawPre = document.getElementById('raw');
+
+  // If the server is running with ROI_WEB_TOKEN, open the dashboard as:
+  //   http://host:8080/?token=...   (or /index.html?token=...)
+  // We automatically propagate that token to API requests.
+  const urlParams = new URLSearchParams(window.location.search);
+  const token = urlParams.get('token');
+  const statusUrl = token ? ('/api/status?token=' + encodeURIComponent(token)) : '/api/status';
 
   pauseBtn.onclick = () => {
     paused = !paused;
@@ -287,21 +295,48 @@ _INDEX_HTML = """<!doctype html>
     rawPre.textContent = JSON.stringify(data, null, 2);
   }
 
-  async function tick() {
-    if (!paused) {
-      try {
-        const res = await fetch('/api/status');
-        if (!res.ok) throw new Error('HTTP '+res.status);
-        const data = await res.json();
-        render(data);
-      } catch (e) {
-        meta.textContent = 'Disconnected ('+String(e)+')';
-      }
+  function showError(e) {
+    const msg = String(e);
+    meta.textContent = 'Disconnected (' + msg + ')';
+    eventsPre.textContent = 'Disconnected: ' + msg;
+    // Keep whatever was last rendered in rawPre if available.
+    if (!rawPre.textContent || rawPre.textContent.trim() === 'Loading…' || rawPre.textContent.trim() === 'Loading...') {
+      rawPre.textContent = 'Disconnected: ' + msg;
     }
-    setTimeout(tick, 1000);
   }
 
-  tick();
+  async function fetchWithTimeout(url, timeoutMs) {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { signal: controller.signal });
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+  async function pollOnce() {
+    if (paused || inFlight) return;
+    inFlight = true;
+    try {
+      const res = await fetchWithTimeout(statusUrl, 1200);
+      if (!res.ok) {
+        let detail = '';
+        try { detail = (await res.text()) || ''; } catch (_) { detail = ''; }
+        detail = detail ? (' ' + detail.slice(0, 200)) : '';
+        throw new Error('HTTP ' + res.status + detail);
+      }
+      const data = await res.json();
+      render(data);
+    } catch (e) {
+      showError(e);
+    } finally {
+      inFlight = false;
+    }
+  }
+
+  pollOnce();
+  setInterval(pollOnce, 1000);
 </script>
 </body>
 </html>
