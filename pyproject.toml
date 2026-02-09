@@ -14,6 +14,9 @@ dependencies = [
   "pyserial>=3.5",
   "pyvisa>=1.14",
   "pyvisa-py>=0.7",
+  # PyVISA-py uses PyUSB for USBTMC (USB* resources). Without this, USB instruments
+  # won't enumerate and ROI can't auto-detect the E-load.
+  "pyusb>=1.2.1",
   "minimalmodbus>=2.0",
   "rich>=13.0",
 ]
