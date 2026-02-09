@@ -207,6 +207,8 @@ class HardwareManager:
         # VISA
         self.resource_manager = None
         self.e_load = None
+        self.e_load_id: Optional[str] = None
+        self.e_load_resource: Optional[str] = None
 
         # Locks (Thread Safety)
         self.eload_lock = threading.Lock()
@@ -590,6 +592,8 @@ class HardwareManager:
                         except Exception:
                             pass
                         self.e_load = dev
+                        self.e_load_id = dev_id or None
+                        self.e_load_resource = str(resource_id)
                         break
                     except Exception as e:
                         print(f"Skip E-LOAD ({resource_id}): {e}")
@@ -628,6 +632,8 @@ class HardwareManager:
                             except Exception:
                                 pass
                             self.e_load = dev2
+                            self.e_load_id = dev_id or None
+                            self.e_load_resource = str(p)
                             break
                         except Exception as e:
                             # Best-effort cleanup

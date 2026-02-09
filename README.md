@@ -53,6 +53,16 @@ sudo journalctl -u roi -f
   roi-mmter-diag
   ```
 
+## Optional web dashboard
+
+ROI can run a lightweight read-only web UI for device status and failure diagnostics:
+
+```bash
+ROI_WEB_ENABLE=1 ROI_WEB_PORT=8080 roi
+```
+
+Then browse to `http://<pi-hostname>:8080/`.
+
 ## Project name note
 
 Some earlier internal drafts referenced a different name. This repository is **ROI** (Remote Operational Equipment). Any legacy references have been removed.
