@@ -767,7 +767,10 @@ class HardwareManager:
             return
         try:
             with self.afg_lock:
-                self.afg.write(f"SOUR1:OUTP {'ON' if config.AFG_IDLE_OUTPUT_ON else 'OFF'}")
+                try:
+                    self.afg.write(f"OUTP1 {'ON' if config.AFG_IDLE_OUTPUT_ON else 'OFF'}")
+                except Exception:
+                    self.afg.write(f"SOUR1:OUTP {'ON' if config.AFG_IDLE_OUTPUT_ON else 'OFF'}")
             self.afg_output = bool(config.AFG_IDLE_OUTPUT_ON)
         except Exception:
             pass

@@ -674,7 +674,12 @@ def instrument_poll_loop(
                     # control writes are only blocked for a single VISA transaction.
                     if hardware.afg_lock.acquire(timeout=0.0):
                         try:
-                            afg_out_str = hardware.afg.query("SOUR1:OUTP?").strip()
+                            try:
+                                # GW Instek AFG-2000/2100 series uses OUTP1? (not SOUR1:OUTP?).
+                                afg_out_str = hardware.afg.query("OUTP1?").strip()
+                            except Exception:
+                                # Fallback for other SCPI dialects.
+                                afg_out_str = hardware.afg.query("SOUR1:OUTP?").strip()
                         finally:
                             hardware.afg_lock.release()
                     if afg_out_str is not None and str(afg_out_str).strip() != "":
@@ -699,7 +704,12 @@ def instrument_poll_loop(
                             hardware.afg_lock.release()
                     if hardware.afg_lock.acquire(timeout=0.0):
                         try:
-                            afg_offset_str = hardware.afg.query("SOUR1:VOLT:OFFS?").strip()
+                            try:
+                                # GW Instek AFG-2000/2100 series uses SOUR1:DCO? for DC offset.
+                                afg_offset_str = hardware.afg.query("SOUR1:DCO?").strip()
+                            except Exception:
+                                # Fallback for other SCPI dialects.
+                                afg_offset_str = hardware.afg.query("SOUR1:VOLT:OFFS?").strip()
                         finally:
                             hardware.afg_lock.release()
                     if hardware.afg_lock.acquire(timeout=0.0):
