@@ -325,7 +325,7 @@ ROI_HEADLESS = _env_bool("ROI_HEADLESS", False)
 
 # A lightweight, dependency-free web UI to view device status + diagnostics.
 # Disabled by default.
-ROI_WEB_ENABLE = _env_bool("ROI_WEB_ENABLE", False)
+ROI_WEB_ENABLE = _env_bool("ROI_WEB_ENABLE", True)
 ROI_WEB_HOST = _env_str("ROI_WEB_HOST", "0.0.0.0")
 ROI_WEB_PORT = _env_int("ROI_WEB_PORT", 8080)
 

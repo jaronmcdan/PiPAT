@@ -685,14 +685,24 @@ class HardwareManager:
                         except Exception:
                             missing_pyusb = True
 
-                        print(
-                            "[visa] No USB VISA resources were enumerated. If your e-load is connected via USBTMC, try:\n"
-                            "  - Install OS deps: sudo ./scripts/pi_install.sh --easy   (or --install-os-deps)\n"
-                            + ("  - Install PyUSB: python3 -m pip install -U pyusb\n" if missing_pyusb else "")
-                            "  - Check VISA backend + USB support: python3 -m pyvisa info\n"
-                            "  - Check the USB device is visible: lsusb\n"
-                            "  - If you installed new udev rules, unplug/replug the USB cable\n"
+
+                        # Build the message as a list of lines to avoid fragile implicit
+                        # string concatenation (mixing implicit concatenation with a conditional
+                        # "+ ..." is easy to get wrong).
+                        lines = [
+                            "[visa] No USB VISA resources were enumerated. If your e-load is connected via USBTMC, try:",
+                            "  - Install OS deps: sudo ./scripts/pi_install.sh --easy   (or --install-os-deps)",
+                        ]
+                        if missing_pyusb:
+                            lines.append("  - Install PyUSB: python3 -m pip install -U pyusb")
+                        lines.extend(
+                            [
+                                "  - Check VISA backend + USB support: python3 -m pyvisa info",
+                                "  - Check the USB device is visible: lsusb",
+                                "  - If you installed new udev rules, unplug/replug the USB cable",
+                            ]
                         )
+                        print("\n".join(lines))
                 except Exception:
                     pass
             if not self.afg:
