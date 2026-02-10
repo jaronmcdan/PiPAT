@@ -1027,7 +1027,7 @@ def main() -> int:
         can_rx_thread = threading.Thread(
             target=can_rx_loop,
             args=(cbus, cmd_queue, stop_event, watchdog),
-            use_pat = (not headless) or web_enable
+            use_pat = (not headless) or web_enable,
             kwargs={
                 "busload": busload, 
                 "log_fn": _log, 
