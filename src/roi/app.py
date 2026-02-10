@@ -1024,10 +1024,15 @@ def main() -> int:
         )
         device_thread.start()
 
+        # FIX: Define web_enable HERE so it is available for use_pat
+        web_enable = bool(getattr(args, "web", False)) or bool(getattr(config, "ROI_WEB_ENABLE", False))
+
+        # FIX: Now this will work
+        use_pat = (not headless) or web_enable
+
         can_rx_thread = threading.Thread(
             target=can_rx_loop,
             args=(cbus, cmd_queue, stop_event, watchdog),
-            use_pat = (not headless) or web_enable,
             kwargs={
                 "busload": busload, 
                 "log_fn": _log, 
