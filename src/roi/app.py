@@ -531,7 +531,13 @@ def instrument_poll_loop(
                             # Format for dashboard/logs
                             p_unit = func_unit(func_i)
                             mmeter_func_str = func_name(func_i)
-                            mmeter_primary_str = f"{mm_primary:g} {p_unit}".strip()
+                            # Inside instrument_poll_loop
+                            if not headless:
+                                # Only do this heavy string lifting if a human is watching
+                                mmeter_primary_str = f"{mm_primary:g} {p_unit}".strip()
+                                # ... other string formats ...
+                            else:
+                                mmeter_primary_str = ""
                             mmeter_secondary_str = ""
                             if mm_secondary is not None:
                                 s_func = int(getattr(hardware, "mmeter_func2", func_i)) & 0xFF
@@ -1021,7 +1027,12 @@ def main() -> int:
         can_rx_thread = threading.Thread(
             target=can_rx_loop,
             args=(cbus, cmd_queue, stop_event, watchdog),
-            kwargs={"busload": busload, "log_fn": _log, "pat_matrix": pat_matrix},
+            use_pat = (not headless) or web_enable
+            kwargs={
+                "busload": busload, 
+                "log_fn": _log, 
+                "pat_matrix": pat_matrix if use_pat else None
+            },
             daemon=True,
         )
         can_rx_thread.start()

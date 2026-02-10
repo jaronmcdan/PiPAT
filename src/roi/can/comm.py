@@ -489,14 +489,22 @@ def can_tx_loop(
     err_count = 0
 
     while not stop_event.is_set():
+        # NEW OPTIMIZED APPROACH:
+        # 1. Find the minimum next_due time among all present tasks
         now = time.monotonic()
-        delay = next_t - now
-        if delay > 0:
-            stop_event.wait(timeout=delay)
-            continue
+        earliest_due = now + 10.0 # Upper bound
+        
+        active_tasks = [t for t in tasks if t.present_last or send_on_change]
+        if active_tasks:
+            earliest_due = min(t.next_due for t in active_tasks)
+        
+        # 2. Ensure we don't sleep longer than our max reaction time (e.g. 100ms)
+        #    to catch new "present" signals or stop events.
+        sleep_s = max(0.005, earliest_due - now)
+        sleep_s = min(sleep_s, 0.1) 
 
-        # Advance the schedule first; this avoids drift if send() takes time.
-        next_t += tick_s
+        stop_event.wait(timeout=sleep_s)
+        
         if next_t < now - (10.0 * tick_s):
             next_t = now + tick_s
 
