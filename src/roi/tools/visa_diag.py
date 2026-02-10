@@ -80,6 +80,7 @@ def main() -> int:
         for r in resources:
             if not str(r).upper().startswith("USB"):
                 continue
+            inst = None
             try:
                 inst = rm.open_resource(r)
                 try:
@@ -90,6 +91,12 @@ def main() -> int:
                 print(f"   {r} -> {idn}")
             except Exception as e:
                 print(f"   {r} -> <error> {e}")
+            finally:
+                try:
+                    if inst is not None:
+                        inst.close()
+                except Exception:
+                    pass
 
         print()
 
