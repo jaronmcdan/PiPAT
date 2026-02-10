@@ -31,14 +31,15 @@ python -m pytest
 ```bash
 git clone <your-repo-url> roi
 cd roi
-sudo ./scripts/pi_install.sh --easy
+# We use 'bash' here to ensure it runs even if permissions are lost
+sudo bash scripts/pi_install.sh --easy
 sudo /opt/roi/.venv/bin/roi
 ```
 
 Install as a service:
 
 ```bash
-sudo /opt/roi/scripts/service_install.sh --prefix /opt/roi --enable --start
+sudo bash /opt/roi/scripts/service_install.sh --prefix /opt/roi --enable --start
 sudo journalctl -u roi -f
 ```
 
