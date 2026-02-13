@@ -95,7 +95,7 @@ MULTI_METER_IDN_READ_LINES = _env_int("MULTI_METER_IDN_READ_LINES", 4)
 # until we get a parseable float.
 MULTI_METER_FETCH_CMDS = _env_str(
     "MULTI_METER_FETCH_CMDS",
-    ":FETC?,:FETCh?,READ?",
+    ":FETCh?,:FETC?,READ?",
 )
 
 # SCPI dialect for the 2831E/5491B bench multimeters.

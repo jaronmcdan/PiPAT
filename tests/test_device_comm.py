@@ -1240,12 +1240,12 @@ def test_mmeter_set_func_style_func_builds_candidates(monkeypatch):
     p._mmeter_set_func(int(MmeterFunc.VDC))
 
     assert hw.mmeter_func == int(MmeterFunc.VDC)
-    # First candidate in 'func' style should use the abbreviated FUNC header.
-    assert hw.mmeter.writes and hw.mmeter.writes[0].startswith(":FUNC ")
+    # First candidate in 'func' style is the canonical mapped command.
+    assert hw.mmeter.writes and hw.mmeter.writes[0] == ":FUNCtion VOLTage:DC"
 
 
-def test_mmeter_set_func_style_func_prefers_unquoted_short_mnemonic():
-    """FUNC-style candidate order should start with unquoted short mnemonics."""
+def test_mmeter_set_func_style_func_uses_mapped_idc_command_first():
+    """FUNC-style candidate order should try the mapped IDC command first."""
     from roi.core.device_comm import DeviceCommandProcessor
     from roi.devices.bk5491b import MmeterFunc
 
@@ -1257,7 +1257,7 @@ def test_mmeter_set_func_style_func_prefers_unquoted_short_mnemonic():
     p._mmeter_set_func(int(MmeterFunc.IDC))
 
     assert hw.mmeter.writes
-    assert hw.mmeter.writes[0] == ":FUNC CURR:DC"
+    assert hw.mmeter.writes[0] == ":FUNCtion CURRent:DC"
 
 
 def test_handle_mmeter_ext_bad_float_unpack_is_swallowed(monkeypatch):

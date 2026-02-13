@@ -425,12 +425,12 @@ def instrument_poll_loop(
     # Multimeter polling: try to learn which query command works for this meter.
     # Probing unknown commands too fast can make some meters beep; use backoff.
     mmeter_cmds = [
-        c.strip() for c in str(getattr(config, "MULTI_METER_FETCH_CMDS", "FETC?"))
+        c.strip() for c in str(getattr(config, "MULTI_METER_FETCH_CMDS", ":FETCh?"))
         .split(",")
         if c.strip()
     ]
     if not mmeter_cmds:
-        mmeter_cmds = ["FETC?"]
+        mmeter_cmds = [":FETCh?"]
     mmeter_probe_idx = 0
     mmeter_next_probe = 0.0
     mmeter_backoff_s = float(getattr(config, "MULTI_METER_PROBE_BACKOFF_SEC", 2.0))

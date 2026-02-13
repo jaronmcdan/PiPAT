@@ -417,13 +417,22 @@ class HardwareManager:
 
                 cmds = [
                     c.strip()
-                    for c in str(getattr(config, "MULTI_METER_FETCH_CMDS", ":FETC?")).split(",")
+                    for c in str(getattr(config, "MULTI_METER_FETCH_CMDS", ":FETCh?")).split(",")
                     if c.strip()
                 ]
                 if not cmds:
-                    cmds = [":FETC?"]
+                    cmds = [":FETCh?"]
 
-                self.mmeter_fetch_cmd = str(cmds[0])
+                # For 5491/2831 family, prefer the long FETCH form first.
+                # This avoids startup "BUS: BAD COMMAND" on units that reject
+                # short-form :FETC? but accept :FETCh?.
+                for c in cmds:
+                    cu = c.upper().replace(" ", "")
+                    if "FETCH?" in cu:
+                        self.mmeter_fetch_cmd = c
+                        break
+                else:
+                    self.mmeter_fetch_cmd = str(cmds[0])
                 print(f"MMETER fetch cmd: {self.mmeter_fetch_cmd} (idn)")
             except Exception:
                 pass

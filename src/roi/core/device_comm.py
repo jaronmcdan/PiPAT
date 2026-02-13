@@ -72,21 +72,16 @@ def _func_style_cmd_variants(cmd: str) -> list[str]:
     ):
         rhs_short = re.sub(k, v, rhs_short, flags=re.IGNORECASE)
 
-    rhs_candidates: list[str] = []
-    # Prefer unquoted short mnemonics first; this is the most compatible form
-    # on stricter firmware builds (avoids startup BUS parameter errors).
-    rhs_candidates.append(rhs_short)
-    rhs_candidates.append(f'"{rhs_short}"')
+    rhs_candidates: list[str] = [rhs0, f'"{rhs0}"']
     if rhs0.lower() != rhs_short.lower():
-        rhs_candidates.append(rhs0)
-        rhs_candidates.append(f'"{rhs0}"')
+        rhs_candidates.append(rhs_short)
+        rhs_candidates.append(f'"{rhs_short}"')
 
-    # Prefer abbreviated :FUNC first for stricter firmware compatibility.
-    out: list[str] = []
-    for h in (":FUNC", ":FUNCtion"):
+    # Try the exact mapped command first to avoid unnecessary startup errors.
+    out: list[str] = [base]
+    for h in (":FUNCtion", ":FUNC"):
         for rhs in rhs_candidates:
             out.append(f"{h} {rhs}")
-    out.append(base)
 
     # De-dup while preserving order.
     uniq: list[str] = []
