@@ -11,6 +11,12 @@
 ip -details link show can0
 ```
 
+ROI-aware CAN diagnostic:
+
+```bash
+roi-can-diag --duration 5
+```
+
 ## Permission errors
 
 - USB serial: user must be in `dialout` (or run as root)
@@ -45,11 +51,29 @@ Try:
 - set `AUTO_DETECT_BYID_ONLY=1`
 - ensure no competing service opens the same serial device
 
+## MrSignal read/write diagnostics
+
+```bash
+roi-mrsignal-diag --read-count 3
+```
+
+Optional explicit write test:
+
+```bash
+roi-mrsignal-diag --enable 1 --set-mode 1 --set-value 5.0
+```
+
 ## CANview errors or missing frames
 
 - confirm the correct `/dev/serial/by-id/...` device
 - confirm `CAN_SERIAL_BAUD`
 - set `CAN_CLEAR_ERRORS_ON_INIT=1`
+
+## Auto-detect behavior looks wrong
+
+```bash
+roi-autodetect-diag
+```
 
 ## Module import errors from a checkout
 

@@ -19,6 +19,7 @@ Diagnostics:
 
 ```bash
 roi-mmter-diag
+roi-autodetect-diag
 ```
 
 ## Electronic Load (VISA / USBTMC)
@@ -76,3 +77,9 @@ Notes:
 
 - Setpoint clamps are enforced by `MRSIGNAL_MAX_V` and `MRSIGNAL_MAX_MA`.
 - Float byteorder can be overridden if your unit requires it.
+
+Diagnostics:
+
+```bash
+roi-mrsignal-diag --read-count 3
+```

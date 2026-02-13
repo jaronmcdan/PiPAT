@@ -46,7 +46,31 @@ sudo journalctl -u roi -f
 ```bash
 roi-visa-diag
 roi-mmter-diag
+roi-can-diag --duration 5
+roi-mrsignal-diag --read-count 3
+roi-autodetect-diag
 ```
+
+### Running diagnostics when service is enabled
+
+Most diagnostics should be run with the service stopped, because ROI already
+holds the same serial/VISA devices.
+
+```bash
+sudo systemctl stop roi
+
+sudo /opt/roi/.venv/bin/roi-visa-diag
+sudo /opt/roi/.venv/bin/roi-mmter-diag
+sudo /opt/roi/.venv/bin/roi-mrsignal-diag --read-count 3
+sudo /opt/roi/.venv/bin/roi-autodetect-diag
+sudo /opt/roi/.venv/bin/roi-can-diag --duration 5
+
+sudo systemctl start roi
+sudo journalctl -u roi -f
+```
+
+If you must keep ROI running, only `roi-can-diag` may be safe in listen-only
+style (SocketCAN, no `--send-id`, no `--setup`).
 
 ## Optional Web Dashboard
 
