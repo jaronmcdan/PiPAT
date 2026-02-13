@@ -34,6 +34,7 @@ roi-visa-diag = "roi.tools.visa_diag:main"
 roi-can-diag = "roi.tools.can_diag:main"
 roi-mrsignal-diag = "roi.tools.mrsignal_diag:main"
 roi-autodetect-diag = "roi.tools.autodetect_diag:main"
+roi-env-hardcode = "roi.tools.env_hardcode:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

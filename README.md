@@ -81,6 +81,7 @@ roi-mmter-diag
 roi-can-diag --duration 5
 roi-mrsignal-diag --read-count 3
 roi-autodetect-diag
+roi-env-hardcode
 ```
 
 ### Running diagnostics when service is enabled

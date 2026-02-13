@@ -1,0 +1,324 @@
+#!/usr/bin/env python3
+"""Generate a stable, hardcoded ROI env file from currently connected devices.
+
+Preferred run methods:
+  - roi-env-hardcode         (after install)
+  - python -m roi.tools.env_hardcode
+
+This tool is intended for "closed system" benches where device identities are
+stable and you want to avoid auto-detection drift.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Callable, Optional
+
+from .. import config
+from ..core.device_discovery import (
+    _pick_by_id,
+    _probe_multimeter_idn,
+    _probe_visa_idn,
+    _serial_by_id_entries,
+    _split_hints,
+    _try_mrsignal_on_port,
+    _visa_rm,
+)
+
+
+LogFn = Callable[[str], None]
+
+
+@dataclass
+class DetectedDevices:
+    can_channel: Optional[str] = None
+    multimeter_path: Optional[str] = None
+    multimeter_idn: Optional[str] = None
+    mrsignal_port: Optional[str] = None
+    mrsignal_id: Optional[int] = None
+    k1_serial_port: Optional[str] = None
+    afg_visa_id: Optional[str] = None
+    eload_visa_id: Optional[str] = None
+    eload_idn: Optional[str] = None
+
+
+def _bool_int(v: bool) -> str:
+    return "1" if bool(v) else "0"
+
+
+def _backup_stamp() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def _detect_eload_visa(log_fn: LogFn | None = None) -> tuple[Optional[str], Optional[str]]:
+    """Pick the best USB VISA resource for the e-load."""
+    rm = _visa_rm()
+    if rm is None:
+        if log_fn:
+            log_fn("VISA RM unavailable; cannot detect ELOAD_VISA_ID.")
+        return None, None
+
+    try:
+        resources = list(rm.list_resources())
+    except Exception as e:
+        if log_fn:
+            log_fn(f"VISA list_resources failed: {e}")
+        resources = []
+
+    usb_resources = [str(r) for r in resources if str(r).upper().startswith("USB")]
+    if log_fn:
+        log_fn(f"USB VISA resources: {usb_resources or ['<none>']}")
+
+    if not usb_resources:
+        return None, None
+
+    hints = _split_hints(str(getattr(config, "AUTO_DETECT_ELOAD_IDN_HINTS", "") or ""))
+    fallback_rid = usb_resources[0]
+    best_rid = None
+    best_idn = None
+
+    for rid in usb_resources:
+        idn = _probe_visa_idn(rm, rid)
+        if log_fn:
+            log_fn(f"E-load probe {rid} -> {idn or '<no-idn>'}")
+        if idn:
+            low = idn.lower()
+            if hints and any(h in low for h in hints):
+                return rid, idn
+            if best_rid is None:
+                best_rid = rid
+                best_idn = idn
+
+    return best_rid or fallback_rid, best_idn
+
+
+def detect_devices(*, verify_serial: bool = False, log_fn: LogFn | None = print) -> DetectedDevices:
+    """Detect connected devices using by-id names plus safe VISA probing."""
+    entries = _serial_by_id_entries()
+    names = [n for (n, _p, _r) in entries]
+    if log_fn:
+        log_fn(f"/dev/serial/by-id entries: {names or ['<none>']}")
+
+    mmeter_hints = _split_hints(
+        str(getattr(config, "AUTO_DETECT_MMETER_BYID_HINTS", getattr(config, "AUTO_DETECT_MMETER_IDN_HINTS", "")) or "")
+    )
+    mrs_hints = _split_hints(str(getattr(config, "AUTO_DETECT_MRSIGNAL_BYID_HINTS", "") or ""))
+    can_hints = _split_hints(str(getattr(config, "AUTO_DETECT_CANVIEW_BYID_HINTS", "") or ""))
+    k1_hints = _split_hints(str(getattr(config, "AUTO_DETECT_K1_BYID_HINTS", "") or ""))
+    afg_hints = _split_hints(str(getattr(config, "AUTO_DETECT_AFG_BYID_HINTS", "") or ""))
+
+    out = DetectedDevices()
+    out.can_channel = _pick_by_id(entries, can_hints) if can_hints else None
+    out.multimeter_path = _pick_by_id(entries, mmeter_hints) if mmeter_hints else None
+    out.mrsignal_port = _pick_by_id(entries, mrs_hints) if mrs_hints else None
+    out.k1_serial_port = _pick_by_id(entries, k1_hints) if k1_hints else None
+
+    afg_path = _pick_by_id(entries, afg_hints) if afg_hints else None
+    if afg_path:
+        out.afg_visa_id = f"ASRL{afg_path}::INSTR"
+
+    out.eload_visa_id, out.eload_idn = _detect_eload_visa(log_fn=log_fn)
+
+    if verify_serial and out.multimeter_path:
+        baud = int(getattr(config, "MULTI_METER_BAUD", 38400))
+        out.multimeter_idn = _probe_multimeter_idn(out.multimeter_path, baud)
+        if log_fn:
+            log_fn(f"Multimeter verify {out.multimeter_path} -> {out.multimeter_idn or '<no-idn>'}")
+
+    if verify_serial and out.mrsignal_port:
+        ok, dev_id = _try_mrsignal_on_port(out.mrsignal_port)
+        out.mrsignal_id = dev_id
+        if log_fn:
+            log_fn(
+                f"MrSignal verify {out.mrsignal_port} -> "
+                f"{'ok' if ok else 'failed'}"
+                f"{'' if dev_id is None else f' (id={dev_id})'}"
+            )
+
+    return out
+
+
+def render_env(
+    detected: DetectedDevices,
+    *,
+    disable_missing: bool = True,
+) -> str:
+    """Render a clean roi.env body from detection results."""
+    lines: list[str] = []
+    lines.append("# Generated by roi-env-hardcode")
+    lines.append("# Review before applying on production benches.")
+    lines.append("")
+
+    # Keep build tag visible in logs.
+    lines.append(f"ROI_BUILD_TAG={str(getattr(config, 'BUILD_TAG', 'dev') or 'dev')}")
+    lines.append("AUTO_DETECT_ENABLE=0")
+    lines.append("")
+
+    lines.append("# CAN")
+    lines.append("CAN_INTERFACE=rmcanview")
+    lines.append(f"CAN_CHANNEL={detected.can_channel or str(getattr(config, 'CAN_CHANNEL', 'can0'))}")
+    lines.append(f"CAN_SERIAL_BAUD={int(getattr(config, 'CAN_SERIAL_BAUD', 115200))}")
+    lines.append(f"CAN_BITRATE={int(getattr(config, 'CAN_BITRATE', 250000))}")
+    lines.append(f"CAN_SETUP={_bool_int(bool(getattr(config, 'CAN_SETUP', True)))}")
+    lines.append(f"CAN_CLEAR_ERRORS_ON_INIT={_bool_int(bool(getattr(config, 'CAN_CLEAR_ERRORS_ON_INIT', True)))}")
+    lines.append("CAN_RMCANVIEW_FLUSH_EVERY_SEND=0")
+    lines.append("")
+
+    lines.append("# Multimeter")
+    lines.append(f"MULTI_METER_PATH={detected.multimeter_path or str(getattr(config, 'MULTI_METER_PATH', '/dev/ttyUSB0'))}")
+    lines.append(f"MULTI_METER_BAUD={int(getattr(config, 'MULTI_METER_BAUD', 38400))}")
+    lines.append(f"MULTI_METER_TIMEOUT={float(getattr(config, 'MULTI_METER_TIMEOUT', 1.0))}")
+    lines.append(f"MULTI_METER_WRITE_TIMEOUT={float(getattr(config, 'MULTI_METER_WRITE_TIMEOUT', 1.0))}")
+    lines.append("MULTI_METER_VERIFY_ON_STARTUP=1")
+    lines.append("MULTI_METER_IDN=")
+
+    idn_text = str(detected.multimeter_idn or detected.multimeter_path or "").upper()
+    if ("5491" in idn_text) or ("2831" in idn_text):
+        lines.append("MMETER_SCPI_STYLE=func")
+        lines.append("MULTI_METER_FETCH_CMDS=:FETCh?,READ?")
+    else:
+        lines.append(f"MMETER_SCPI_STYLE={str(getattr(config, 'MMETER_SCPI_STYLE', 'auto') or 'auto')}")
+        lines.append(f"MULTI_METER_FETCH_CMDS={str(getattr(config, 'MULTI_METER_FETCH_CMDS', ':FETC?,READ?') or ':FETC?,READ?')}")
+
+    lines.append(f"MMETER_CONTROL_SETTLE_SEC={float(getattr(config, 'MMETER_CONTROL_SETTLE_SEC', 0.3))}")
+    lines.append(f"MMETER_CLEAR_ERRORS_ON_STARTUP={_bool_int(bool(getattr(config, 'MMETER_CLEAR_ERRORS_ON_STARTUP', True)))}")
+    lines.append(f"MMETER_DEBUG={_bool_int(bool(getattr(config, 'MMETER_DEBUG', False)))}")
+    lines.append("")
+
+    lines.append("# MrSignal")
+    if detected.mrsignal_port:
+        lines.append("MRSIGNAL_ENABLE=1")
+        lines.append(f"MRSIGNAL_PORT={detected.mrsignal_port}")
+    else:
+        lines.append(f"MRSIGNAL_ENABLE={_bool_int(not disable_missing)}")
+        lines.append(f"MRSIGNAL_PORT={str(getattr(config, 'MRSIGNAL_PORT', '/dev/ttyUSB1'))}")
+    lines.append(f"MRSIGNAL_BAUD={int(getattr(config, 'MRSIGNAL_BAUD', 9600))}")
+    lines.append(f"MRSIGNAL_SLAVE_ID={int(getattr(config, 'MRSIGNAL_SLAVE_ID', 1))}")
+    lines.append(f"MRSIGNAL_PARITY={str(getattr(config, 'MRSIGNAL_PARITY', 'N'))}")
+    lines.append(f"MRSIGNAL_STOPBITS={int(getattr(config, 'MRSIGNAL_STOPBITS', 1))}")
+    lines.append(f"MRSIGNAL_TIMEOUT={float(getattr(config, 'MRSIGNAL_TIMEOUT', 0.5))}")
+    lines.append(
+        f"MRSIGNAL_FLOAT_BYTEORDER={str(getattr(config, 'MRSIGNAL_FLOAT_BYTEORDER', '') or '')}"
+    )
+    lines.append(
+        f"MRSIGNAL_FLOAT_BYTEORDER_AUTO={_bool_int(bool(getattr(config, 'MRSIGNAL_FLOAT_BYTEORDER_AUTO', True)))}"
+    )
+    lines.append("")
+
+    lines.append("# K1 relay")
+    if detected.k1_serial_port:
+        lines.append("K1_ENABLE=1")
+        lines.append("K1_BACKEND=serial")
+        lines.append(f"K1_SERIAL_PORT={detected.k1_serial_port}")
+    else:
+        lines.append(f"K1_ENABLE={_bool_int(not disable_missing)}")
+        lines.append("K1_BACKEND=mock")
+        lines.append(f"K1_SERIAL_PORT={str(getattr(config, 'K1_SERIAL_PORT', '') or '')}")
+    lines.append(f"K1_SERIAL_BAUD={int(getattr(config, 'K1_SERIAL_BAUD', 9600))}")
+    lines.append(f"K1_SERIAL_RELAY_INDEX={int(getattr(config, 'K1_SERIAL_RELAY_INDEX', 1))}")
+    lines.append("")
+
+    lines.append("# VISA instruments")
+    lines.append(f"VISA_BACKEND={str(getattr(config, 'VISA_BACKEND', '@py') or '@py')}")
+    lines.append(f"VISA_TIMEOUT_MS={int(getattr(config, 'VISA_TIMEOUT_MS', 500))}")
+    lines.append(f"ELOAD_VISA_ID={detected.eload_visa_id or str(getattr(config, 'ELOAD_VISA_ID', ''))}")
+    lines.append(f"AFG_VISA_ID={detected.afg_visa_id or str(getattr(config, 'AFG_VISA_ID', ''))}")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _write_env(path: str, text: str) -> tuple[Optional[str], Optional[str]]:
+    """Write env file and create backup when target exists."""
+    backup_path = None
+    err = None
+    try:
+        if os.path.exists(path):
+            backup_path = f"{path}.{_backup_stamp()}.bak"
+            shutil.copy2(path, backup_path)
+
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+    except Exception as e:
+        err = str(e)
+    return backup_path, err
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Generate a hardcoded ROI env file from connected devices")
+    p.add_argument("--output", default="/etc/roi/roi.env", help="Target env path")
+    p.add_argument("--apply", action="store_true", help="Write the output file (default is dry-run)")
+    p.add_argument(
+        "--verify-serial",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Probe multimeter/MrSignal over serial to verify identity",
+    )
+    p.add_argument(
+        "--disable-missing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Disable K1/MrSignal when detection is missing (recommended)",
+    )
+    p.add_argument("--quiet", action="store_true", help="Reduce discovery log output")
+    return p
+
+
+def main() -> int:
+    args = _build_arg_parser().parse_args()
+    log_fn = None if bool(args.quiet) else print
+
+    print("=== ROI Env Hardcode ===")
+    print(f"mode={'apply' if args.apply else 'dry-run'} output={args.output}")
+    print(
+        f"verify_serial={'yes' if bool(args.verify_serial) else 'no'} "
+        f"disable_missing={'yes' if bool(args.disable_missing) else 'no'}"
+    )
+    print()
+
+    detected = detect_devices(verify_serial=bool(args.verify_serial), log_fn=log_fn)
+    print()
+    print("Detected:")
+    print(f"  can_channel={detected.can_channel or '--'}")
+    print(f"  multimeter_path={detected.multimeter_path or '--'}")
+    print(f"  multimeter_idn={detected.multimeter_idn or '--'}")
+    print(f"  mrsignal_port={detected.mrsignal_port or '--'}")
+    print(f"  mrsignal_id={detected.mrsignal_id if detected.mrsignal_id is not None else '--'}")
+    print(f"  k1_serial_port={detected.k1_serial_port or '--'}")
+    print(f"  afg_visa_id={detected.afg_visa_id or '--'}")
+    print(f"  eload_visa_id={detected.eload_visa_id or '--'}")
+    print(f"  eload_idn={detected.eload_idn or '--'}")
+    print()
+
+    env_text = render_env(detected, disable_missing=bool(args.disable_missing))
+    print(env_text, end="")
+
+    if not bool(args.apply):
+        print()
+        print("Dry-run only. Re-run with --apply to write the file.")
+        return 0
+
+    backup_path, err = _write_env(str(args.output), env_text)
+    if err:
+        print(f"Failed to write {args.output}: {err}")
+        if "/etc/" in str(args.output):
+            print("Tip: run with sudo when writing system paths.")
+        return 2
+
+    print()
+    print(f"Wrote {args.output}")
+    if backup_path:
+        print(f"Backup: {backup_path}")
+    print("Restart ROI to apply changes: sudo systemctl restart roi")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

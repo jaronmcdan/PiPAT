@@ -135,3 +135,56 @@ def test_autodetect_diag_prints_result(monkeypatch, capsys):
     assert "Discovery result:" in out
     assert "/dev/serial/by-id/mmeter" in out
 
+
+def test_env_hardcode_dry_run(monkeypatch, capsys, tmp_path):
+    import roi.tools.env_hardcode as env_tool
+
+    fake = env_tool.DetectedDevices(
+        can_channel="/dev/serial/by-id/canview",
+        multimeter_path="/dev/serial/by-id/mmeter",
+        multimeter_idn="5491B Multimeter",
+        mrsignal_port="/dev/serial/by-id/mrs",
+        mrsignal_id=2,
+        k1_serial_port="/dev/serial/by-id/k1",
+        afg_visa_id="ASRL/dev/serial/by-id/afg::INSTR",
+        eload_visa_id="USB0::1::2::3::0::INSTR",
+        eload_idn="eload",
+    )
+    monkeypatch.setattr(env_tool, "detect_devices", lambda **_k: fake)
+    monkeypatch.setattr(sys, "argv", ["roi-env-hardcode", "--output", str(tmp_path / "roi.env")])
+
+    rc = env_tool.main()
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "AUTO_DETECT_ENABLE=0" in out
+    assert "CAN_CHANNEL=/dev/serial/by-id/canview" in out
+    assert "MULTI_METER_FETCH_CMDS=:FETCh?,READ?" in out
+    assert not (tmp_path / "roi.env").exists()
+
+
+def test_env_hardcode_apply_writes_and_backs_up(monkeypatch, capsys, tmp_path):
+    import roi.tools.env_hardcode as env_tool
+
+    fake = env_tool.DetectedDevices(can_channel="/dev/serial/by-id/canview")
+    monkeypatch.setattr(env_tool, "detect_devices", lambda **_k: fake)
+    monkeypatch.setattr(env_tool, "_backup_stamp", lambda: "20260213-151700")
+
+    out_path = tmp_path / "roi.env"
+    out_path.write_text("OLD=1\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["roi-env-hardcode", "--apply", "--quiet", "--output", str(out_path)],
+    )
+
+    rc = env_tool.main()
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert out_path.exists()
+    assert "AUTO_DETECT_ENABLE=0" in out_path.read_text(encoding="utf-8")
+    assert (tmp_path / "roi.env.20260213-151700.bak").exists()
+    assert "Wrote" in out
+

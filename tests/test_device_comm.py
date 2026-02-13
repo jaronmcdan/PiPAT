@@ -1244,6 +1244,22 @@ def test_mmeter_set_func_style_func_builds_candidates(monkeypatch):
     assert hw.mmeter.writes and hw.mmeter.writes[0].startswith(":FUNCtion")
 
 
+def test_mmeter_set_func_style_func_prefers_quoted_short_mnemonic():
+    """FUNC-style candidate order should start with quoted short mnemonics."""
+    from roi.core.device_comm import DeviceCommandProcessor
+    from roi.devices.bk5491b import MmeterFunc
+
+    hw = FakeHardware()
+    hw.mmeter_scpi_style = "func"
+    hw.mmeter = FakeBKHelper(drain_script=[["0,No error"], ["0,No error"]])
+
+    p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
+    p._mmeter_set_func(int(MmeterFunc.IDC))
+
+    assert hw.mmeter.writes
+    assert hw.mmeter.writes[0] == ':FUNCtion "CURR:DC"'
+
+
 def test_handle_mmeter_ext_bad_float_unpack_is_swallowed(monkeypatch):
     """Cover the struct.unpack() exception path in MMETER_CTRL_EXT handling."""
     import roi.config as config

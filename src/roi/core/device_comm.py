@@ -6,6 +6,7 @@ import queue
 import struct
 import time
 import math
+import re
 from typing import Callable, Optional, TYPE_CHECKING
 
 from .. import config
@@ -36,6 +37,65 @@ def _quantize_nplc(v: float) -> float:
         return 1.0
     choices = (0.1, 1.0, 10.0)
     return min(choices, key=lambda c: abs(x - c))
+
+
+def _func_style_cmd_variants(cmd: str) -> list[str]:
+    """Return robust :FUNC style command variants for firmware quirks.
+
+    Some 5491/2831 firmware builds accept only a subset of:
+      - long vs abbreviated parameter tokens (CURRent:DC vs CURR:DC)
+      - quoted vs unquoted parameter forms
+      - :FUNCtion vs :FUNC command header abbreviation
+    """
+
+    base = str(cmd or "").strip()
+    if not base:
+        return []
+
+    # Expect "<header> <rhs>" (e.g. ":FUNCtion CURRent:DC").
+    parts = base.split(None, 1)
+    if len(parts) < 2:
+        return [base]
+
+    _hdr, rhs0 = parts[0], parts[1].strip().strip('"')
+    if not rhs0:
+        return [base]
+
+    rhs_short = rhs0
+    for k, v in (
+        ("VOLTAGE", "VOLT"),
+        ("CURRENT", "CURR"),
+        ("RESISTANCE", "RES"),
+        ("FREQUENCY", "FREQ"),
+        ("PERIOD", "PER"),
+        ("CONTINUITY", "CONT"),
+    ):
+        rhs_short = re.sub(k, v, rhs_short, flags=re.IGNORECASE)
+
+    rhs_candidates: list[str] = []
+    rhs_candidates.append(f'"{rhs_short}"')
+    rhs_candidates.append(rhs_short)
+    if rhs0.lower() != rhs_short.lower():
+        rhs_candidates.append(f'"{rhs0}"')
+        rhs_candidates.append(rhs0)
+
+    # Prefer the full :FUNCtion header first so logs remain familiar.
+    out: list[str] = []
+    for h in (":FUNCtion", ":FUNC"):
+        for rhs in rhs_candidates:
+            out.append(f"{h} {rhs}")
+    out.append(base)
+
+    # De-dup while preserving order.
+    uniq: list[str] = []
+    seen: set[str] = set()
+    for c in out:
+        k = c.strip()
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        uniq.append(k)
+    return uniq
 
 
 class DeviceCommandProcessor:
@@ -161,10 +221,14 @@ class DeviceCommandProcessor:
         #   - auto: try FUNC first (preferred for 2831E/5491B), then CONF
         #   - func: FUNC only (avoid cross-dialect BUS errors)
         #   - conf: CONF only (avoid cross-dialect BUS errors)
+        #
+        # For FUNC-style commands, include robust token/header variants to avoid
+        # startup "BUS: BAD COMMAND" on stricter firmware builds.
         candidates: list[tuple[str, str]] = []
         if style == "auto":
             if func_cmd:
-                candidates.append(("func", func_cmd))
+                for c in _func_style_cmd_variants(func_cmd):
+                    candidates.append(("func", c))
             if conf_cmd:
                 base = conf_cmd.strip()
                 with_ch = base
@@ -179,7 +243,8 @@ class DeviceCommandProcessor:
                     candidates.append(("conf", ":" + base))
         elif style == "func":
             if func_cmd:
-                candidates.append(("func", func_cmd))
+                for c in _func_style_cmd_variants(func_cmd):
+                    candidates.append(("func", c))
         else:  # style == "conf"
             if conf_cmd:
                 base = conf_cmd.strip()
