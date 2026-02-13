@@ -209,8 +209,7 @@ class DeviceCommandProcessor:
             errs = _drain_errors(max_n=4)
             bad = [e for e in errs if not _is_no_error(e)]
             if bad:
-                if bool(getattr(config, "MMETER_DEBUG", False)):
-                    self.log(f"[mmeter] !! after '{cmd}': {bad[0]}")
+                self.log(f"[mmeter] rejected '{cmd}': {bad[0]}")
                 return False
             return True
 

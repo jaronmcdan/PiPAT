@@ -80,15 +80,15 @@ SCPI_STYLE_AUTO = "auto"
 # To maximize compatibility (and avoid front-panel "BUS: BAD COMMAND"), we use
 # the common abbreviated mnemonics here.
 FUNC_TO_SCPI_FUNC = {
-    MmeterFunc.VDC: ":FUNCtion VOLTage:DC",
-    MmeterFunc.VAC: ":FUNCtion VOLTage:AC",
-    MmeterFunc.IDC: ":FUNCtion CURRent:DC",
-    MmeterFunc.IAC: ":FUNCtion CURRent:AC",
-    MmeterFunc.RES: ":FUNCtion RESistance",
-    MmeterFunc.FREQ: ":FUNCtion FREQuency",
-    MmeterFunc.PERIOD: ":FUNCtion PERiod",
-    MmeterFunc.DIODE: ":FUNCtion DIODe",
-    MmeterFunc.CONT: ":FUNCtion CONTinuity",
+    MmeterFunc.VDC: ":FUNCtion VOLT:DC",
+    MmeterFunc.VAC: ":FUNCtion VOLT:AC",
+    MmeterFunc.IDC: ":FUNCtion CURR:DC",
+    MmeterFunc.IAC: ":FUNCtion CURR:AC",
+    MmeterFunc.RES: ":FUNCtion RES",
+    MmeterFunc.FREQ: ":FUNCtion FREQ",
+    MmeterFunc.PERIOD: ":FUNCtion PER",
+    MmeterFunc.DIODE: ":FUNCtion DIO",
+    MmeterFunc.CONT: ":FUNCtion CONT",
 }
 
 
@@ -119,11 +119,11 @@ FUNC_TO_SCPI_CONF = {
 #   VOLTage:AC/DC, CURRent:AC/DC, FREQuency, dB, dBm.
 # We only expose the subset we have enums for.
 FUNC_TO_SCPI_FUNC2 = {
-    MmeterFunc.VDC: ":FUNCtion2 VOLTage:DC",
-    MmeterFunc.VAC: ":FUNCtion2 VOLTage:AC",
-    MmeterFunc.IDC: ":FUNCtion2 CURRent:DC",
-    MmeterFunc.IAC: ":FUNCtion2 CURRent:AC",
-    MmeterFunc.FREQ: ":FUNCtion2 FREQuency",
+    MmeterFunc.VDC: ":FUNCtion2 VOLT:DC",
+    MmeterFunc.VAC: ":FUNCtion2 VOLT:AC",
+    MmeterFunc.IDC: ":FUNCtion2 CURR:DC",
+    MmeterFunc.IAC: ":FUNCtion2 CURR:AC",
+    MmeterFunc.FREQ: ":FUNCtion2 FREQ",
 }
 
 

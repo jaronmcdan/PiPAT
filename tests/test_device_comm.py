@@ -1241,7 +1241,7 @@ def test_mmeter_set_func_style_func_builds_candidates(monkeypatch):
 
     assert hw.mmeter_func == int(MmeterFunc.VDC)
     # First candidate in 'func' style is the canonical mapped command.
-    assert hw.mmeter.writes and hw.mmeter.writes[0] == ":FUNCtion VOLTage:DC"
+    assert hw.mmeter.writes and hw.mmeter.writes[0] == ":FUNCtion VOLT:DC"
 
 
 def test_mmeter_set_func_style_func_uses_mapped_idc_command_first():
@@ -1257,7 +1257,7 @@ def test_mmeter_set_func_style_func_uses_mapped_idc_command_first():
     p._mmeter_set_func(int(MmeterFunc.IDC))
 
     assert hw.mmeter.writes
-    assert hw.mmeter.writes[0] == ":FUNCtion CURRent:DC"
+    assert hw.mmeter.writes[0] == ":FUNCtion CURR:DC"
 
 
 def test_handle_mmeter_ext_bad_float_unpack_is_swallowed(monkeypatch):
