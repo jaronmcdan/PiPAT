@@ -179,10 +179,10 @@ def render_env(
     idn_text = str(detected.multimeter_idn or detected.multimeter_path or "").upper()
     if ("5491" in idn_text) or ("2831" in idn_text):
         lines.append("MMETER_SCPI_STYLE=func")
-        lines.append("MULTI_METER_FETCH_CMDS=:FETCh?,READ?")
+        lines.append("MULTI_METER_FETCH_CMDS=:FETCh?,:FETC?")
     else:
         lines.append(f"MMETER_SCPI_STYLE={str(getattr(config, 'MMETER_SCPI_STYLE', 'auto') or 'auto')}")
-        lines.append(f"MULTI_METER_FETCH_CMDS={str(getattr(config, 'MULTI_METER_FETCH_CMDS', ':FETC?,READ?') or ':FETC?,READ?')}")
+        lines.append(f"MULTI_METER_FETCH_CMDS={str(getattr(config, 'MULTI_METER_FETCH_CMDS', ':FETCh?,:FETC?') or ':FETCh?,:FETC?')}")
 
     lines.append(f"MMETER_CONTROL_SETTLE_SEC={float(getattr(config, 'MMETER_CONTROL_SETTLE_SEC', 0.3))}")
     lines.append(f"MMETER_CLEAR_ERRORS_ON_STARTUP={_bool_int(bool(getattr(config, 'MMETER_CLEAR_ERRORS_ON_STARTUP', True)))}")

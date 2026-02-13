@@ -159,7 +159,7 @@ def test_env_hardcode_dry_run(monkeypatch, capsys, tmp_path):
     assert rc == 0
     assert "AUTO_DETECT_ENABLE=0" in out
     assert "CAN_CHANNEL=/dev/serial/by-id/canview" in out
-    assert "MULTI_METER_FETCH_CMDS=:FETCh?,READ?" in out
+    assert "MULTI_METER_FETCH_CMDS=:FETCh?,:FETC?" in out
     assert not (tmp_path / "roi.env").exists()
 
 
