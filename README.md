@@ -78,6 +78,7 @@ pip install -e ".[dev]"
 ```bash
 roi-visa-diag
 roi-mmter-diag
+roi-mmter-diag --roi-cmds --style func
 roi-can-diag --duration 5
 roi-mrsignal-diag --read-count 3
 roi-autodetect-diag
@@ -94,6 +95,7 @@ sudo systemctl stop roi
 
 sudo /opt/roi/.venv/bin/roi-visa-diag
 sudo /opt/roi/.venv/bin/roi-mmter-diag
+sudo /opt/roi/.venv/bin/roi-mmter-diag --roi-cmds --style func
 sudo /opt/roi/.venv/bin/roi-mrsignal-diag --read-count 3
 sudo /opt/roi/.venv/bin/roi-autodetect-diag
 sudo /opt/roi/.venv/bin/roi-can-diag --duration 5

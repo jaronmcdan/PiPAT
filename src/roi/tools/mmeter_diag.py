@@ -20,9 +20,221 @@ from __future__ import annotations
 import argparse
 import serial
 import time
+from dataclasses import dataclass
 
 from .. import config
-from ..devices.bk5491b import BK5491B
+from ..devices.bk5491b import (
+    BK5491B,
+    FUNC_TO_NPLC_PREFIX_FUNC,
+    FUNC_TO_RANGE_PREFIX_FUNC,
+    FUNC_TO_REF_PREFIX_FUNC,
+    FUNC_TO_SCPI_CONF,
+    FUNC_TO_SCPI_FUNC,
+    FUNC_TO_SCPI_FUNC2,
+    MmeterFunc,
+)
+
+
+@dataclass
+class _CmdProbe:
+    name: str
+    cmd: str
+    is_query: bool = False
+    note: str = ""
+
+
+@dataclass
+class _CmdResult:
+    probe: _CmdProbe
+    ok: bool
+    response: str = ""
+    error: str = ""
+
+
+def _is_no_error(line: str) -> bool:
+    u = (line or "").strip().upper()
+    return (not u) or u.startswith("0") or ("NO ERROR" in u)
+
+
+def _func_prefixes(d: dict[int, str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for p in d.values():
+        s = str(p or "").strip()
+        if not s:
+            continue
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+def _range_value_for_prefix(prefix: str) -> float:
+    u = str(prefix or "").upper()
+    if ":CURR" in u:
+        return 0.1
+    if ":RES" in u:
+        return 1000.0
+    return 10.0
+
+
+def _mmeter_style_auto_detect(h: BK5491B) -> str:
+    # Try FUNC first for this family.
+    resp = h.query_line(":FUNCtion?", delay_s=0.05, read_lines=6)
+    if _looks_func(resp):
+        return "func"
+    resp = h.query_line(":CONFigure:FUNCtion?", delay_s=0.05, read_lines=6)
+    if _looks_conf(resp):
+        return "conf"
+    return "func"
+
+
+def _build_roi_command_matrix(
+    *,
+    style: str,
+    fetch_cmds: list[str],
+    include_conf_fallback: bool,
+) -> list[_CmdProbe]:
+    cmds: list[_CmdProbe] = []
+
+    cmds.append(_CmdProbe("idn", "*IDN?", is_query=True))
+    cmds.append(_CmdProbe("error_queue", ":SYST:ERR?", is_query=True))
+
+    # Startup/style discovery queries ROI may issue.
+    cmds.append(_CmdProbe("query_func", ":FUNCtion?", is_query=True))
+    if style == "conf" or include_conf_fallback:
+        cmds.append(_CmdProbe("query_conf_func", ":CONFigure:FUNCtion?", is_query=True))
+
+    # Primary function selection commands used by ROI.
+    if style in ("func", "auto"):
+        for f_i, c in FUNC_TO_SCPI_FUNC.items():
+            cmds.append(_CmdProbe(f"set_func_primary_{int(f_i)}", str(c)))
+
+    if style == "conf" or include_conf_fallback:
+        for f_i, c in FUNC_TO_SCPI_CONF.items():
+            # ROI may synthesize variants in fallback mode.
+            base = str(c).strip()
+            if base:
+                cmds.append(_CmdProbe(f"set_conf_primary_{int(f_i)}", base))
+                if ("@" not in base) and (":VOLT" in base or ":CURR" in base or ":FREQ" in base):
+                    cmds.append(_CmdProbe(f"set_conf_primary_ch1_{int(f_i)}", f"{base},@1"))
+                if not base.startswith(":"):
+                    cmds.append(_CmdProbe(f"set_conf_primary_colon_{int(f_i)}", f":{base}"))
+
+    # EXT opcode tree (ROI command paths).
+    cmds.append(_CmdProbe("set_secondary_enable_on", ":FUNCtion2:STATe 1"))
+    for f_i, c in FUNC_TO_SCPI_FUNC2.items():
+        cmds.append(_CmdProbe(f"set_secondary_func_{int(f_i)}", str(c)))
+    cmds.append(_CmdProbe("set_secondary_enable_off", ":FUNCtion2:STATe 0"))
+
+    for p in _func_prefixes(FUNC_TO_RANGE_PREFIX_FUNC):
+        cmds.append(_CmdProbe(f"set_autorange_on_{p}", f"{p}:RANGe:AUTO ON"))
+        cmds.append(_CmdProbe(f"set_autorange_off_{p}", f"{p}:RANGe:AUTO OFF"))
+        rv = _range_value_for_prefix(p)
+        cmds.append(_CmdProbe(f"set_range_{p}", f"{p}:RANGe {rv:g}"))
+
+    for p in _func_prefixes(FUNC_TO_NPLC_PREFIX_FUNC):
+        cmds.append(_CmdProbe(f"set_nplc_{p}", f"{p}:NPLCycles 1"))
+
+    for p in _func_prefixes(FUNC_TO_REF_PREFIX_FUNC):
+        cmds.append(_CmdProbe(f"set_relative_on_{p}", f"{p}:REFerence:STATe ON"))
+        cmds.append(_CmdProbe(f"acquire_relative_{p}", f"{p}:REFerence:ACQuire"))
+        cmds.append(_CmdProbe(f"set_relative_off_{p}", f"{p}:REFerence:STATe OFF"))
+
+    cmds.append(_CmdProbe("set_trigger_imm", ":TRIGger:SOURce IMM"))
+    cmds.append(_CmdProbe("set_trigger_bus", ":TRIGger:SOURce BUS"))
+    cmds.append(_CmdProbe("set_trigger_man", ":TRIGger:SOURce MAN"))
+    cmds.append(_CmdProbe("bus_trigger", "*TRG"))
+
+    for c in fetch_cmds:
+        cc = str(c or "").strip()
+        if not cc:
+            continue
+        cmds.append(_CmdProbe(f"fetch_{cc}", cc, is_query=True))
+
+    return cmds
+
+
+def _print_expected_settings(*, port: str, baud: int, style: str) -> None:
+    print("Expected meter settings for ROI:")
+    print(f"  - Serial link: {port} @ {baud} (8N1, newline-terminated SCPI)")
+    print(f"  - SCPI style: {style} (ROI can use func/conf; func is preferred for 5491B)")
+    print("  - Trigger source: ROI may set IMM/BUS/MAN during extended control tests")
+    print("  - Range/NPLC/Relative/Function2: ROI may change these at runtime")
+    print("  - Keep the port dedicated (no competing process touching the meter serial port)")
+    print()
+
+
+def _run_roi_command_probe(
+    h: BK5491B,
+    *,
+    style: str,
+    fetch_cmds: list[str],
+    include_conf_fallback: bool,
+) -> int:
+    probes = _build_roi_command_matrix(
+        style=style,
+        fetch_cmds=fetch_cmds,
+        include_conf_fallback=include_conf_fallback,
+    )
+
+    print("=== ROI Meter Command Matrix ===")
+    print(f"style={style} include_conf_fallback={bool(include_conf_fallback)}")
+    print(f"commands={len(probes)}")
+
+    results: list[_CmdResult] = []
+    for i, p in enumerate(probes, start=1):
+        # Clear stale queue entries so a failure can be attributed to this command.
+        try:
+            h.drain_errors(max_n=8, log=False)
+        except Exception:
+            pass
+
+        response = ""
+        exc_s = ""
+        try:
+            if p.is_query:
+                response = h.query_line(p.cmd, delay_s=0.02, read_lines=6, clear_input=True)
+            else:
+                h.write(p.cmd, delay_s=0.02, clear_input=True)
+        except Exception as e:
+            exc_s = str(e)
+
+        bad_err = ""
+        try:
+            errs = h.drain_errors(max_n=6, log=False)
+            bad = [e for e in errs if not _is_no_error(e)]
+            if bad:
+                bad_err = bad[0]
+        except Exception as e:
+            if not exc_s:
+                exc_s = str(e)
+
+        ok = (not exc_s) and (not bad_err)
+        err = exc_s or bad_err
+        results.append(_CmdResult(probe=p, ok=ok, response=response, error=err))
+
+        kind = "Q" if p.is_query else "W"
+        if ok:
+            if p.is_query:
+                print(f"[{i:03d}] OK   {kind} {p.cmd} -> {response or '<empty>'}")
+            else:
+                print(f"[{i:03d}] OK   {kind} {p.cmd}")
+        else:
+            print(f"[{i:03d}] FAIL {kind} {p.cmd} :: {err or 'unknown error'}")
+
+    fail = [r for r in results if not r.ok]
+    print()
+    print(f"Summary: pass={len(results)-len(fail)} fail={len(fail)} total={len(results)}")
+
+    if fail:
+        print("Failing commands:")
+        for r in fail:
+            print(f"  - {r.probe.cmd} -> {r.error}")
+        return 1
+
+    return 0
 
 
 def _looks_conf(resp: str) -> bool:
@@ -46,6 +258,16 @@ def main() -> int:
         choices=["auto", "func", "conf"],
         help="SCPI dialect to use (default: auto)",
     )
+    ap.add_argument(
+        "--roi-cmds",
+        action="store_true",
+        help="Run full command matrix for all SCPI paths ROI may use with the meter",
+    )
+    ap.add_argument(
+        "--include-conf-fallback",
+        action="store_true",
+        help="Also probe CONF fallback commands while in func mode",
+    )
     args = ap.parse_args()
 
     print(f"Opening {args.port} @ {args.baud}...")
@@ -68,18 +290,24 @@ def main() -> int:
 
         style = args.style
         if style == "auto":
-            # Try CONF first (more backwards-compatible).
-            resp = h.query_line(":CONFigure:FUNCtion?", delay_s=0.05, read_lines=6)
-            if _looks_conf(resp):
-                style = "conf"
-            else:
-                resp2 = h.query_line(":FUNCtion?", delay_s=0.05, read_lines=6)
-                if _looks_func(resp2):
-                    style = "func"
-                else:
-                    style = "conf"
+            style = _mmeter_style_auto_detect(h)
 
         print("Detected/selected SCPI style ->", style)
+        _print_expected_settings(port=str(args.port), baud=int(args.baud), style=str(style))
+
+        cmds = [
+            c.strip()
+            for c in str(getattr(config, "MULTI_METER_FETCH_CMDS", ":FETCh?,:FETC?,READ?")).split(",")
+            if c.strip()
+        ]
+
+        if args.roi_cmds:
+            return _run_roi_command_probe(
+                h,
+                style=style,
+                fetch_cmds=cmds,
+                include_conf_fallback=bool(args.include_conf_fallback),
+            )
 
         # Query function in the chosen dialect.
         if style == "conf":
@@ -108,11 +336,6 @@ def main() -> int:
             print("Skipping FUNC2 test (conf dialect)")
 
         # Fetch (try the same list ROI uses)
-        cmds = [
-            c.strip()
-            for c in str(getattr(config, "MULTI_METER_FETCH_CMDS", ":FETC?,READ?")).split(",")
-            if c.strip()
-        ]
         print("Fetch candidates:", cmds)
 
         time.sleep(0.05)

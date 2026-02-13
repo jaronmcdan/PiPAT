@@ -188,3 +188,111 @@ def test_env_hardcode_apply_writes_and_backs_up(monkeypatch, capsys, tmp_path):
     assert (tmp_path / "roi.env.20260213-151700.bak").exists()
     assert "Wrote" in out
 
+
+def test_mmeter_diag_roi_cmds_success(monkeypatch, capsys):
+    import roi.tools.mmeter_diag as mm_diag
+
+    class FakeSerial:
+        def __init__(self, *a, **k):
+            pass
+
+        def reset_input_buffer(self):
+            return None
+
+        def reset_output_buffer(self):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeBK:
+        def __init__(self, ser, log_fn=print):
+            self.last_cmd = ""
+
+        def query_line(self, cmd, delay_s=0.0, read_lines=6, clear_input=True):
+            self.last_cmd = str(cmd)
+            if str(cmd).strip() == "*IDN?":
+                return "5491B  Multimeter,Ver1.4.14.06.18,124G21119"
+            if str(cmd).strip().upper() == ":FUNCtion?".upper():
+                return "CURR:DC"
+            return "OK"
+
+        def write(self, cmd, delay_s=0.0, clear_input=False):
+            self.last_cmd = str(cmd)
+
+        def fetch_values(self, cmd, delay_s=0.0, read_lines=6):
+            return SimpleNamespace(primary=1.0, secondary=None, raw="1.0")
+
+        def drain_errors(self, max_n=16, log=True):
+            return ["0,No error"]
+
+    monkeypatch.setattr(mm_diag.serial, "Serial", FakeSerial, raising=False)
+    monkeypatch.setattr(mm_diag, "BK5491B", FakeBK)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["roi-mmter-diag", "--port", "/dev/ttyUSBX", "--roi-cmds", "--style", "func"],
+    )
+
+    rc = mm_diag.main()
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "ROI Meter Command Matrix" in out
+    assert "fail=0" in out
+
+
+def test_mmeter_diag_roi_cmds_reports_failing_command(monkeypatch, capsys):
+    import roi.tools.mmeter_diag as mm_diag
+
+    class FakeSerial:
+        def __init__(self, *a, **k):
+            pass
+
+        def reset_input_buffer(self):
+            return None
+
+        def reset_output_buffer(self):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeBK:
+        def __init__(self, ser, log_fn=print):
+            self.last_cmd = ""
+
+        def query_line(self, cmd, delay_s=0.0, read_lines=6, clear_input=True):
+            self.last_cmd = str(cmd)
+            if str(cmd).strip() == "*IDN?":
+                return "5491B  Multimeter,Ver1.4.14.06.18,124G21119"
+            if str(cmd).strip().upper() == ":FUNCtion?".upper():
+                return "CURR:DC"
+            return "OK"
+
+        def write(self, cmd, delay_s=0.0, clear_input=False):
+            self.last_cmd = str(cmd)
+
+        def fetch_values(self, cmd, delay_s=0.0, read_lines=6):
+            return SimpleNamespace(primary=1.0, secondary=None, raw="1.0")
+
+        def drain_errors(self, max_n=16, log=True):
+            if self.last_cmd.strip().upper() == ":TRIGGER:SOURCE BUS":
+                return ["-113,BUS: BAD COMMAND"]
+            return ["0,No error"]
+
+    monkeypatch.setattr(mm_diag.serial, "Serial", FakeSerial, raising=False)
+    monkeypatch.setattr(mm_diag, "BK5491B", FakeBK)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["roi-mmter-diag", "--port", "/dev/ttyUSBX", "--roi-cmds", "--style", "func"],
+    )
+
+    rc = mm_diag.main()
+    out = capsys.readouterr().out
+
+    assert rc == 1
+    assert "Failing commands:" in out
+    assert ":TRIGger:SOURce BUS" in out
+

@@ -19,8 +19,17 @@ Diagnostics:
 
 ```bash
 roi-mmter-diag
+roi-mmter-diag --roi-cmds --style func
 roi-autodetect-diag
 ```
+
+Expected ROI meter settings/behavior:
+
+- Serial link is dedicated to ROI (`/dev/serial/by-id/...`, 38400 baud, 8N1).
+- ROI expects SCPI responses on newline termination.
+- Preferred SCPI style for 5491B is `func`.
+- ROI may change measurement function, range/auto-range, NPLC, relative mode,
+  trigger source, and secondary display while tests run.
 
 ## Electronic Load (VISA / USBTMC)
 

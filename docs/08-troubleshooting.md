@@ -43,6 +43,7 @@ Run:
 
 ```bash
 roi-mmter-diag
+roi-mmter-diag --roi-cmds --style func
 ```
 
 Try:
@@ -50,6 +51,8 @@ Try:
 - use `/dev/serial/by-id/...` instead of `/dev/ttyUSB*`
 - set `AUTO_DETECT_BYID_ONLY=1`
 - ensure no competing service opens the same serial device
+- if startup errors persist, disable startup error draining to isolate:
+  `MMETER_CLEAR_ERRORS_ON_STARTUP=0`
 
 ## MrSignal read/write diagnostics
 
