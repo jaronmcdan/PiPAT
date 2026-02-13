@@ -159,10 +159,10 @@ class DeviceCommandProcessor:
 
         # Candidate command order:
         #   - auto: try FUNC first (preferred for 2831E/5491B), then CONF
-        #   - func: FUNC first, then CONF
-        #   - conf: CONF first, then FUNC
+        #   - func: FUNC only (avoid cross-dialect BUS errors)
+        #   - conf: CONF only (avoid cross-dialect BUS errors)
         candidates: list[tuple[str, str]] = []
-        if style in ("auto", "func"):
+        if style == "auto":
             if func_cmd:
                 candidates.append(("func", func_cmd))
             if conf_cmd:
@@ -177,7 +177,10 @@ class DeviceCommandProcessor:
                 candidates.append(("conf", ":" + with_ch))
                 if with_ch != base:
                     candidates.append(("conf", ":" + base))
-        else:
+        elif style == "func":
+            if func_cmd:
+                candidates.append(("func", func_cmd))
+        else:  # style == "conf"
             if conf_cmd:
                 base = conf_cmd.strip()
                 with_ch = base
@@ -189,8 +192,6 @@ class DeviceCommandProcessor:
                 candidates.append(("conf", ":" + with_ch))
                 if with_ch != base:
                     candidates.append(("conf", ":" + base))
-            if func_cmd:
-                candidates.append(("func", func_cmd))
 
         # Remove duplicates while preserving order.
         seen: set[str] = set()

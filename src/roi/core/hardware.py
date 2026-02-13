@@ -401,6 +401,33 @@ class HardwareManager:
         replying with the actual IDN string. Also, some respond a beat later.
         We therefore read a few lines and skip obvious echoes.
         """
+        def _seed_fetch_cmd_from_idn() -> None:
+            """Pick a stable default fetch command for known 5491/2831 families.
+
+            This avoids startup probe churn that can trigger front-panel BUS
+            errors on some units.
+            """
+            try:
+                idn_u = str(getattr(self, "mmeter_id", "") or "").upper()
+                if ("5491" not in idn_u) and ("2831" not in idn_u):
+                    return
+
+                if str(getattr(self, "mmeter_fetch_cmd", "") or "").strip():
+                    return
+
+                cmds = [
+                    c.strip()
+                    for c in str(getattr(config, "MULTI_METER_FETCH_CMDS", ":FETC?")).split(",")
+                    if c.strip()
+                ]
+                if not cmds:
+                    cmds = [":FETC?"]
+
+                self.mmeter_fetch_cmd = str(cmds[0])
+                print(f"MMETER fetch cmd: {self.mmeter_fetch_cmd} (idn)")
+            except Exception:
+                pass
+
         try:
             mmeter = serial.Serial(
                 config.MULTI_METER_PATH,
@@ -435,6 +462,8 @@ class HardwareManager:
                         self.mmeter.drain_errors(log=True)
                 except Exception:
                     pass
+
+                _seed_fetch_cmd_from_idn()
 
                 # Optional SCPI dialect detection (one-time) to avoid sending
                 # commands the meter doesn't understand (prevents "BUS: BAD COMMAND").
@@ -483,6 +512,8 @@ class HardwareManager:
                     self.mmeter.drain_errors(log=True)
             except Exception:
                 pass
+
+            _seed_fetch_cmd_from_idn()
 
             self._maybe_detect_mmeter_scpi_style()
         except (serial.SerialException, IOError) as e:
