@@ -41,6 +41,32 @@ sudo bash /opt/roi/scripts/service_install.sh --prefix /opt/roi --enable --start
 sudo journalctl -u roi -f
 ```
 
+## Updating From GitHub
+
+### Pi service install (`/opt/roi`)
+
+From the checkout you originally cloned (for example `~/roi`):
+
+```bash
+cd ~/roi
+git pull --ff-only
+sudo bash scripts/pi_install.sh --prefix /opt/roi
+sudo bash /opt/roi/scripts/service_install.sh --prefix /opt/roi --start
+sudo journalctl -u roi -n 50 --no-pager
+```
+
+Notes:
+
+- `pi_install.sh` re-syncs code into `/opt/roi` and reinstalls the package in `/opt/roi/.venv`.
+- `/etc/roi/roi.env` is preserved (it is only created if missing).
+
+### Developer checkout update
+
+```bash
+git pull --ff-only
+pip install -e ".[dev]"
+```
+
 ## Diagnostics
 
 ```bash
