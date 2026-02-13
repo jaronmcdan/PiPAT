@@ -1,15 +1,16 @@
 # Prerequisites
 
-## Supported platforms
+## Supported Platforms
 
-- **Raspberry Pi / Debian-based Linux** is the primary target.
-- Windows/macOS can run unit tests and some logic, but hardware backends are Linux-oriented.
+- Primary target: Raspberry Pi / Debian-based Linux
+- Windows and macOS: useful for tests and non-hardware logic, but hardware I/O
+  paths are Linux-oriented
 
 ## Python
 
-- Python **3.10+** is required (ROI uses modern typing syntax).
+ROI requires Python 3.10+.
 
-On Raspberry Pi OS / Debian, check:
+Check version:
 
 ```bash
 python3 --version
@@ -17,26 +18,24 @@ python3 --version
 
 ## Hardware
 
-ROI is meant to sit between your CAN network and lab instruments.
-
-Typical setup:
+Typical deployment:
 
 - Raspberry Pi 4/5 (or similar)
 - CAN interface:
-  - SocketCAN capable interface (e.g., PiCAN, MCP2515, USB-CAN), **or**
-  - RM/Proemion CANview gateway (serial “Byte Command Protocol”)
-- Instruments (optional; ROI works with any subset):
-  - B&K Precision bench multimeter (USB-serial)
-  - Electronic load (VISA USBTMC, e.g., BK 8600 series)
-  - AFG / function generator (VISA USB or VISA serial)
-  - Arduino/USB relay controller for K1
-  - MrSignal / LANYI MR2.x Modbus PSU
+  - SocketCAN device (for example PiCAN, MCP2515, USB-CAN), or
+  - RM/Proemion CANview serial gateway
+- Optional instruments (ROI tolerates partial hardware):
+  - B&K Precision bench multimeter (USB serial)
+  - Electronic load (VISA USBTMC)
+  - AFG/function generator (VISA USB or VISA serial)
+  - Arduino-style USB relay controller for K1
+  - MrSignal/LANYI MR2.x Modbus PSU
 
-## OS packages (recommended)
+## OS Packages (Recommended)
 
-The installer can install these for you:
+The Pi installer can install these automatically:
 
 - `python3-venv`, `python3-pip`, `python3-dev`
-- `can-utils` (useful for debugging SocketCAN)
-- `libusb-1.0-0`, `usbutils` (helpful for VISA/USBTMC)
-- `rsync` (install scripts use it)
+- `can-utils`
+- `libusb-1.0-0`, `usbutils`
+- `rsync`

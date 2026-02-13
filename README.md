@@ -1,16 +1,15 @@
 # ROI (Remote Operational Equipment)
 
-ROI is a Raspberry Pi–focused bridge between a CAN bus and lab / test instruments (multimeter, electronic load, AFG, relay, MrSignal PSU).
+ROI is a Raspberry Pi focused bridge between a CAN bus and lab/test instruments.
+It receives CAN control frames, applies them to connected devices, and publishes
+readback/status frames back onto CAN.
 
-It listens for **control frames** on CAN, applies those commands to instruments, and publishes **readback/status frames** back on CAN.
+## Start Here
 
-## Documentation (start here)
+- Documentation index: [`docs/README.md`](docs/README.md)
+- Recommended path: overview -> install -> config -> run
 
-- **Docs index:** [`docs/README.md`](docs/README.md)
-
-The docs are written in setup order (overview → install → config → run).
-
-## Quick start (developer)
+## Developer Quick Start
 
 ```bash
 python3 -m venv .venv
@@ -20,50 +19,39 @@ pip install -e ".[dev]"
 roi
 ```
 
-Run unit tests:
+Run tests:
 
 ```bash
 python -m pytest
 ```
 
-## Raspberry Pi install (appliance style)
+## Raspberry Pi Install
 
 ```bash
 git clone <your-repo-url> roi
 cd roi
-# We use 'bash' here to ensure it runs even if permissions are lost
 sudo bash scripts/pi_install.sh --easy
 sudo /opt/roi/.venv/bin/roi
 ```
 
-Install as a service:
+Install and enable service:
 
 ```bash
 sudo bash /opt/roi/scripts/service_install.sh --prefix /opt/roi --enable --start
 sudo journalctl -u roi -f
 ```
 
-## Handy diagnostics
+## Diagnostics
 
-- VISA/USBTMC discovery:
-  ```bash
-  roi-visa-diag
-  ```
-- Multimeter serial diagnostics:
-  ```bash
-  roi-mmter-diag
-  ```
+```bash
+roi-visa-diag
+roi-mmter-diag
+```
 
-## Optional web dashboard
-
-ROI can run a lightweight read-only web UI for device status and failure diagnostics:
+## Optional Web Dashboard
 
 ```bash
 ROI_WEB_ENABLE=1 ROI_WEB_PORT=8080 roi
 ```
 
-Then browse to `http://<pi-hostname>:8080/`.
-
-## Project name note
-
-Some earlier internal drafts referenced a different name. This repository is **ROI** (Remote Operational Equipment). Any legacy references have been removed.
+Browse to `http://<pi-hostname>:8080/`.

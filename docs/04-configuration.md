@@ -1,24 +1,23 @@
 # Configuration
 
-ROI configuration is defined in `roi.config` as sensible defaults, and can be overridden by environment variables.
+ROI defaults live in `src/roi/config.py`. Every value can be overridden via
+environment variables.
 
-On Raspberry Pi installs, the canonical override file is:
+For Raspberry Pi + systemd installs, use:
 
 - `/etc/roi/roi.env`
 
-The systemd unit loads that file automatically.
+The service unit loads that file automatically.
 
-## Most important settings
+## Quick Start Settings
 
 ### Build tag
-
-Use this to label a build in logs:
 
 ```bash
 ROI_BUILD_TAG=lab-pi-01
 ```
 
-### CAN backend selection
+### CAN backend
 
 SocketCAN (default):
 
@@ -29,7 +28,7 @@ CAN_BITRATE=250000
 CAN_SETUP=1
 ```
 
-CANview (serial gateway):
+RM/Proemion CANview:
 
 ```bash
 CAN_INTERFACE=rmcanview
@@ -37,111 +36,123 @@ CAN_CHANNEL=/dev/serial/by-id/<your-canview>
 CAN_SERIAL_BAUD=115200
 CAN_BITRATE=250000
 CAN_SETUP=1
+CAN_CLEAR_ERRORS_ON_INIT=1
 ```
 
-See [CAN backends](05-can-backends.md).
-
-
-### CAN TX / traffic tuning
-
-ROI publishes **readback/status** frames on CAN from a dedicated TX thread.
-
-Baseline settings:
+### TX cadence and traffic shaping
 
 ```bash
 CAN_TX_ENABLE=1
 CAN_TX_PERIOD_MS=50
-```
 
-Fine-grained per-frame periods (milliseconds). These default to `CAN_TX_PERIOD_MS`, so you only need to set the ones you want slower:
-
-```bash
 CAN_TX_PERIOD_MMETER_LEGACY_MS=200
 CAN_TX_PERIOD_MMETER_EXT_MS=200
 CAN_TX_PERIOD_MMETER_STATUS_MS=200
 CAN_TX_PERIOD_ELOAD_MS=200
-
 CAN_TX_PERIOD_AFG_EXT_MS=1000
 CAN_TX_PERIOD_MRS_STATUS_MS=1000
 CAN_TX_PERIOD_MRS_INPUT_MS=1000
-```
 
-Optional: send a frame immediately when its payload changes (still rate-limited):
-
-```bash
 CAN_TX_SEND_ON_CHANGE=1
 CAN_TX_SEND_ON_CHANGE_MIN_MS=50
 ```
 
-### CAN RX filtering (optional CPU optimization)
-
-On very busy CAN buses, you can ask ROI to apply driver/kernel-level CAN ID filters so the Python process only receives frames it actually cares about.
+### RX filtering and rmcanview tuning
 
 ```bash
 CAN_RX_KERNEL_FILTER_MODE=control
-# or:
-CAN_RX_KERNEL_FILTER_MODE=control+pat
-```
+# or control+pat
 
-Note: filtering reduces CPU load, but it also makes the bus-load estimator less accurate (because ROI no longer sees all traffic).
-
-### CANview serial tuning (rmcanview)
-
-For RM/Proemion CANview gateways, you can disable `pyserial.flush()` on every send. This can improve throughput and reduce CPU usage.
-
-```bash
 CAN_RMCANVIEW_FLUSH_EVERY_SEND=0
 ```
 
-### Auto-detection
-
-Auto-detection helps when `/dev/ttyUSB*` order changes.
-
-Enable/disable:
+### Device auto-detection
 
 ```bash
 AUTO_DETECT_ENABLE=1
 AUTO_DETECT_VERBOSE=1
 AUTO_DETECT_PREFER_BY_ID=1
-```
-
-Lock down probing (avoid talking to unknown serial ports):
-
-```bash
 AUTO_DETECT_BYID_ONLY=1
-```
 
-Provide “by-id” name hints (matched against `/dev/serial/by-id/*` symlink names):
-
-```bash
 AUTO_DETECT_MMETER_BYID_HINTS=5491b,multimeter
 AUTO_DETECT_MRSIGNAL_BYID_HINTS=mr.signal,lanyi
 AUTO_DETECT_K1_BYID_HINTS=arduino,relay
 AUTO_DETECT_CANVIEW_BYID_HINTS=canview,proemion
 ```
 
-### VISA backend
+ASRL probing controls:
 
-On Raspberry Pi, `pyvisa-py` is usually the easiest:
+```bash
+AUTO_DETECT_VISA_PROBE_ASRL=1
+AUTO_DETECT_VISA_ASRL_ALLOW_PREFIXES=/dev/ttyACM
+AUTO_DETECT_VISA_ASRL_EXCLUDE_PREFIXES=/dev/ttyAMA,/dev/ttyS,/dev/ttyUSB
+```
+
+### VISA and explicit ports
 
 ```bash
 VISA_BACKEND=@py
 VISA_TIMEOUT_MS=500
-```
 
-### Device IDs / ports
-
-If you do not rely on auto-detect, set explicit paths:
-
-```bash
 MULTI_METER_PATH=/dev/ttyUSB0
 MRSIGNAL_PORT=/dev/ttyUSB1
 K1_SERIAL_PORT=/dev/ttyACM0
 ELOAD_VISA_ID=USB0::...
-AFG_VISA_ID=USB0::...   # or ASRL/...::INSTR
+AFG_VISA_ID=USB0::...
 ```
 
-## Notes on defaults
+## Runtime and Safety Settings
 
-- Defaults in `roi.config` are safe-ish, but **every lab setup differs**.
-- It’s normal to configure at least `CAN_*` and any connected instruments.
+### Watchdog and loop timing
+
+```bash
+CONTROL_TIMEOUT_SEC=2.0
+WATCHDOG_GRACE_SEC=0.25
+CAN_TIMEOUT_SEC=2.0
+
+HEADLESS_LOOP_PERIOD_S=0.1
+MEAS_POLL_PERIOD=0.2
+STATUS_POLL_PERIOD=1.0
+```
+
+### Queue and buffering controls
+
+```bash
+CAN_CMD_QUEUE_MAX=256
+CAN_RMCANVIEW_RX_MAX=2048
+```
+
+### Bus-load display tuning
+
+```bash
+CAN_BUS_LOAD_ENABLE=1
+CAN_BUS_LOAD_WINDOW_SEC=1.0
+CAN_BUS_LOAD_STUFFING_FACTOR=1.2
+CAN_BUS_LOAD_SMOOTH_ALPHA=0.25
+CAN_BUS_LOAD_OVERHEAD_BITS=48
+```
+
+### Multimeter behavior controls
+
+```bash
+MMETER_SCPI_STYLE=auto
+MMETER_CONTROL_SETTLE_SEC=0.30
+MMETER_DEBUG=0
+MMETER_CLEAR_ERRORS_ON_STARTUP=1
+```
+
+### Web dashboard controls
+
+```bash
+ROI_WEB_ENABLE=0
+ROI_WEB_HOST=0.0.0.0
+ROI_WEB_PORT=8080
+ROI_WEB_TOKEN=
+ROI_WEB_DIAG_MAX_EVENTS=250
+ROI_WEB_DIAG_DEDUPE_WINDOW_S=0.75
+```
+
+## Notes
+
+- Start with CAN settings and only the device settings you need.
+- If you are unsure about a variable, check `src/roi/config.py` first.

@@ -5,70 +5,69 @@
 If `rich` is installed and `ROI_HEADLESS=0`, running `roi` opens a live dashboard.
 
 Developer install:
+
 ```bash
 roi
 ```
 
 Pi install:
+
 ```bash
 sudo /opt/roi/.venv/bin/roi
 ```
 
 ## Headless mode
 
-Headless mode is recommended under systemd:
+Recommended for systemd/journald:
 
 ```bash
 ROI_HEADLESS=1 roi
 ```
 
-In headless mode, ROI logs status periodically and publishes CAN frames normally, but skips the Rich UI.
+Headless mode still processes control traffic and publishes CAN readback frames.
 
 ## Web dashboard (read-only)
 
-ROI can optionally start a tiny, dependency-free web dashboard to view:
-
-- Device detect state (AFG / E-load / Multimeter / MrSignal / K1 / CAN)
-- Live measurements (from the same telemetry used by the Rich dashboard)
-- Recent events + per-device last-error diagnostics
-
-Enable it with either CLI flags:
+Enable via CLI:
 
 ```bash
-roi --web --web-port 8080
+roi --web --web-host 0.0.0.0 --web-port 8080
 ```
 
-…or environment variables (recommended for systemd):
+Or via environment variables (recommended for systemd):
 
 ```bash
 ROI_WEB_ENABLE=1 ROI_WEB_HOST=0.0.0.0 ROI_WEB_PORT=8080 roi
 ```
 
-Optional access control (very basic):
+Optional token:
 
 ```bash
 ROI_WEB_ENABLE=1 ROI_WEB_TOKEN='your-secret' roi
 ```
 
-Then browse:
+If a token is set, clients must provide either:
 
-- http://<pi-hostname>:8080/
+- `Authorization: Bearer your-secret`
+- `?token=your-secret`
 
-If a token is set, supply either:
+Browse to:
 
-- `Authorization: Bearer your-secret` (header)
-- `?token=your-secret` (query param)
+- `http://<pi-hostname>:8080/`
+
+## Useful CLI flags
+
+- `--headless`
+- `--no-can-setup`
+- `--no-auto-detect`
+- `--web`
+- `--web-host`
+- `--web-port`
+- `--web-token`
 
 ## systemd service
 
-On the Pi install:
-
 ```bash
-sudo /opt/roi/scripts/service_install.sh --prefix /opt/roi --enable --start
-```
-
-Logs:
-
-```bash
+sudo bash /opt/roi/scripts/service_install.sh --prefix /opt/roi --enable --start
 sudo journalctl -u roi -f
 ```

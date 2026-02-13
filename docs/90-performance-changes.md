@@ -1,23 +1,22 @@
-# Performance and responsiveness notes
+# Performance and Responsiveness Notes
 
-This appendix summarizes a few intentional design choices in ROI that affect responsiveness on a busy CAN bus.
+This appendix summarizes intentional behavior that affects responsiveness and
+CAN traffic on busy systems.
 
 ## CAN RX queue overflow policy
 
 File: `src/roi/can/comm.py`
 
-ROI uses a bounded `queue.Queue` between the CAN RX thread and the device command worker.
-
-When `CAN_CMD_QUEUE_MAX` is full, ROI prefers to **drop the oldest queued command** to make room for the newest. This improves responsiveness for “knob/slider” controls where only the latest state matters.
-
+ROI uses a bounded queue between CAN RX and device command handling. If the
+queue is full (`CAN_CMD_QUEUE_MAX`), ROI drops the oldest queued command to
+prefer the newest control state.
 
 ## CAN TX traffic shaping
 
-File: `src/roi/can/comm.py`, `src/roi/config.py`
+Files: `src/roi/can/comm.py`, `src/roi/config.py`
 
-ROI’s TX loop supports per-frame publish periods so you can reduce CAN traffic without turning off periodic transmissions.
-
-Environment variables (milliseconds):
+Per-frame TX period variables allow lower CAN traffic without disabling periodic
+readback frames:
 
 - `CAN_TX_PERIOD_MMETER_LEGACY_MS`
 - `CAN_TX_PERIOD_MMETER_EXT_MS`
@@ -27,48 +26,49 @@ Environment variables (milliseconds):
 - `CAN_TX_PERIOD_MRS_STATUS_MS`
 - `CAN_TX_PERIOD_MRS_INPUT_MS`
 
-Each defaults to `CAN_TX_PERIOD_MS` (legacy behavior).
+Each defaults to `CAN_TX_PERIOD_MS`.
 
-Optional: `CAN_TX_SEND_ON_CHANGE=1` sends a frame immediately when its payload changes (still rate-limited).
+Optional: `CAN_TX_SEND_ON_CHANGE=1` sends immediately on payload change (still
+rate-limited).
 
-## CAN RX kernel/driver filtering (optional)
+## CAN RX kernel/driver filtering
 
 File: `src/roi/can/comm.py`
 
-When `CAN_RX_KERNEL_FILTER_MODE` is set, ROI attempts to apply driver/kernel-level CAN ID filters (`cbus.set_filters`) so only relevant frames are delivered to Python.
+`CAN_RX_KERNEL_FILTER_MODE` can reduce CPU usage by limiting delivered CAN IDs.
+Tradeoff: bus-load estimation becomes less accurate when ROI sees only filtered
+traffic.
 
-This can significantly reduce CPU usage on a busy bus, but it also makes the bus-load estimator less accurate (because ROI can’t count what it can’t see).
-
-## rmcanview adapter RX buffering
+## rmcanview RX buffering
 
 File: `src/roi/can/rmcanview.py`
 
-The rmcanview serial backend maintains its own internal RX buffer. ROI bounds that buffer with `CAN_RMCANVIEW_RX_MAX` (default 2048) and uses a “drop-oldest” policy under backpressure to prevent unbounded latency growth.
+The rmcanview backend uses a bounded internal RX buffer controlled by
+`CAN_RMCANVIEW_RX_MAX` and applies drop-oldest behavior under backpressure.
 
 ## Polling lock strategy
 
 Files:
+
 - `src/roi/app.py`
 - `src/roi/core/device_comm.py`
 
-ROI uses short lock hold times for instrument I/O:
-- measurement polling (fast) is separated from status polling (slow)
-- control writes are prioritized over long polling sequences
+ROI separates fast measurement polling from slower status polling and keeps lock
+hold time short so control writes remain responsive.
 
-This avoids the “UI is responsive but controls lag” failure mode when a slow VISA/serial query blocks a shared lock for too long.
-
-## MrSignal “OFF” fast path
+## MrSignal output-off fast path
 
 File: `src/roi/devices/mrsignal.py`
 
-When disabling output, ROI writes `OUTPUT_ON=0` first as a fast safety action before applying other mode/value changes.
+When disabling output, ROI writes `OUTPUT_ON=0` first as a safety-first step.
 
-## Dashboard fallbacks
+## Dashboard fallback behavior
 
 File: `src/roi/ui/dashboard.py`
 
-When a polled field is missing (because polling is intentionally throttled to avoid blocking control), the dashboard can fall back to the last commanded state cached in the HardwareManager.
+If a polled field is temporarily unavailable, the dashboard may display the last
+known commanded state.
 
 ## Build tag
 
-Use `ROI_BUILD_TAG` (env var) to label a deployment build in logs.
+Use `ROI_BUILD_TAG` to label deployments in logs.

@@ -1,50 +1,57 @@
-# Internal notes (maintainers)
+# Internal Notes (Maintainers)
 
-These are historical engineering notes. They are **not** meant as end-user docs.
+Historical engineering notes for maintainers. Not end-user documentation.
 
-> Note: older entries referenced root-level filenames (e.g., `main.py`). The repo has since been refactored to a src-layout; updated paths are shown below.
+Note: older notes referenced pre-refactor root-level paths. Current paths in this
+file use the src-layout.
 
-## 2026-01-28 — Dashboard stability fixes
+## 2026-01-28: Dashboard stability fixes
 
-- **Bus load display smoothing**:
-  - `src/roi/can/metrics.py` (`can_metrics.BusLoadMeter`) supports EMA smoothing (`smooth_alpha`)
-  - `src/roi/app.py` wires it to `roi.config.CAN_BUS_LOAD_SMOOTH_ALPHA`
+Changes:
 
-- **Control watchdog reliability**:
-  - Timestamps use `time.monotonic()` (resists NTP/system clock adjustments)
-  - Soft vs hard timeout via `roi.config.WATCHDOG_GRACE_SEC`
-  - Separate “CAN liveness” timeout (`roi.config.CAN_TIMEOUT_SEC`) independent of any specific control frame
+- Bus-load smoothing in `src/roi/can/metrics.py` (`BusLoadMeter` EMA)
+- App wiring in `src/roi/app.py` to `CAN_BUS_LOAD_SMOOTH_ALPHA`
+- Watchdog timing hardening using `time.monotonic()`
+- Soft/hard timeout behavior via `WATCHDOG_GRACE_SEC`
+- Separate CAN liveness timeout via `CAN_TIMEOUT_SEC`
 
 Files touched:
+
 - `src/roi/app.py`
 - `src/roi/ui/dashboard.py`
 - `src/roi/can/metrics.py`
 - `src/roi/config.py`
 
-## 2026-01-30 — MrSignal (MR2.0) Modbus RTU support
+## 2026-01-30: MrSignal (MR2.0) Modbus RTU support
 
-- Added `src/roi/devices/mrsignal.py` (minimalmodbus client with byteorder compatibility helpers)
-- Wired MrSignal into `HardwareManager` for init/idle/shutdown and redundant-write suppression
-- Added `MRSIGNAL_*` config/env options + CAN IDs + optional CAN readback frames
-- Dashboard displays MrSignal status (ID, output enable, mode, setpoint, input, float byteorder)
+Changes:
 
-## 2026-01-30 — USB auto-detect: prevent 5491B “bus command error” during VISA scanning
+- Added `src/roi/devices/mrsignal.py` (minimalmodbus client + byteorder helpers)
+- Wired MrSignal into `HardwareManager` init/idle/shutdown paths
+- Added `MRSIGNAL_*` config options, CAN IDs, and optional readback frames
+- Added dashboard status fields (ID, output enable, mode, setpoint, input, byteorder)
+
+## 2026-01-30: USB auto-detect mitigation for 5491B bus errors during VISA scanning
 
 Root cause:
-- PyVISA discovery can probe many `ASRL/...` resources with a forced baud and `*IDN?`.
-- If that hits the 5491B at the wrong baud, the meter may display a bus/command error.
+
+- PyVISA probing may query many `ASRL/...` resources with forced baud and `*IDN?`
+- Probing a 5491B at incorrect serial settings can trigger meter bus/command errors
 
 Mitigation:
-- Auto-detect excludes ASRL resources that map to already-discovered serial ports (multimeter + MrSignal)
-- Excludes onboard/console ports (ttyAMA*, ttyS*; configurable)
-- Allows disabling ASRL probing entirely
 
-Config knobs:
+- Exclude ASRL resources that map to already-known serial ports (meter/MrSignal)
+- Exclude onboard console ports by default (`ttyAMA*`, `ttyS*`)
+- Allow full ASRL probe disable
+
+Relevant config:
+
 - `AUTO_DETECT_VISA_PROBE_ASRL`
 - `AUTO_DETECT_ASRL_BAUD`
 - `AUTO_DETECT_VISA_ASRL_EXCLUDE_PREFIXES`
 - `AUTO_DETECT_VISA_ASRL_ALLOW_PREFIXES`
 
 Files touched:
+
 - `src/roi/core/device_discovery.py`
 - `src/roi/config.py`

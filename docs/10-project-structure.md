@@ -1,27 +1,28 @@
-# Project structure
+# Project Structure
 
-ROI uses a “src layout” (recommended for Python packages) and separates deployment artifacts from source.
+ROI uses a src-layout Python package and keeps deploy artifacts separate from
+runtime code.
 
-```
+```text
 .
-├─ src/roi/                 # Python package
-│  ├─ app.py                # main application (entrypoint `roi`)
-│  ├─ config.py             # env-driven configuration
-│  ├─ can/                  # CAN backends + TX/RX helpers
-│  ├─ core/                 # hardware manager, discovery, PAT helpers
-│  ├─ devices/              # instrument drivers (SCPI, Modbus, USBTMC)
-│  ├─ tools/                # small diagnostic CLIs
-│  └─ assets/               # packaged data (PAT.dbc)
-├─ deploy/
-│  ├─ env/roi.env.example   # example /etc/roi/roi.env
-│  └─ systemd/roi.service   # systemd unit template
-├─ scripts/                 # install/build helpers (Pi)
-├─ docs/                    # documentation (in setup order)
-└─ tests/                   # unit tests
+|- src/roi/                 # application package
+|  |- app.py                # main entrypoint (`roi`)
+|  |- config.py             # env-driven settings
+|  |- can/                  # CAN backends and TX/RX logic
+|  |- core/                 # hardware manager, discovery, diagnostics helpers
+|  |- devices/              # instrument drivers (SCPI/Modbus/USBTMC)
+|  |- tools/                # diagnostic CLIs
+|  `- assets/               # packaged data
+|- deploy/
+|  |- env/roi.env.example   # sample /etc/roi/roi.env
+|  `- systemd/roi.service   # service template
+|- scripts/                 # Pi install/build helpers
+|- docs/                    # setup + operations docs
+`- tests/                   # unit tests
 ```
 
-## Why this layout?
+## Why this layout
 
-- **Avoids import confusion**: src-layout prevents accidentally importing the local checkout when you think you’re importing the installed package.
-- **Cleaner deployment**: `deploy/` is explicitly “things we copy to /etc or /etc/systemd”.
-- **Docs are ordered**: `docs/` starts at overview and ends at troubleshooting/development.
+- reduces accidental import confusion in local checkouts
+- cleanly separates deploy templates from application code
+- keeps setup and ops docs in one ordered place

@@ -1,29 +1,30 @@
 # Development
 
-## Run tests
+## Run Tests
 
 ```bash
 python -m pytest
 ```
 
-Coverage is enforced via `pytest.ini` and `.coveragerc`.
+Coverage behavior is configured in `pytest.ini` and `.coveragerc`.
 
-## Editable install
+## Editable Install
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
+pip install -U pip
 pip install -e ".[dev]"
 ```
 
-## Repo style
+## Repo Layout
 
-- Source code lives under `src/roi/` (src-layout).
-- Raspberry Pi deployment artifacts live under `deploy/`.
-- Setup scripts live under `scripts/`.
+- Source code: `src/roi/`
+- Deployment artifacts: `deploy/`
+- Installer/build scripts: `scripts/`
+- Tests: `tests/`
 
-## Adding a dependency
+## Adding Dependencies
 
-Update `pyproject.toml` under `[project].dependencies`.
-
-If the dependency is only used for development, add it under `[project.optional-dependencies].dev`.
+- Runtime dependency: add under `[project].dependencies` in `pyproject.toml`
+- Dev-only dependency: add under `[project.optional-dependencies].dev`

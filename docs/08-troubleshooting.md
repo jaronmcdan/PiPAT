@@ -1,55 +1,57 @@
 # Troubleshooting
 
-## ROI starts but nothing happens
+## ROI starts but no controls take effect
 
-- Confirm you are receiving CAN frames:
+- Verify CAN traffic is arriving:
   - SocketCAN: `candump can0`
-  - CANview: confirm `CAN_CHANNEL` points to the correct `/dev/serial/by-id/...` symlink
+  - CANview: verify `CAN_CHANNEL` points to the expected `/dev/serial/by-id/...`
+- Verify CAN interface state:
 
-- Confirm the CAN interface is up:
-  ```bash
-  ip -details link show can0
-  ```
+```bash
+ip -details link show can0
+```
 
 ## Permission errors
 
-- USB serial devices: add your user to `dialout`, or run ROI as root.
-- USBTMC / VISA: install udev rules or run as root.
-- SocketCAN bring-up: requires privileges.
+- USB serial: user must be in `dialout` (or run as root)
+- USBTMC/VISA: install udev rules or run as root
+- SocketCAN bring-up requires privileges
 
-## VISA can’t see your instrument
+## VISA cannot find instruments
 
 Run:
+
 ```bash
 roi-visa-diag
 ```
 
 Common causes:
-- Wrong backend (try `VISA_BACKEND=@py`)
-- Missing permissions
-- Device enumerated as `/dev/usbtmc*` but VISA backend doesn’t support it (ROI includes a `/dev/usbtmc*` fallback path)
 
-## Multimeter shows BUS errors / beeps
+- backend mismatch (`VISA_BACKEND=@py` is typical on Pi)
+- missing USB permissions
+- unsupported resource path
+
+## Multimeter BUS errors / beeps
 
 Run:
+
 ```bash
 roi-mmter-diag
 ```
 
 Try:
-- Use `/dev/serial/by-id/...` paths rather than `/dev/ttyUSB*`
-- Set `AUTO_DETECT_BYID_ONLY=1` to avoid probing unknown serial devices
-- Ensure no other service is opening the port (ModemManager, brltty, etc.)
 
-## CANview errors / no frames
+- use `/dev/serial/by-id/...` instead of `/dev/ttyUSB*`
+- set `AUTO_DETECT_BYID_ONLY=1`
+- ensure no competing service opens the same serial device
 
-- Confirm the USB serial device is correct (`/dev/serial/by-id/...`).
-- Confirm `CAN_SERIAL_BAUD` matches what the CANview expects.
-- Try setting `CAN_CLEAR_ERRORS_ON_INIT=1`.
+## CANview errors or missing frames
 
-## “Module not found” errors
+- confirm the correct `/dev/serial/by-id/...` device
+- confirm `CAN_SERIAL_BAUD`
+- set `CAN_CLEAR_ERRORS_ON_INIT=1`
 
-If running from a git checkout, install in a venv:
+## Module import errors from a checkout
 
 ```bash
 python3 -m venv .venv
