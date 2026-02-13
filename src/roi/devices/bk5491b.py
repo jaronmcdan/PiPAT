@@ -272,11 +272,11 @@ class BK5491B:
     def system_error(self) -> str:
         """Query one entry from the instrument error queue.
 
-        The 2831E/5491B manual documents :SYSTem:ERRor? for reading and clearing
-        errors from the queue.
+        Use the short SCPI form first for compatibility with firmware variants
+        that reject long-form :SYSTem:ERRor? tokens.
         """
 
-        return self.query_line(":SYSTem:ERRor?", delay_s=0.0, read_lines=6, clear_input=True)
+        return self.query_line(":SYST:ERR?", delay_s=0.0, read_lines=6, clear_input=True)
 
     def drain_errors(self, *, max_n: int = 16, log: bool = True) -> list[str]:
         """Drain the error queue (best-effort).
