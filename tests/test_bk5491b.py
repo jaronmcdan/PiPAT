@@ -78,7 +78,7 @@ def test_system_error_uses_correct_scpi():
     ser = FakeSerial([b"0,No error\n"])
     dmm = BK5491B(ser)
     _ = dmm.system_error()
-    assert any(b":SYSTem:ERRor?" in w for w in ser.writes)
+    assert any(b":SYST:ERR?" in w for w in ser.writes)
 
 
 def test_drain_errors_preview(monkeypatch):
