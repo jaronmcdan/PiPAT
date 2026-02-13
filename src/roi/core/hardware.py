@@ -318,7 +318,27 @@ class HardwareManager:
             print(f"MMETER SCPI style: {self.mmeter_scpi_style} (default)")
             return
 
-        # 1) Try CONF-style query first (often present on older firmware).
+        # If IDN indicates the known 2831E/5491B family, prefer FUNC-style
+        # directly to avoid sending a potentially-invalid probe first.
+        idn_u = str(getattr(self, "mmeter_id", "") or "").upper()
+        if ("5491" in idn_u) or ("2831" in idn_u):
+            self.mmeter_scpi_style = "func"
+            print(f"MMETER SCPI style: {self.mmeter_scpi_style} (idn)")
+            return
+
+        # 1) Try FUNC-style query first (classic SCPI tree for this family).
+        resp = ""
+        try:
+            resp = helper.query_line(":FUNCtion?", delay_s=0.05, read_lines=6)
+        except Exception:
+            resp = ""
+        r = (resp or "").upper()
+        if any(tok in r for tok in ("VOLT", "CURR", "RES", "FREQ", "PER", "DIO", "CONT")):
+            self.mmeter_scpi_style = "func"
+            print(f"MMETER SCPI style: {self.mmeter_scpi_style} (auto)")
+            return
+
+        # 2) Then try CONF-style query (legacy/alternate firmware).
         resp = ""
         try:
             resp = helper.query_line(":CONFigure:FUNCtion?", delay_s=0.05, read_lines=6)
@@ -330,20 +350,8 @@ class HardwareManager:
             print(f"MMETER SCPI style: {self.mmeter_scpi_style} (auto)")
             return
 
-        # 2) Then try FUNC-style query (classic SCPI tree).
-        resp2 = ""
-        try:
-            resp2 = helper.query_line(":FUNCtion?", delay_s=0.05, read_lines=6)
-        except Exception:
-            resp2 = ""
-        r2 = (resp2 or "").upper()
-        if any(tok in r2 for tok in ("VOLT", "CURR", "RES", "FREQ", "PER", "DIO", "CONT")):
-            self.mmeter_scpi_style = "func"
-            print(f"MMETER SCPI style: {self.mmeter_scpi_style} (auto)")
-            return
-
         # Fallback
-        self.mmeter_scpi_style = "conf"
+        self.mmeter_scpi_style = "func"
         print(f"MMETER SCPI style: {self.mmeter_scpi_style} (auto default)")
 
     # --- Relay helpers ---
