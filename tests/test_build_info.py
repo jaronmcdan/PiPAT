@@ -95,3 +95,29 @@ def test_build_banner_includes_rev_and_tag(monkeypatch: pytest.MonkeyPatch):
     assert "ROI" in banner
     assert "rev abcdef1" in banner
     assert "tag lab-pi-01" in banner
+
+
+def test_get_version_with_revision_appends_short_hash(monkeypatch: pytest.MonkeyPatch):
+    import roi
+    from roi import build_info
+
+    monkeypatch.setattr(roi, "__version__", "1.2.3")
+    monkeypatch.setenv("ROI_REVISION", "deadbeefcafebabe")
+    build_info.get_revision_full.cache_clear()
+    build_info.get_revision.cache_clear()
+    build_info.get_version.cache_clear()
+
+    assert build_info.get_version_with_revision() == "1.2.3+gdeadbee"
+
+
+def test_get_version_with_revision_without_hash(monkeypatch: pytest.MonkeyPatch):
+    import roi
+    from roi import build_info
+
+    monkeypatch.setattr(roi, "__version__", "1.2.3")
+    monkeypatch.setenv("ROI_REVISION", "unknown")
+    build_info.get_revision_full.cache_clear()
+    build_info.get_revision.cache_clear()
+    build_info.get_version.cache_clear()
+
+    assert build_info.get_version_with_revision() == "1.2.3"

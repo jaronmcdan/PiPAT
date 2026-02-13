@@ -910,8 +910,16 @@ def instrument_poll_loop(
             sleep_s = 0.001
         stop_event.wait(timeout=sleep_s)
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="ROI Instrument Bridge")
+    try:
+        from .build_info import get_version_with_revision
+
+        version_str = f"ROI {get_version_with_revision()}"
+    except Exception:
+        version_str = "ROI unknown"
+
+    p.add_argument("--version", action="version", version=version_str)
     p.add_argument("--headless", action="store_true", help="Disable Rich TUI (better for systemd)")
     p.add_argument("--no-can-setup", action="store_true", help="Do not run 'ip link set ... up type can ...'")
     p.add_argument("--no-auto-detect", action="store_true", help="Disable USB/VISA auto-detection at startup")
@@ -919,7 +927,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--web-host", default=None, help="Web dashboard bind host (default: ROI_WEB_HOST)")
     p.add_argument("--web-port", type=int, default=None, help="Web dashboard port (default: ROI_WEB_PORT)")
     p.add_argument("--web-token", default=None, help="Optional bearer token for web dashboard (default: ROI_WEB_TOKEN)")
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 def main() -> int:

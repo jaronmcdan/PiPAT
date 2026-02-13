@@ -25,6 +25,12 @@ Run tests:
 python -m pytest
 ```
 
+Check installed ROI version (+git hash when available):
+
+```bash
+roi --version
+```
+
 ## Raspberry Pi Install
 
 ```bash

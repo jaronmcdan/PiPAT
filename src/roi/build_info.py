@@ -164,3 +164,13 @@ def build_banner(build_tag: Optional[str] = None) -> str:
             parts.append(f"tag {tag}")
 
     return " | ".join(parts)
+
+
+def get_version_with_revision() -> str:
+    """Return version, appending '+g<shortsha>' when revision is known."""
+
+    ver = get_version()
+    rev = get_revision(short=True)
+    if not rev or rev == "unknown":
+        return ver
+    return f"{ver}+g{rev}"
