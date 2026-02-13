@@ -73,15 +73,17 @@ def _func_style_cmd_variants(cmd: str) -> list[str]:
         rhs_short = re.sub(k, v, rhs_short, flags=re.IGNORECASE)
 
     rhs_candidates: list[str] = []
-    rhs_candidates.append(f'"{rhs_short}"')
+    # Prefer unquoted short mnemonics first; this is the most compatible form
+    # on stricter firmware builds (avoids startup BUS parameter errors).
     rhs_candidates.append(rhs_short)
+    rhs_candidates.append(f'"{rhs_short}"')
     if rhs0.lower() != rhs_short.lower():
-        rhs_candidates.append(f'"{rhs0}"')
         rhs_candidates.append(rhs0)
+        rhs_candidates.append(f'"{rhs0}"')
 
-    # Prefer the full :FUNCtion header first so logs remain familiar.
+    # Prefer abbreviated :FUNC first for stricter firmware compatibility.
     out: list[str] = []
-    for h in (":FUNCtion", ":FUNC"):
+    for h in (":FUNC", ":FUNCtion"):
         for rhs in rhs_candidates:
             out.append(f"{h} {rhs}")
     out.append(base)
