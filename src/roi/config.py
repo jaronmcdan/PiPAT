@@ -118,6 +118,12 @@ MMETER_DEBUG = _env_bool("MMETER_DEBUG", False)
 # instrument (it only stored it).
 MMETER_LEGACY_RANGE_ENABLE = _env_bool("MMETER_LEGACY_RANGE_ENABLE", False)
 
+# Extended MMETER control frame handling (MMETER_CTRL_EXT_ID).
+# Set to 0 to hard-disable processing of extended opcodes. Useful when PAT
+# scripts use only legacy METER_MODE/METER_RANGE and you want to eliminate any
+# chance of stray/ext opcodes causing meter-side BUS errors.
+MMETER_EXT_CTRL_ENABLE = _env_bool("MMETER_EXT_CTRL_ENABLE", True)
+
 # If True, query and drain the multimeter error queue on startup.
 MMETER_CLEAR_ERRORS_ON_STARTUP = _env_bool("MMETER_CLEAR_ERRORS_ON_STARTUP", True)
 

@@ -419,6 +419,9 @@ class DeviceCommandProcessor:
 
         # Multimeter control (Extended)
         if arb == int(getattr(config, "MMETER_CTRL_EXT_ID", 0x0CFF0601)):
+            if not bool(getattr(config, "MMETER_EXT_CTRL_ENABLE", True)):
+                return
+
             if not self.hardware.multi_meter or len(data) < 1:
                 return
 

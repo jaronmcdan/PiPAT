@@ -816,6 +816,26 @@ def test_handle_mmeter_ext_early_return(monkeypatch):
     p.handle(int(config.MMETER_CTRL_EXT_ID), b"")
 
 
+def test_handle_mmeter_ext_disabled_by_config(monkeypatch):
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
+
+    hw = FakeHardware()
+    hw.multi_meter = True
+    p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
+
+    monkeypatch.setattr(config, "MMETER_EXT_CTRL_ENABLE", False, raising=False)
+
+    # If MMETER_EXT processing is disabled, no command should be written.
+    writes: list[str] = []
+    monkeypatch.setattr(p, "_mmeter_write", lambda cmd, **kw: writes.append(cmd))
+
+    payload = bytes([0x08, 0, 0, 0]) + struct.pack("<f", 0.0)  # BUS_TRIGGER
+    p.handle(int(config.MMETER_CTRL_EXT_ID), payload)
+
+    assert writes == []
+
+
 def test_handle_mmeter_ext_additional_branches(monkeypatch):
     import roi.config as config
     from roi.core.device_comm import DeviceCommandProcessor
