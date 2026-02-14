@@ -363,3 +363,134 @@ def test_mmeter_diag_roi_cmds_flags_late_error(monkeypatch, capsys):
     assert "Failing commands:" in out
     assert ":FUNCtion VOLT:DC -> -113,BUS: BAD COMMAND" in out
 
+
+def test_mmeter_diag_roi_cmds_legacy_mode(monkeypatch, capsys):
+    import roi.tools.mmeter_diag as mm_diag
+
+    class FakeSerial:
+        def __init__(self, *a, **k):
+            pass
+
+        def reset_input_buffer(self):
+            return None
+
+        def reset_output_buffer(self):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeBK:
+        def __init__(self, ser, log_fn=print):
+            self.last_cmd = ""
+
+        def query_line(self, cmd, delay_s=0.0, read_lines=6, clear_input=True):
+            self.last_cmd = str(cmd)
+            if str(cmd).strip() == "*IDN?":
+                return "5491B  Multimeter,Ver1.4.14.06.18,124G21119"
+            return "OK"
+
+        def write(self, cmd, delay_s=0.0, clear_input=False):
+            self.last_cmd = str(cmd)
+
+        def fetch_values(self, cmd, delay_s=0.0, read_lines=6):
+            return SimpleNamespace(primary=1.0, secondary=None, raw="1.0")
+
+        def drain_errors(self, max_n=16, log=True):
+            return ["0,No error"]
+
+    monkeypatch.setattr(mm_diag.serial, "Serial", FakeSerial, raising=False)
+    monkeypatch.setattr(mm_diag, "BK5491B", FakeBK)
+    monkeypatch.setattr(mm_diag.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(mm_diag.config, "MMETER_EXT_CTRL_ENABLE", True, raising=False)
+    monkeypatch.setattr(mm_diag.config, "MMETER_LEGACY_MODE0_ENABLE", False, raising=False)
+    monkeypatch.setattr(mm_diag.config, "MMETER_LEGACY_MODE1_ENABLE", True, raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "roi-mmter-diag",
+            "--port",
+            "/dev/ttyUSBX",
+            "--roi-cmds",
+            "--roi-cmds-mode",
+            "legacy",
+            "--style",
+            "func",
+        ],
+    )
+
+    rc = mm_diag.main()
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "mode=legacy" in out
+    assert ":FUNCtion CURR:DC" in out
+    assert ":FUNCtion2:STATe 1" not in out
+    assert ":VOLTage:DC:NPLCycles 1" not in out
+
+
+def test_mmeter_diag_roi_cmds_runtime_mode_respects_gates(monkeypatch, capsys):
+    import roi.tools.mmeter_diag as mm_diag
+
+    class FakeSerial:
+        def __init__(self, *a, **k):
+            pass
+
+        def reset_input_buffer(self):
+            return None
+
+        def reset_output_buffer(self):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeBK:
+        def __init__(self, ser, log_fn=print):
+            self.last_cmd = ""
+
+        def query_line(self, cmd, delay_s=0.0, read_lines=6, clear_input=True):
+            self.last_cmd = str(cmd)
+            if str(cmd).strip() == "*IDN?":
+                return "5491B  Multimeter,Ver1.4.14.06.18,124G21119"
+            return "OK"
+
+        def write(self, cmd, delay_s=0.0, clear_input=False):
+            self.last_cmd = str(cmd)
+
+        def fetch_values(self, cmd, delay_s=0.0, read_lines=6):
+            return SimpleNamespace(primary=1.0, secondary=None, raw="1.0")
+
+        def drain_errors(self, max_n=16, log=True):
+            return ["0,No error"]
+
+    monkeypatch.setattr(mm_diag.serial, "Serial", FakeSerial, raising=False)
+    monkeypatch.setattr(mm_diag, "BK5491B", FakeBK)
+    monkeypatch.setattr(mm_diag.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(mm_diag.config, "MMETER_EXT_CTRL_ENABLE", True, raising=False)
+    monkeypatch.setattr(mm_diag.config, "MMETER_EXT_SET_RANGE_ENABLE", False, raising=False)
+    monkeypatch.setattr(mm_diag.config, "MMETER_EXT_SECONDARY_ENABLE", False, raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "roi-mmter-diag",
+            "--port",
+            "/dev/ttyUSBX",
+            "--roi-cmds",
+            "--roi-cmds-mode",
+            "runtime",
+            "--style",
+            "func",
+        ],
+    )
+
+    rc = mm_diag.main()
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "mode=runtime" in out
+    assert ":FUNCtion2:STATe 1" not in out
+    assert ":VOLTage:DC:RANGe 10" not in out
+

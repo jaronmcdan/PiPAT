@@ -70,6 +70,20 @@ def _func_prefixes(d: dict[int, str]) -> list[str]:
     return out
 
 
+def _dedup_probes(probes: list[_CmdProbe]) -> list[_CmdProbe]:
+    out: list[_CmdProbe] = []
+    seen: set[tuple[str, bool]] = set()
+    for p in probes:
+        k = (str(p.cmd or "").strip().upper(), bool(p.is_query))
+        if not k[0]:
+            continue
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(p)
+    return out
+
+
 def _range_value_for_prefix(prefix: str) -> float:
     u = str(prefix or "").upper()
     if ":CURR" in u:
@@ -77,6 +91,21 @@ def _range_value_for_prefix(prefix: str) -> float:
     if ":RES" in u:
         return 1000.0
     return 10.0
+
+
+def _primary_func_cmd(style: str, func_i: int) -> str:
+    """Return the primary-function command ROI will attempt first for a function."""
+
+    s = str(style or "").strip().lower()
+    if s == "conf":
+        base = str(FUNC_TO_SCPI_CONF.get(int(func_i), "") or "").strip()
+        if not base:
+            return ""
+        # Match device_comm first-attempt behavior in conf mode.
+        if ("@" not in base) and (":VOLT" in base or ":CURR" in base or ":FREQ" in base):
+            return f"{base},@1"
+        return base
+    return str(FUNC_TO_SCPI_FUNC.get(int(func_i), "") or "").strip()
 
 
 def _mmeter_style_auto_detect(h: BK5491B) -> str:
@@ -91,6 +120,110 @@ def _mmeter_style_auto_detect(h: BK5491B) -> str:
 
 
 def _build_roi_command_matrix(
+    *,
+    style: str,
+    fetch_cmds: list[str],
+    include_conf_fallback: bool,
+    mode: str = "full",
+) -> list[_CmdProbe]:
+    mode_s = str(mode or "full").strip().lower()
+    if mode_s == "legacy":
+        return _build_roi_command_matrix_legacy(style=style, fetch_cmds=fetch_cmds)
+    if mode_s == "runtime":
+        return _build_roi_command_matrix_runtime(style=style, fetch_cmds=fetch_cmds)
+    return _build_roi_command_matrix_full(
+        style=style,
+        fetch_cmds=fetch_cmds,
+        include_conf_fallback=include_conf_fallback,
+    )
+
+
+def _build_roi_command_matrix_legacy(
+    *,
+    style: str,
+    fetch_cmds: list[str],
+) -> list[_CmdProbe]:
+    """Probe only legacy ROI meter paths (METER_MODE/METER_RANGE + fetch)."""
+
+    cmds: list[_CmdProbe] = []
+    cmds.append(_CmdProbe("idn", "*IDN?", is_query=True))
+
+    if bool(getattr(config, "MMETER_CLEAR_ERRORS_ON_STARTUP", True)):
+        cmds.append(_CmdProbe("error_queue", ":SYST:ERR?", is_query=True))
+
+    legacy_funcs: list[int] = []
+    if bool(getattr(config, "MMETER_LEGACY_MODE0_ENABLE", True)):
+        legacy_funcs.append(int(MmeterFunc.VDC))
+    if bool(getattr(config, "MMETER_LEGACY_MODE1_ENABLE", True)):
+        legacy_funcs.append(int(MmeterFunc.IDC))
+
+    for f_i in legacy_funcs:
+        cmd = _primary_func_cmd(style, f_i)
+        if cmd:
+            cmds.append(_CmdProbe(f"legacy_set_func_{f_i}", cmd))
+
+    if bool(getattr(config, "MMETER_LEGACY_RANGE_ENABLE", False)):
+        for f_i in legacy_funcs:
+            pfx = str(FUNC_TO_RANGE_PREFIX_FUNC.get(int(f_i), "") or "").strip()
+            if not pfx:
+                continue
+            cmds.append(_CmdProbe(f"legacy_autorange_on_{pfx}", f"{pfx}:RANGe:AUTO ON"))
+            cmds.append(_CmdProbe(f"legacy_autorange_off_{pfx}", f"{pfx}:RANGe:AUTO OFF"))
+
+    for c in fetch_cmds:
+        cc = str(c or "").strip()
+        if cc:
+            cmds.append(_CmdProbe(f"fetch_{cc}", cc, is_query=True))
+
+    return _dedup_probes(cmds)
+
+
+def _build_roi_command_matrix_runtime(
+    *,
+    style: str,
+    fetch_cmds: list[str],
+) -> list[_CmdProbe]:
+    """Probe ROI commands that are reachable with current runtime config."""
+
+    cmds = _build_roi_command_matrix_legacy(style=style, fetch_cmds=fetch_cmds)
+
+    # Extended control path commands are optional and can be fully disabled.
+    if bool(getattr(config, "MMETER_EXT_CTRL_ENABLE", True)):
+        for f_i in FUNC_TO_SCPI_FUNC.keys():
+            cmd = _primary_func_cmd(style, int(f_i))
+            if cmd:
+                cmds.append(_CmdProbe(f"ext_set_func_primary_{int(f_i)}", cmd))
+
+        for p in _func_prefixes(FUNC_TO_RANGE_PREFIX_FUNC):
+            cmds.append(_CmdProbe(f"ext_set_autorange_on_{p}", f"{p}:RANGe:AUTO ON"))
+            cmds.append(_CmdProbe(f"ext_set_autorange_off_{p}", f"{p}:RANGe:AUTO OFF"))
+            if bool(getattr(config, "MMETER_EXT_SET_RANGE_ENABLE", True)):
+                rv = _range_value_for_prefix(p)
+                cmds.append(_CmdProbe(f"ext_set_range_{p}", f"{p}:RANGe {rv:g}"))
+
+        for p in _func_prefixes(FUNC_TO_NPLC_PREFIX_FUNC):
+            cmds.append(_CmdProbe(f"ext_set_nplc_{p}", f"{p}:NPLCycles 1"))
+
+        if bool(getattr(config, "MMETER_EXT_SECONDARY_ENABLE", True)):
+            cmds.append(_CmdProbe("ext_set_secondary_enable_on", ":FUNCtion2:STATe 1"))
+            for f_i, c in FUNC_TO_SCPI_FUNC2.items():
+                cmds.append(_CmdProbe(f"ext_set_secondary_func_{int(f_i)}", str(c)))
+            cmds.append(_CmdProbe("ext_set_secondary_enable_off", ":FUNCtion2:STATe 0"))
+
+        for p in _func_prefixes(FUNC_TO_REF_PREFIX_FUNC):
+            cmds.append(_CmdProbe(f"ext_set_relative_on_{p}", f"{p}:REFerence:STATe ON"))
+            cmds.append(_CmdProbe(f"ext_acquire_relative_{p}", f"{p}:REFerence:ACQuire"))
+            cmds.append(_CmdProbe(f"ext_set_relative_off_{p}", f"{p}:REFerence:STATe OFF"))
+
+        cmds.append(_CmdProbe("ext_set_trigger_imm", ":TRIGger:SOURce IMM"))
+        cmds.append(_CmdProbe("ext_set_trigger_bus", ":TRIGger:SOURce BUS"))
+        cmds.append(_CmdProbe("ext_set_trigger_man", ":TRIGger:SOURce MAN"))
+        cmds.append(_CmdProbe("ext_bus_trigger", "*TRG"))
+
+    return _dedup_probes(cmds)
+
+
+def _build_roi_command_matrix_full(
     *,
     style: str,
     fetch_cmds: list[str],
@@ -153,7 +286,7 @@ def _build_roi_command_matrix(
             continue
         cmds.append(_CmdProbe(f"fetch_{cc}", cc, is_query=True))
 
-    return cmds
+    return _dedup_probes(cmds)
 
 
 def _print_expected_settings(*, port: str, baud: int, style: str) -> None:
@@ -172,15 +305,17 @@ def _run_roi_command_probe(
     style: str,
     fetch_cmds: list[str],
     include_conf_fallback: bool,
+    mode: str,
 ) -> int:
     probes = _build_roi_command_matrix(
         style=style,
         fetch_cmds=fetch_cmds,
         include_conf_fallback=include_conf_fallback,
+        mode=mode,
     )
 
     print("=== ROI Meter Command Matrix ===")
-    print(f"style={style} include_conf_fallback={bool(include_conf_fallback)}")
+    print(f"style={style} mode={mode} include_conf_fallback={bool(include_conf_fallback)}")
     print(f"commands={len(probes)}")
 
     results: list[_CmdResult] = []
@@ -297,6 +432,12 @@ def main() -> int:
         action="store_true",
         help="Also probe CONF fallback commands while in func mode",
     )
+    ap.add_argument(
+        "--roi-cmds-mode",
+        default="full",
+        choices=["full", "runtime", "legacy"],
+        help="Command set scope for --roi-cmds: full superset, runtime-enabled paths, or legacy-only paths",
+    )
     args = ap.parse_args()
 
     print(f"Opening {args.port} @ {args.baud}...")
@@ -336,6 +477,7 @@ def main() -> int:
                 style=style,
                 fetch_cmds=cmds,
                 include_conf_fallback=bool(args.include_conf_fallback),
+                mode=str(args.roi_cmds_mode),
             )
 
         # Query function in the chosen dialect.

@@ -44,6 +44,8 @@ Run:
 ```bash
 roi-mmter-diag
 roi-mmter-diag --roi-cmds --style func
+roi-mmter-diag --roi-cmds --roi-cmds-mode runtime --style func
+roi-mmter-diag --roi-cmds --roi-cmds-mode legacy --style func
 ```
 
 Note: `--roi-cmds` is a superset probe. It can report unsupported commands that
