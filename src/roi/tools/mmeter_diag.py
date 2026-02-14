@@ -184,12 +184,37 @@ def _run_roi_command_probe(
     print(f"commands={len(probes)}")
 
     results: list[_CmdResult] = []
+
+    def _first_bad(lines: list[str]) -> str:
+        bad = [e for e in (lines or []) if not _is_no_error(e)]
+        return bad[0] if bad else ""
+
     for i, p in enumerate(probes, start=1):
-        # Clear stale queue entries so a failure can be attributed to this command.
+        # Clear stale/late queue entries before this command.
+        # If we see an error here, attribute it to the previous command (late arrival)
+        # so the run cannot falsely report all-pass while the front panel showed an error.
+        pre_bad = ""
         try:
-            h.drain_errors(max_n=8, log=False)
+            pre_errs = h.drain_errors(max_n=8, log=False)
+            pre_bad = _first_bad(pre_errs)
         except Exception:
-            pass
+            pre_bad = ""
+        if pre_bad:
+            if results:
+                prev = results[-1]
+                if prev.ok:
+                    prev.ok = False
+                    prev.error = f"late error before next cmd: {pre_bad}"
+            else:
+                # Error existed before first probe command.
+                results.append(
+                    _CmdResult(
+                        probe=_CmdProbe("preexisting_error_queue", "<pre-run>", is_query=True),
+                        ok=False,
+                        response="",
+                        error=pre_bad,
+                    )
+                )
 
         response = ""
         exc_s = ""
@@ -203,10 +228,14 @@ def _run_roi_command_probe(
 
         bad_err = ""
         try:
-            errs = h.drain_errors(max_n=6, log=False)
-            bad = [e for e in errs if not _is_no_error(e)]
-            if bad:
-                bad_err = bad[0]
+            # Some firmware reports command errors slightly later; sample twice.
+            time.sleep(0.05)
+            errs_a = h.drain_errors(max_n=6, log=False)
+            bad_err = _first_bad(errs_a)
+            if not bad_err:
+                time.sleep(0.05)
+                errs_b = h.drain_errors(max_n=6, log=False)
+                bad_err = _first_bad(errs_b)
         except Exception as e:
             if not exc_s:
                 exc_s = str(e)
@@ -297,7 +326,7 @@ def main() -> int:
 
         cmds = [
             c.strip()
-            for c in str(getattr(config, "MULTI_METER_FETCH_CMDS", ":FETCh?,:FETC?,READ?")).split(",")
+            for c in str(getattr(config, "MULTI_METER_FETCH_CMDS", ":FETCh?,:FETC?")).split(",")
             if c.strip()
         ]
 

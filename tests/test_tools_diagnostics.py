@@ -228,6 +228,7 @@ def test_mmeter_diag_roi_cmds_success(monkeypatch, capsys):
 
     monkeypatch.setattr(mm_diag.serial, "Serial", FakeSerial, raising=False)
     monkeypatch.setattr(mm_diag, "BK5491B", FakeBK)
+    monkeypatch.setattr(mm_diag.time, "sleep", lambda _s: None)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -283,6 +284,7 @@ def test_mmeter_diag_roi_cmds_reports_failing_command(monkeypatch, capsys):
 
     monkeypatch.setattr(mm_diag.serial, "Serial", FakeSerial, raising=False)
     monkeypatch.setattr(mm_diag, "BK5491B", FakeBK)
+    monkeypatch.setattr(mm_diag.time, "sleep", lambda _s: None)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -295,4 +297,69 @@ def test_mmeter_diag_roi_cmds_reports_failing_command(monkeypatch, capsys):
     assert rc == 1
     assert "Failing commands:" in out
     assert ":TRIGger:SOURce BUS" in out
+
+
+def test_mmeter_diag_roi_cmds_flags_late_error(monkeypatch, capsys):
+    import roi.tools.mmeter_diag as mm_diag
+
+    class FakeSerial:
+        def __init__(self, *a, **k):
+            pass
+
+        def reset_input_buffer(self):
+            return None
+
+        def reset_output_buffer(self):
+            return None
+
+        def close(self):
+            return None
+
+    class FakeBK:
+        def __init__(self, ser, log_fn=print):
+            self._drain_n = 0
+
+        def query_line(self, cmd, delay_s=0.0, read_lines=6, clear_input=True):
+            if str(cmd).strip() == "*IDN?":
+                return "5491B  Multimeter,Ver1.4.14.06.18,124G21119"
+            if str(cmd).strip().upper() == ":FUNCtion?".upper():
+                return "CURR:DC"
+            return "OK"
+
+        def write(self, cmd, delay_s=0.0, clear_input=False):
+            return None
+
+        def fetch_values(self, cmd, delay_s=0.0, read_lines=6):
+            return SimpleNamespace(primary=1.0, secondary=None, raw="1.0")
+
+        def drain_errors(self, max_n=16, log=True):
+            self._drain_n += 1
+            # Inject a delayed/late error right before probe #2 runs.
+            if self._drain_n == 4:
+                return ["-113,BUS: BAD COMMAND"]
+            return ["0,No error"]
+
+    monkeypatch.setattr(mm_diag.serial, "Serial", FakeSerial, raising=False)
+    monkeypatch.setattr(mm_diag, "BK5491B", FakeBK)
+    monkeypatch.setattr(mm_diag.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(
+        mm_diag,
+        "_build_roi_command_matrix",
+        lambda **_k: [
+            mm_diag._CmdProbe("one", ":FUNCtion VOLT:DC", is_query=False),
+            mm_diag._CmdProbe("two", ":FUNCtion CURR:DC", is_query=False),
+        ],
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["roi-mmter-diag", "--port", "/dev/ttyUSBX", "--roi-cmds", "--style", "func"],
+    )
+
+    rc = mm_diag.main()
+    out = capsys.readouterr().out
+
+    assert rc == 1
+    assert "Failing commands:" in out
+    assert ":FUNCtion VOLT:DC -> -113,BUS: BAD COMMAND" in out
 
