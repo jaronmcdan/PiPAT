@@ -30,6 +30,12 @@ Expected ROI meter settings/behavior:
 - Preferred SCPI style for 5491B is `func`.
 - ROI may change measurement function, range/auto-range, NPLC, relative mode,
   trigger source, and secondary display while tests run.
+- Some 5491B firmware revisions support only a subset of these controls. Use
+  `roi-mmter-diag --roi-cmds --style func` to identify unsupported commands and
+  gate them with:
+  - `MMETER_LEGACY_MODE0_ENABLE=0`
+  - `MMETER_EXT_SET_RANGE_ENABLE=0`
+  - `MMETER_EXT_SECONDARY_ENABLE=0`
 
 ## Electronic Load (VISA / USBTMC)
 

@@ -107,6 +107,17 @@ sudo journalctl -u roi -f
 If you must keep ROI running, only `roi-can-diag` may be safe in listen-only
 style (SocketCAN, no `--send-id`, no `--setup`).
 
+If `roi-mmter-diag --roi-cmds` shows persistent unsupported meter commands on
+your firmware, you can gate those command paths in `/etc/roi/roi.env`:
+
+```bash
+MMETER_LEGACY_MODE0_ENABLE=0
+MMETER_EXT_SET_RANGE_ENABLE=0
+MMETER_EXT_SECONDARY_ENABLE=0
+# or disable all extended meter controls:
+# MMETER_EXT_CTRL_ENABLE=0
+```
+
 ## Optional Web Dashboard
 
 ```bash

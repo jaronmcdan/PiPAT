@@ -517,6 +517,24 @@ def test_handle_mmeter_ctrl_short_data_and_idc(monkeypatch):
     assert called == [int(MmeterFunc.IDC)]
 
 
+def test_handle_mmeter_ctrl_mode0_disabled(monkeypatch):
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
+
+    hw = FakeHardware()
+    hw.multi_meter = True
+    p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
+
+    called: list[int] = []
+    monkeypatch.setattr(p, "_mmeter_set_func", lambda f: called.append(int(f)))
+    monkeypatch.setattr(config, "MMETER_LEGACY_MODE0_ENABLE", False, raising=False)
+    monkeypatch.setattr(config, "MMETER_LEGACY_MODE1_ENABLE", True, raising=False)
+
+    p.handle(int(config.MMETER_CTRL_ID), bytes([0, 0]))
+    assert called == []
+    assert hw.multi_meter_mode == 0
+
+
 def test_handle_mmeter_ctrl_lock_exception_is_swallowed(monkeypatch):
     import roi.config as config
     from roi.core.device_comm import DeviceCommandProcessor
@@ -833,6 +851,46 @@ def test_handle_mmeter_ext_disabled_by_config(monkeypatch):
     payload = bytes([0x08, 0, 0, 0]) + struct.pack("<f", 0.0)  # BUS_TRIGGER
     p.handle(int(config.MMETER_CTRL_EXT_ID), payload)
 
+    assert writes == []
+
+
+def test_handle_mmeter_ext_set_range_disabled(monkeypatch):
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
+    from roi.devices.bk5491b import MmeterFunc
+
+    hw = FakeHardware()
+    hw.multi_meter = True
+    hw.mmeter_func = int(MmeterFunc.VDC)
+    p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
+
+    writes: list[str] = []
+    monkeypatch.setattr(p, "_mmeter_write", lambda cmd, **kw: writes.append(cmd))
+    monkeypatch.setattr(config, "MMETER_EXT_SET_RANGE_ENABLE", False, raising=False)
+
+    payload = bytes([0x03, 0xFF, 0, 0]) + struct.pack("<f", 12.0)
+    p.handle(int(config.MMETER_CTRL_EXT_ID), payload)
+    assert writes == []
+
+
+def test_handle_mmeter_ext_secondary_disabled(monkeypatch):
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
+    from roi.devices.bk5491b import MmeterFunc
+
+    hw = FakeHardware()
+    hw.multi_meter = True
+    hw.mmeter_func = int(MmeterFunc.VDC)
+    p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
+
+    writes: list[str] = []
+    monkeypatch.setattr(p, "_mmeter_write", lambda cmd, **kw: writes.append(cmd))
+    monkeypatch.setattr(config, "MMETER_EXT_SECONDARY_ENABLE", False, raising=False)
+
+    payload_en = bytes([0x05, 1, 0, 0]) + struct.pack("<f", 0.0)
+    p.handle(int(config.MMETER_CTRL_EXT_ID), payload_en)
+    payload_fn = bytes([0x06, int(MmeterFunc.VAC), 0, 0]) + struct.pack("<f", 0.0)
+    p.handle(int(config.MMETER_CTRL_EXT_ID), payload_fn)
     assert writes == []
 
 

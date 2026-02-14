@@ -380,9 +380,11 @@ class DeviceCommandProcessor:
                 try:
                     with self.hardware.mmeter_lock:
                         if meter_mode == 0:
-                            self._mmeter_set_func(int(MmeterFunc.VDC))
+                            if bool(getattr(config, "MMETER_LEGACY_MODE0_ENABLE", True)):
+                                self._mmeter_set_func(int(MmeterFunc.VDC))
                         elif meter_mode == 1:
-                            self._mmeter_set_func(int(MmeterFunc.IDC))
+                            if bool(getattr(config, "MMETER_LEGACY_MODE1_ENABLE", True)):
+                                self._mmeter_set_func(int(MmeterFunc.IDC))
                         self.hardware.multi_meter_mode = meter_mode
                 except Exception:
                     pass
@@ -464,6 +466,8 @@ class DeviceCommandProcessor:
                         self.hardware.mmeter_autorange = on
 
                     elif op == 0x03:  # SET_RANGE (float = expected reading)
+                        if not bool(getattr(config, "MMETER_EXT_SET_RANGE_ENABLE", True)):
+                            return
                         if not math.isfinite(float(fval)):
                             return
                         prefix = FUNC_TO_RANGE_PREFIX_FUNC.get(tgt_func)
@@ -486,6 +490,8 @@ class DeviceCommandProcessor:
                             self.hardware.mmeter_nplc = float(nplc)
 
                     elif op == 0x05:  # SECONDARY_ENABLE (arg0=0/1)
+                        if not bool(getattr(config, "MMETER_EXT_SECONDARY_ENABLE", True)):
+                            return
                         on = bool(arg0)
                         if bool(getattr(self.hardware, "mmeter_func2_enabled", False)) != on:
                             self._mmeter_write(f":FUNCtion2:STATe {1 if on else 0}")
@@ -501,6 +507,8 @@ class DeviceCommandProcessor:
                                 self.log(f"MMETER secondary: unsupported func {func2}")
 
                     elif op == 0x06:  # SECONDARY_FUNCTION
+                        if not bool(getattr(config, "MMETER_EXT_SECONDARY_ENABLE", True)):
+                            return
                         func_i = int(tgt_func) & 0xFF
                         cmd2 = FUNC_TO_SCPI_FUNC2.get(func_i)
                         if not cmd2:

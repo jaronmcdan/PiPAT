@@ -187,6 +187,11 @@ def render_env(
     lines.append(f"MMETER_CONTROL_SETTLE_SEC={float(getattr(config, 'MMETER_CONTROL_SETTLE_SEC', 0.3))}")
     lines.append(f"MMETER_CLEAR_ERRORS_ON_STARTUP={_bool_int(bool(getattr(config, 'MMETER_CLEAR_ERRORS_ON_STARTUP', True)))}")
     lines.append(f"MMETER_DEBUG={_bool_int(bool(getattr(config, 'MMETER_DEBUG', False)))}")
+    lines.append(f"MMETER_LEGACY_MODE0_ENABLE={_bool_int(bool(getattr(config, 'MMETER_LEGACY_MODE0_ENABLE', True)))}")
+    lines.append(f"MMETER_LEGACY_MODE1_ENABLE={_bool_int(bool(getattr(config, 'MMETER_LEGACY_MODE1_ENABLE', True)))}")
+    lines.append(f"MMETER_EXT_CTRL_ENABLE={_bool_int(bool(getattr(config, 'MMETER_EXT_CTRL_ENABLE', True)))}")
+    lines.append(f"MMETER_EXT_SET_RANGE_ENABLE={_bool_int(bool(getattr(config, 'MMETER_EXT_SET_RANGE_ENABLE', True)))}")
+    lines.append(f"MMETER_EXT_SECONDARY_ENABLE={_bool_int(bool(getattr(config, 'MMETER_EXT_SECONDARY_ENABLE', True)))}")
     lines.append("")
 
     lines.append("# MrSignal")

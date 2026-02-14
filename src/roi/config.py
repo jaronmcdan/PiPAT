@@ -118,11 +118,24 @@ MMETER_DEBUG = _env_bool("MMETER_DEBUG", False)
 # instrument (it only stored it).
 MMETER_LEGACY_RANGE_ENABLE = _env_bool("MMETER_LEGACY_RANGE_ENABLE", False)
 
+# Legacy mode mapping controls (MMETER_CTRL_ID byte0: METER_MODE).
+# Defaults preserve historical behavior:
+#   mode 0 -> set primary function to VDC
+#   mode 1 -> set primary function to IDC
+# Set MMETER_LEGACY_MODE0_ENABLE=0 on firmware that rejects VDC mode changes.
+MMETER_LEGACY_MODE0_ENABLE = _env_bool("MMETER_LEGACY_MODE0_ENABLE", True)
+MMETER_LEGACY_MODE1_ENABLE = _env_bool("MMETER_LEGACY_MODE1_ENABLE", True)
+
 # Extended MMETER control frame handling (MMETER_CTRL_EXT_ID).
 # Set to 0 to hard-disable processing of extended opcodes. Useful when PAT
 # scripts use only legacy METER_MODE/METER_RANGE and you want to eliminate any
 # chance of stray/ext opcodes causing meter-side BUS errors.
 MMETER_EXT_CTRL_ENABLE = _env_bool("MMETER_EXT_CTRL_ENABLE", True)
+
+# Fine-grained guards for EXT opcodes that are unsupported on some 5491B
+# firmware variants. Defaults keep current ROI behavior.
+MMETER_EXT_SET_RANGE_ENABLE = _env_bool("MMETER_EXT_SET_RANGE_ENABLE", True)
+MMETER_EXT_SECONDARY_ENABLE = _env_bool("MMETER_EXT_SECONDARY_ENABLE", True)
 
 # If True, query and drain the multimeter error queue on startup.
 MMETER_CLEAR_ERRORS_ON_STARTUP = _env_bool("MMETER_CLEAR_ERRORS_ON_STARTUP", True)

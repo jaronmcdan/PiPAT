@@ -46,6 +46,9 @@ roi-mmter-diag
 roi-mmter-diag --roi-cmds --style func
 ```
 
+Note: `--roi-cmds` is a superset probe. It can report unsupported commands that
+your bench never uses in normal PAT flows.
+
 Try:
 
 - use `/dev/serial/by-id/...` instead of `/dev/ttyUSB*`
@@ -53,6 +56,12 @@ Try:
 - ensure no competing service opens the same serial device
 - if startup errors persist, disable startup error draining to isolate:
   `MMETER_CLEAR_ERRORS_ON_STARTUP=0`
+- if your firmware rejects some commands but ROI control still works, gate
+  unsupported command classes in `/etc/roi/roi.env`:
+  - `MMETER_LEGACY_MODE0_ENABLE=0` (skip legacy mode0->VDC mapping)
+  - `MMETER_EXT_SET_RANGE_ENABLE=0` (skip EXT `:RANGe <value>` writes)
+  - `MMETER_EXT_SECONDARY_ENABLE=0` (skip EXT `:FUNCtion2...` writes)
+  - `MMETER_EXT_CTRL_ENABLE=0` (disable all EXT opcodes)
 
 ## MrSignal read/write diagnostics
 
