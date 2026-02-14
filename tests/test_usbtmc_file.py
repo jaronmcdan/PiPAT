@@ -6,7 +6,7 @@ import pytest
 def test_usbtmc_file_write_adds_termination(monkeypatch):
     """write() should append the configured write termination when missing."""
 
-    from usbtmc_file import UsbTmcFileInstrument
+    from roi.devices.usbtmc_file import UsbTmcFileInstrument
 
     written = []
 
@@ -38,7 +38,7 @@ def test_usbtmc_file_write_adds_termination(monkeypatch):
 def test_usbtmc_file_query_reads_until_termination(monkeypatch):
     """query() should write then read until the configured termination."""
 
-    from usbtmc_file import UsbTmcFileInstrument
+    from roi.devices.usbtmc_file import UsbTmcFileInstrument
 
     written = []
     reads = [b"GW,INSTEK,AFG-2125\n"]
@@ -82,7 +82,7 @@ def test_usbtmc_file_query_reads_until_termination(monkeypatch):
 def test_usbtmc_file_read_timeout(monkeypatch):
     """read() should raise UsbTmcTimeout when select() times out."""
 
-    from usbtmc_file import UsbTmcFileInstrument, UsbTmcTimeout
+    from roi.devices.usbtmc_file import UsbTmcFileInstrument, UsbTmcTimeout
 
     def fake_open(path, flags):
         return 5
@@ -106,7 +106,7 @@ def test_usbtmc_file_read_timeout(monkeypatch):
 
 
 def test_usbtmc_file_open_error_raises_usbtmcerror(monkeypatch):
-    from usbtmc_file import UsbTmcFileInstrument, UsbTmcError
+    from roi.devices.usbtmc_file import UsbTmcFileInstrument, UsbTmcError
 
     def fake_open(path, flags):
         raise OSError("nope")
@@ -118,7 +118,7 @@ def test_usbtmc_file_open_error_raises_usbtmcerror(monkeypatch):
 
 
 def test_usbtmc_file_fd_property_raises_when_closed(monkeypatch):
-    from usbtmc_file import UsbTmcFileInstrument, UsbTmcError
+    from roi.devices.usbtmc_file import UsbTmcFileInstrument, UsbTmcError
 
     monkeypatch.setattr("os.open", lambda path, flags: 99)
     monkeypatch.setattr("os.close", lambda fd: None)
@@ -131,7 +131,7 @@ def test_usbtmc_file_fd_property_raises_when_closed(monkeypatch):
 
 
 def test_usbtmc_file_write_none_is_noop(monkeypatch):
-    from usbtmc_file import UsbTmcFileInstrument
+    from roi.devices.usbtmc_file import UsbTmcFileInstrument
 
     monkeypatch.setattr("os.open", lambda path, flags: 3)
     monkeypatch.setattr("os.close", lambda fd: None)
@@ -152,7 +152,7 @@ def test_usbtmc_file_write_none_is_noop(monkeypatch):
 
 
 def test_usbtmc_file_write_os_write_error(monkeypatch):
-    from usbtmc_file import UsbTmcFileInstrument, UsbTmcError
+    from roi.devices.usbtmc_file import UsbTmcFileInstrument, UsbTmcError
 
     monkeypatch.setattr("os.open", lambda path, flags: 3)
     monkeypatch.setattr("os.close", lambda fd: None)
@@ -170,7 +170,7 @@ def test_usbtmc_file_write_os_write_error(monkeypatch):
 
 def test_usbtmc_file_read_timeout_before_select(monkeypatch):
     """Cover the remaining<=0 timeout path (no select call)."""
-    from usbtmc_file import UsbTmcFileInstrument, UsbTmcTimeout
+    from roi.devices.usbtmc_file import UsbTmcFileInstrument, UsbTmcTimeout
 
     monkeypatch.setattr("os.open", lambda path, flags: 7)
     monkeypatch.setattr("os.close", lambda fd: None)
@@ -188,7 +188,7 @@ def test_usbtmc_file_read_timeout_before_select(monkeypatch):
 
 
 def test_usbtmc_file_select_exception_raises_usbtmcerror(monkeypatch):
-    from usbtmc_file import UsbTmcFileInstrument, UsbTmcError
+    from roi.devices.usbtmc_file import UsbTmcFileInstrument, UsbTmcError
 
     monkeypatch.setattr("os.open", lambda path, flags: 8)
     monkeypatch.setattr("os.close", lambda fd: None)
@@ -206,7 +206,7 @@ def test_usbtmc_file_select_exception_raises_usbtmcerror(monkeypatch):
 
 
 def test_usbtmc_file_read_os_read_error(monkeypatch):
-    from usbtmc_file import UsbTmcFileInstrument, UsbTmcError
+    from roi.devices.usbtmc_file import UsbTmcFileInstrument, UsbTmcError
 
     monkeypatch.setattr("os.open", lambda path, flags: 9)
     monkeypatch.setattr("os.close", lambda fd: None)
@@ -226,7 +226,7 @@ def test_usbtmc_file_read_os_read_error(monkeypatch):
 
 def test_usbtmc_file_eof_break_returns_buffer(monkeypatch):
     """Cover the EOF/break + final return (no termination) path."""
-    from usbtmc_file import UsbTmcFileInstrument
+    from roi.devices.usbtmc_file import UsbTmcFileInstrument
 
     monkeypatch.setattr("os.open", lambda path, flags: 10)
     monkeypatch.setattr("os.close", lambda fd: None)
@@ -253,7 +253,7 @@ def test_usbtmc_file_eof_break_returns_buffer(monkeypatch):
 
 def test_usbtmc_file_safety_cap_returns(monkeypatch):
     """Cover the safety cap that prevents unbounded buffer growth."""
-    from usbtmc_file import UsbTmcFileInstrument
+    from roi.devices.usbtmc_file import UsbTmcFileInstrument
 
     monkeypatch.setattr("os.open", lambda path, flags: 11)
     monkeypatch.setattr("os.close", lambda fd: None)

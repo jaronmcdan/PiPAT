@@ -1,0 +1,20 @@
+[Unit]
+Description=ROI Instrument Bridge
+After=network.target
+
+[Service]
+Type=simple
+# Running as root is the simplest approach for CAN bring-up (SocketCAN).
+User=root
+WorkingDirectory=/opt/roi
+EnvironmentFile=-/etc/roi/roi.env
+Environment=PYTHONUNBUFFERED=1
+# Avoid Rich trying to do terminal control in journald
+Environment=TERM=dumb
+Environment=ROI_HEADLESS=1
+ExecStart=/opt/roi/.venv/bin/roi
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

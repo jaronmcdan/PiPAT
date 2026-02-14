@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Install/enable the systemd service that runs main.py.
+# Install/enable the systemd service that runs ROI.
 # This is intentionally split out from pi_install.sh so you can:
 #   - prep the Pi image without turning on an always-on service yet
 #   - or install the service on a different host pointing at an existing PREFIX
@@ -16,7 +16,7 @@ usage() {
 Usage: sudo $0 [--prefix /opt/roi] [--service-name roi] [--enable] [--start]
 
 Installs a systemd unit that runs:
-  <prefix>/.venv/bin/python <prefix>/main.py
+  <prefix>/.venv/bin/roi
 
 Options:
   --prefix <path>         Install prefix used by pi_install.sh (default: /opt/roi)
@@ -59,25 +59,20 @@ if [[ ! -d "$PREFIX" ]]; then
   exit 1
 fi
 
-if [[ ! -x "$PREFIX/.venv/bin/python" ]]; then
-  echo "[ROI] WARNING: venv python not found at $PREFIX/.venv/bin/python" >&2
+if [[ ! -x "$PREFIX/.venv/bin/roi" ]]; then
+  echo "[ROI] WARNING: roi entrypoint not found at $PREFIX/.venv/bin/roi" >&2
   echo "[ROI] The service may fail to start until you run scripts/pi_install.sh." >&2
-fi
-
-if [[ ! -f "$PREFIX/main.py" ]]; then
-  echo "[ROI] WARNING: main.py not found at $PREFIX/main.py" >&2
-  echo "[ROI] The service may fail to start until the project is installed to PREFIX." >&2
 fi
 
 TEMPLATE=""
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if [[ -f "$PREFIX/systemd/roi.service" ]]; then
-  TEMPLATE="$PREFIX/systemd/roi.service"
-elif [[ -f "$SRC_DIR/systemd/roi.service" ]]; then
-  TEMPLATE="$SRC_DIR/systemd/roi.service"
+if [[ -f "$PREFIX/deploy/systemd/roi.service" ]]; then
+  TEMPLATE="$PREFIX/deploy/systemd/roi.service"
+elif [[ -f "$SRC_DIR/deploy/systemd/roi.service" ]]; then
+  TEMPLATE="$SRC_DIR/deploy/systemd/roi.service"
 else
-  echo "[ROI] ERROR: cannot find systemd/roi.service template." >&2
+  echo "[ROI] ERROR: cannot find deploy/systemd/roi.service template." >&2
   exit 1
 fi
 
@@ -86,7 +81,6 @@ UNIT_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
 echo "[ROI] Installing systemd unit: $UNIT_PATH"
 
 # Replace hard-coded /opt/roi with the requested PREFIX.
-# (Keeps the unit file in repo as the canonical source.)
 REPL="$PREFIX"
 REPL_ESCAPED="$(printf '%s' "$REPL" | sed -e 's/[\\/&|]/\\&/g')"
 sed -e "s|/opt/roi|${REPL_ESCAPED}|g" "$TEMPLATE" >"$UNIT_PATH"

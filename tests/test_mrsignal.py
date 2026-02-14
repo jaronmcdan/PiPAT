@@ -4,7 +4,7 @@ import math
 
 
 def test_call_compat_filters_kwargs():
-    from mrsignal import call_compat
+    from roi.devices.mrsignal import call_compat
 
     def f(a, *, ok=None):
         return (a, ok)
@@ -40,7 +40,7 @@ class FakeInst:
 
 def test_mrsignal_connect_and_close(monkeypatch):
     import minimalmodbus
-    from mrsignal import MrSignalClient
+    from roi.devices.mrsignal import MrSignalClient
 
     created = {}
 
@@ -62,7 +62,7 @@ def test_mrsignal_connect_and_close(monkeypatch):
 
 def test_read_float_configured_byteorder(monkeypatch):
     import minimalmodbus
-    from mrsignal import MrSignalClient, REG_OUTPUT_VALUE_FLOAT
+    from roi.devices.mrsignal import MrSignalClient, REG_OUTPUT_VALUE_FLOAT
 
     # Make sure BYTEORDER_LITTLE exists in stub minimalmodbus.
     assert hasattr(minimalmodbus, "BYTEORDER_LITTLE")
@@ -79,7 +79,7 @@ def test_read_float_configured_byteorder(monkeypatch):
 
 def test_read_float_auto_detect_uses_sane_value(monkeypatch):
     import minimalmodbus
-    from mrsignal import MrSignalClient, REG_INPUT_VALUE_FLOAT
+    from roi.devices.mrsignal import MrSignalClient, REG_INPUT_VALUE_FLOAT
 
     inst = FakeInst()
     # Give one byteorder a non-sane value and another a sane value.
@@ -94,7 +94,7 @@ def test_read_float_auto_detect_uses_sane_value(monkeypatch):
 
 
 def test_set_output_order_and_clamps(monkeypatch):
-    from mrsignal import MrSignalClient, REG_OUTPUT_ON, REG_OUTPUT_SELECT, REG_OUTPUT_VALUE_FLOAT
+    from roi.devices.mrsignal import MrSignalClient, REG_OUTPUT_ON, REG_OUTPUT_SELECT, REG_OUTPUT_VALUE_FLOAT
 
     inst = FakeInst()
     c = MrSignalClient("p")
@@ -114,7 +114,7 @@ def test_set_output_order_and_clamps(monkeypatch):
 
 
 def test_status_mode_label_unknown():
-    from mrsignal import MrSignalStatus
+    from roi.devices.mrsignal import MrSignalStatus
 
     s = MrSignalStatus(output_select=123)
     assert "UNKNOWN" in s.mode_label
@@ -122,7 +122,7 @@ def test_status_mode_label_unknown():
 
 def test_available_byteorders_dedupe_and_helpers(monkeypatch):
     import minimalmodbus
-    from mrsignal import available_byteorders, get_byteorder_by_name, is_sane_float, MrSignalStatus
+    from roi.devices.mrsignal import available_byteorders, get_byteorder_by_name, is_sane_float, MrSignalStatus
 
     # Force a duplicate value to exercise the de-dupe branch.
     monkeypatch.setattr(minimalmodbus, "BYTEORDER_ABCD", minimalmodbus.BYTEORDER_BIG, raising=False)
@@ -142,7 +142,7 @@ def test_available_byteorders_dedupe_and_helpers(monkeypatch):
 
 
 def test_not_connected_raises_for_register_access():
-    from mrsignal import MrSignalClient
+    from roi.devices.mrsignal import MrSignalClient
 
     c = MrSignalClient("/dev/null")
     try:
@@ -169,7 +169,7 @@ def test_not_connected_raises_for_register_access():
 
 def test_read_float_prefers_previous_auto_detect_byteorder(monkeypatch):
     import minimalmodbus
-    from mrsignal import MrSignalClient, REG_INPUT_VALUE_FLOAT
+    from roi.devices.mrsignal import MrSignalClient, REG_INPUT_VALUE_FLOAT
 
     inst = FakeInst()
     inst._float_map[(REG_INPUT_VALUE_FLOAT, minimalmodbus.BYTEORDER_LITTLE)] = 7.7
@@ -184,7 +184,7 @@ def test_read_float_prefers_previous_auto_detect_byteorder(monkeypatch):
 
 
 def test_read_float_invalid_config_name_falls_back_to_default(monkeypatch):
-    from mrsignal import MrSignalClient
+    from roi.devices.mrsignal import MrSignalClient
 
     inst = FakeInst()
     inst._float_map[(0, "DEFAULT")] = 1.25
@@ -219,7 +219,7 @@ class InstNoByteorder:
 
 def test_read_write_float_without_inst_byteorder_attribute(monkeypatch):
     import minimalmodbus
-    from mrsignal import MrSignalClient
+    from roi.devices.mrsignal import MrSignalClient
 
     inst = InstNoByteorder()
     inst._floats[(1, minimalmodbus.BYTEORDER_BIG)] = 3.0
@@ -236,7 +236,7 @@ def test_read_write_float_without_inst_byteorder_attribute(monkeypatch):
 
 def test_auto_detect_continues_on_exception(monkeypatch):
     import minimalmodbus
-    from mrsignal import MrSignalClient
+    from roi.devices.mrsignal import MrSignalClient
 
     class Inst(FakeInst):
         def read_float(self, reg, *, functioncode=3, number_of_registers=2, byteorder=None):
@@ -254,7 +254,7 @@ def test_auto_detect_continues_on_exception(monkeypatch):
 
 
 def test_write_float_default_path(monkeypatch):
-    from mrsignal import MrSignalClient
+    from roi.devices.mrsignal import MrSignalClient
 
     inst = FakeInst()
     c = MrSignalClient("p", float_byteorder=None, float_byteorder_auto=False)
@@ -265,7 +265,7 @@ def test_write_float_default_path(monkeypatch):
 
 
 def test_read_status_handles_float_failures(monkeypatch):
-    from mrsignal import MrSignalClient, REG_OUTPUT_VALUE_FLOAT, REG_INPUT_VALUE_FLOAT
+    from roi.devices.mrsignal import MrSignalClient, REG_OUTPUT_VALUE_FLOAT, REG_INPUT_VALUE_FLOAT
 
     inst = FakeInst()
     inst._reg_map[0] = 55
@@ -293,7 +293,7 @@ def test_read_status_handles_float_failures(monkeypatch):
 
 
 def test_set_enable_writes_register(monkeypatch):
-    from mrsignal import MrSignalClient, REG_OUTPUT_ON
+    from roi.devices.mrsignal import MrSignalClient, REG_OUTPUT_ON
 
     inst = FakeInst()
     c = MrSignalClient("p")
@@ -307,7 +307,7 @@ def test_set_enable_writes_register(monkeypatch):
 
 def test_mrsignal_close_swallow_serial_close_error():
     """Cover MrSignalClient.close() exception swallow path."""
-    from mrsignal import MrSignalClient
+    from roi.devices.mrsignal import MrSignalClient
 
     class BadSerial:
         def close(self):
@@ -325,7 +325,7 @@ def test_mrsignal_close_swallow_serial_close_error():
 def test_read_float_uses_prev_byteorder_without_inst_byteorder_attr(monkeypatch):
     """Cover the prev-byteorder fast path when Instrument lacks .byteorder."""
     import minimalmodbus
-    from mrsignal import MrSignalClient
+    from roi.devices.mrsignal import MrSignalClient
 
     inst = InstNoByteorder()
     inst._floats[(1, minimalmodbus.BYTEORDER_BIG)] = 7.25
@@ -341,8 +341,8 @@ def test_read_float_uses_prev_byteorder_without_inst_byteorder_attr(monkeypatch)
 
 def test_read_float_prev_byteorder_exception_is_swallowed(monkeypatch):
     """Cover the exception swallow path when using the previous auto-detected byteorder."""
-    import mrsignal
-    from mrsignal import MrSignalClient
+    import roi.devices.mrsignal as mrsignal
+    from roi.devices.mrsignal import MrSignalClient
 
     class Inst(InstNoByteorder):
         def read_float(self, reg, *, functioncode=3, number_of_registers=2, byteorder=None):
@@ -366,7 +366,7 @@ def test_read_float_prev_byteorder_exception_is_swallowed(monkeypatch):
 def test_read_float_configured_byteorder_exception_falls_back(monkeypatch):
     """Cover the exception swallow path for configured byteorder reads."""
     import minimalmodbus
-    from mrsignal import MrSignalClient
+    from roi.devices.mrsignal import MrSignalClient
 
     class Inst(InstNoByteorder):
         def read_float(self, reg, *, functioncode=3, number_of_registers=2, byteorder=None):
@@ -386,7 +386,7 @@ def test_read_float_configured_byteorder_exception_falls_back(monkeypatch):
 def test_auto_detect_path_without_inst_byteorder_attr(monkeypatch):
     """Cover the auto-detect loop branch that passes byteorder=... kwarg."""
     import minimalmodbus
-    from mrsignal import MrSignalClient
+    from roi.devices.mrsignal import MrSignalClient
 
     inst = InstNoByteorder()
     inst._floats[(0, minimalmodbus.BYTEORDER_BIG)] = float("nan")
@@ -398,13 +398,14 @@ def test_auto_detect_path_without_inst_byteorder_attr(monkeypatch):
 
     v, bo = c._read_float(0)
     assert v == 3.5
-    assert bo in {name for name, _ in __import__("mrsignal").available_byteorders()}
+    import roi.devices.mrsignal as mrsignal
+    assert bo in {name for name, _ in mrsignal.available_byteorders()}
 
 
 def test_write_float_sets_inst_byteorder_when_supported(monkeypatch):
     """Cover the write_float path for newer minimalmodbus Instrument.byteorder."""
     import minimalmodbus
-    from mrsignal import MrSignalClient
+    from roi.devices.mrsignal import MrSignalClient
 
     inst = FakeInst()
     c = MrSignalClient("p", float_byteorder="BYTEORDER_LITTLE", float_byteorder_auto=False)
@@ -417,7 +418,7 @@ def test_write_float_sets_inst_byteorder_when_supported(monkeypatch):
 
 def test_read_status_handles_input_float_failure(monkeypatch):
     """Cover the input-value exception path in read_status()."""
-    from mrsignal import MrSignalClient, REG_OUTPUT_VALUE_FLOAT, REG_INPUT_VALUE_FLOAT
+    from roi.devices.mrsignal import MrSignalClient, REG_OUTPUT_VALUE_FLOAT, REG_INPUT_VALUE_FLOAT
 
     c = MrSignalClient("p")
     c.inst = FakeInst()

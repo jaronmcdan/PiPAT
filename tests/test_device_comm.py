@@ -113,7 +113,7 @@ class FakeHardware:
 
 
 def test_mmeter_write_blank_and_missing_meter(monkeypatch):
-    import device_comm
+    from roi.core import device_comm
 
     hw = FakeHardware()
     hw.mmeter = None
@@ -145,8 +145,8 @@ class RawSerial:
 
 
 def test_mmeter_write_raw_serial_exceptions_delay_and_bad_settle(monkeypatch):
-    import device_comm
-    import config
+    from roi.core import device_comm
+    import roi.config as config
     import time as _time
 
     hw = FakeHardware()
@@ -165,8 +165,8 @@ def test_mmeter_write_raw_serial_exceptions_delay_and_bad_settle(monkeypatch):
 
 
 def test_mmeter_write_helper_exception_is_logged(monkeypatch):
-    import device_comm
-    import config
+    from roi.core import device_comm
+    import roi.config as config
 
     hw = FakeHardware()
 
@@ -183,7 +183,7 @@ def test_mmeter_write_helper_exception_is_logged(monkeypatch):
 
 
 def test_quantize_nplc():
-    from device_comm import _quantize_nplc
+    from roi.core.device_comm import _quantize_nplc
 
     assert _quantize_nplc("bad") == 1.0
     assert _quantize_nplc(0.09) == 0.1
@@ -192,8 +192,8 @@ def test_quantize_nplc():
 
 
 def test_mmeter_write_uses_helper_and_sets_quiet_until(monkeypatch):
-    import config
-    from device_comm import DeviceCommandProcessor
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
 
     hw = FakeHardware()
     helper = FakeSCPI()
@@ -218,8 +218,8 @@ def test_mmeter_write_uses_helper_and_sets_quiet_until(monkeypatch):
 
 
 def test_mmeter_write_raw_serial_path(monkeypatch):
-    import config
-    from device_comm import DeviceCommandProcessor
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
 
     hw = FakeHardware()
     hw.mmeter = None
@@ -235,9 +235,9 @@ def test_mmeter_write_raw_serial_path(monkeypatch):
 
 
 def test_mmeter_set_func_fallback_and_style_commit(monkeypatch):
-    import config
-    from device_comm import DeviceCommandProcessor
-    from bk5491b import MmeterFunc
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
+    from roi.devices.bk5491b import MmeterFunc
 
     hw = FakeHardware()
     # Script drain_errors to fail first candidate and succeed second.
@@ -264,8 +264,8 @@ def test_mmeter_set_func_fallback_and_style_commit(monkeypatch):
 
 def test_mmeter_set_func_invalid_style_and_no_helper(monkeypatch):
     """Covers style normalization + helper-absent error draining path."""
-    import device_comm
-    from bk5491b import MmeterFunc
+    from roi.core import device_comm
+    from roi.devices.bk5491b import MmeterFunc
 
     hw = FakeHardware()
     hw.mmeter = None
@@ -279,8 +279,8 @@ def test_mmeter_set_func_invalid_style_and_no_helper(monkeypatch):
 
 
 def test_mmeter_set_func_drain_errors_exception(monkeypatch):
-    import device_comm
-    from bk5491b import MmeterFunc
+    from roi.core import device_comm
+    from roi.devices.bk5491b import MmeterFunc
 
     hw = FakeHardware()
 
@@ -300,9 +300,9 @@ def test_mmeter_set_func_drain_errors_exception(monkeypatch):
 
 
 def test_mmeter_set_func_all_candidates_fail_logs(monkeypatch):
-    import device_comm
-    import config
-    from bk5491b import MmeterFunc
+    from roi.core import device_comm
+    import roi.config as config
+    from roi.devices.bk5491b import MmeterFunc
 
     # Drain errors: no error before, BUS error after -> every candidate fails.
     class Helper:
@@ -330,8 +330,8 @@ def test_mmeter_set_func_all_candidates_fail_logs(monkeypatch):
 
 
 def test_mmeter_set_func_skips_empty_candidate(monkeypatch):
-    import device_comm
-    from bk5491b import MmeterFunc
+    from roi.core import device_comm
+    from roi.devices.bk5491b import MmeterFunc
 
     hw = FakeHardware()
     hw.mmeter = None
@@ -345,9 +345,49 @@ def test_mmeter_set_func_skips_empty_candidate(monkeypatch):
     assert hw.mmeter_func == int(MmeterFunc.VDC)
 
 
+def test_mmeter_set_func_dedup_continue_branch(monkeypatch):
+    """Cover the duplicate-elision `continue` inside candidate de-duplication.
+
+    The production candidate generator is careful to avoid duplicates, so this
+    test forces the de-dup `if k in seen: continue` branch by patching the
+    module-local `set` factory used to build the `seen` container.
+    """
+
+    from roi.core import device_comm
+    from roi.devices.bk5491b import MmeterFunc
+
+    hw = FakeHardware()
+    helper = FakeBKHelper(drain_script=[["0,No error"], ["0,No error"]])
+    hw.mmeter = helper
+
+    class FakeSet:
+        def __init__(self):
+            self._s = set()
+            self._calls = 0
+
+        def __contains__(self, item):
+            # First membership check reports "already seen" to trigger the
+            # continue branch; subsequent checks behave normally.
+            self._calls += 1
+            if self._calls == 1:
+                return True
+            return item in self._s
+
+        def add(self, item):
+            self._s.add(item)
+
+    monkeypatch.setattr(device_comm, "set", FakeSet, raising=False)
+
+    p = device_comm.DeviceCommandProcessor(hw, log_fn=lambda s: None)
+    p._mmeter_set_func(int(MmeterFunc.VDC))
+
+    assert hw.mmeter_func == int(MmeterFunc.VDC)
+    assert helper.writes, "expected at least one SCPI write"
+
+
 def test_handle_relay_and_invert(monkeypatch):
-    import config
-    from device_comm import DeviceCommandProcessor
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
 
     hw = FakeHardware()
     p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
@@ -363,8 +403,8 @@ def test_handle_relay_and_invert(monkeypatch):
 
 
 def test_handle_afg_primary_and_ext(monkeypatch):
-    import config
-    from device_comm import DeviceCommandProcessor
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
 
     hw = FakeHardware()
     hw.afg = FakeSCPI()
@@ -373,7 +413,7 @@ def test_handle_afg_primary_and_ext(monkeypatch):
     # Primary: enable=1, shape=2 (RAMP), freq=100, ampl=2000mV
     data = bytes([1, 2]) + struct.pack("<I", 100) + struct.pack("<H", 2000)
     p.handle(int(config.AFG_CTRL_ID), data)
-    assert "SOUR1:OUTP ON" in hw.afg.commands[0]
+    assert "OUTP1 ON" in hw.afg.commands[0]
     assert any("SOUR1:FUNC" in c for c in hw.afg.commands)
     assert any("SOUR1:FREQ 100" in c for c in hw.afg.commands)
     assert any("SOUR1:AMPL 2.0" in c for c in hw.afg.commands)
@@ -381,13 +421,13 @@ def test_handle_afg_primary_and_ext(monkeypatch):
     # Extended: offset=-100mV, duty=250 -> clamped to 99
     ext = struct.pack("<h", -100) + bytes([250])
     p.handle(int(config.AFG_CTRL_EXT_ID), ext)
-    assert any("SOUR1:VOLT:OFFS -0.1" in c for c in hw.afg.commands)
+    assert any("SOUR1:DCO -0.1" in c for c in hw.afg.commands)
     assert any("SOUR1:SQU:DCYC 99" in c for c in hw.afg.commands)
 
 
 def test_handle_afg_early_return_and_error_logs(monkeypatch):
-    import config
-    from device_comm import DeviceCommandProcessor
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
 
     hw = FakeHardware()
     p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
@@ -416,9 +456,9 @@ def test_handle_afg_early_return_and_error_logs(monkeypatch):
 
 
 def test_handle_mmeter_legacy_and_range(monkeypatch):
-    import config
-    from device_comm import DeviceCommandProcessor
-    from bk5491b import MmeterFunc
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
+    from roi.devices.bk5491b import MmeterFunc
 
     hw = FakeHardware()
     hw.multi_meter = True
@@ -452,9 +492,9 @@ def test_handle_mmeter_legacy_and_range(monkeypatch):
 
 
 def test_handle_mmeter_ctrl_short_data_and_idc(monkeypatch):
-    import config
-    from device_comm import DeviceCommandProcessor
-    from bk5491b import MmeterFunc
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
+    from roi.devices.bk5491b import MmeterFunc
 
     hw = FakeHardware()
     hw.multi_meter = True
@@ -477,9 +517,27 @@ def test_handle_mmeter_ctrl_short_data_and_idc(monkeypatch):
     assert called == [int(MmeterFunc.IDC)]
 
 
+def test_handle_mmeter_ctrl_mode0_disabled(monkeypatch):
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
+
+    hw = FakeHardware()
+    hw.multi_meter = True
+    p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
+
+    called: list[int] = []
+    monkeypatch.setattr(p, "_mmeter_set_func", lambda f: called.append(int(f)))
+    monkeypatch.setattr(config, "MMETER_LEGACY_MODE0_ENABLE", False, raising=False)
+    monkeypatch.setattr(config, "MMETER_LEGACY_MODE1_ENABLE", True, raising=False)
+
+    p.handle(int(config.MMETER_CTRL_ID), bytes([0, 0]))
+    assert called == []
+    assert hw.multi_meter_mode == 0
+
+
 def test_handle_mmeter_ctrl_lock_exception_is_swallowed(monkeypatch):
-    import config
-    from device_comm import DeviceCommandProcessor
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
 
     class BadLock:
         def __enter__(self):
@@ -502,9 +560,9 @@ def test_handle_mmeter_ctrl_lock_exception_is_swallowed(monkeypatch):
 
 
 def test_handle_mmeter_ctrl_len_short_and_idc_and_exception_swallow(monkeypatch):
-    import config
-    from device_comm import DeviceCommandProcessor
-    from bk5491b import MmeterFunc
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
+    from roi.devices.bk5491b import MmeterFunc
 
     hw = FakeHardware()
     hw.multi_meter = True
@@ -539,9 +597,9 @@ def test_handle_mmeter_ctrl_len_short_and_idc_and_exception_swallow(monkeypatch)
 
 
 def test_handle_mmeter_ext_opcodes(monkeypatch):
-    import config
-    from device_comm import DeviceCommandProcessor
-    from bk5491b import MmeterFunc
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
+    from roi.devices.bk5491b import MmeterFunc
 
     hw = FakeHardware()
     hw.multi_meter = True
@@ -602,9 +660,9 @@ def test_handle_mmeter_ext_opcodes(monkeypatch):
 
 
 def test_handle_mmeter_ext_early_return_and_more_branches(monkeypatch):
-    import config
-    import device_comm
-    from bk5491b import MmeterFunc
+    import roi.config as config
+    from roi.core import device_comm
+    from roi.devices.bk5491b import MmeterFunc
 
     # Early return without a meter
     hw0 = FakeHardware()
@@ -675,9 +733,9 @@ def test_handle_mmeter_ext_early_return_and_more_branches(monkeypatch):
 
 
 def test_mmeter_ext_control_error_is_logged(monkeypatch):
-    import config
-    from device_comm import DeviceCommandProcessor
-    from bk5491b import MmeterFunc
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
+    from roi.devices.bk5491b import MmeterFunc
 
     hw = FakeHardware()
     hw.multi_meter = True
@@ -691,9 +749,9 @@ def test_mmeter_ext_control_error_is_logged(monkeypatch):
 
 
 def test_handle_mmeter_ext_more_branches(monkeypatch):
-    import config
-    from device_comm import DeviceCommandProcessor
-    from bk5491b import MmeterFunc
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
+    from roi.devices.bk5491b import MmeterFunc
 
     hw = FakeHardware()
     hw.multi_meter = True
@@ -767,8 +825,8 @@ def test_handle_mmeter_ext_more_branches(monkeypatch):
 
 
 def test_handle_mmeter_ext_early_return(monkeypatch):
-    import config
-    from device_comm import DeviceCommandProcessor
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
 
     hw = FakeHardware()
     hw.multi_meter = None
@@ -776,10 +834,70 @@ def test_handle_mmeter_ext_early_return(monkeypatch):
     p.handle(int(config.MMETER_CTRL_EXT_ID), b"")
 
 
+def test_handle_mmeter_ext_disabled_by_config(monkeypatch):
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
+
+    hw = FakeHardware()
+    hw.multi_meter = True
+    p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
+
+    monkeypatch.setattr(config, "MMETER_EXT_CTRL_ENABLE", False, raising=False)
+
+    # If MMETER_EXT processing is disabled, no command should be written.
+    writes: list[str] = []
+    monkeypatch.setattr(p, "_mmeter_write", lambda cmd, **kw: writes.append(cmd))
+
+    payload = bytes([0x08, 0, 0, 0]) + struct.pack("<f", 0.0)  # BUS_TRIGGER
+    p.handle(int(config.MMETER_CTRL_EXT_ID), payload)
+
+    assert writes == []
+
+
+def test_handle_mmeter_ext_set_range_disabled(monkeypatch):
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
+    from roi.devices.bk5491b import MmeterFunc
+
+    hw = FakeHardware()
+    hw.multi_meter = True
+    hw.mmeter_func = int(MmeterFunc.VDC)
+    p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
+
+    writes: list[str] = []
+    monkeypatch.setattr(p, "_mmeter_write", lambda cmd, **kw: writes.append(cmd))
+    monkeypatch.setattr(config, "MMETER_EXT_SET_RANGE_ENABLE", False, raising=False)
+
+    payload = bytes([0x03, 0xFF, 0, 0]) + struct.pack("<f", 12.0)
+    p.handle(int(config.MMETER_CTRL_EXT_ID), payload)
+    assert writes == []
+
+
+def test_handle_mmeter_ext_secondary_disabled(monkeypatch):
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
+    from roi.devices.bk5491b import MmeterFunc
+
+    hw = FakeHardware()
+    hw.multi_meter = True
+    hw.mmeter_func = int(MmeterFunc.VDC)
+    p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
+
+    writes: list[str] = []
+    monkeypatch.setattr(p, "_mmeter_write", lambda cmd, **kw: writes.append(cmd))
+    monkeypatch.setattr(config, "MMETER_EXT_SECONDARY_ENABLE", False, raising=False)
+
+    payload_en = bytes([0x05, 1, 0, 0]) + struct.pack("<f", 0.0)
+    p.handle(int(config.MMETER_CTRL_EXT_ID), payload_en)
+    payload_fn = bytes([0x06, int(MmeterFunc.VAC), 0, 0]) + struct.pack("<f", 0.0)
+    p.handle(int(config.MMETER_CTRL_EXT_ID), payload_fn)
+    assert writes == []
+
+
 def test_handle_mmeter_ext_additional_branches(monkeypatch):
-    import config
-    from device_comm import DeviceCommandProcessor
-    from bk5491b import MmeterFunc
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
+    from roi.devices.bk5491b import MmeterFunc
 
     hw = FakeHardware()
     p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
@@ -846,8 +964,8 @@ def test_handle_mmeter_ext_additional_branches(monkeypatch):
 
 
 def test_handle_eload_builds_write_list():
-    import config
-    from device_comm import DeviceCommandProcessor
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
 
     hw = FakeHardware()
     hw.e_load = FakeSCPI()
@@ -871,8 +989,8 @@ def test_handle_eload_builds_write_list():
 
 
 def test_handle_eload_early_return_and_exception_swallowed():
-    import config
-    from device_comm import DeviceCommandProcessor
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
 
     hw = FakeHardware()
     p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
@@ -893,8 +1011,8 @@ def test_handle_eload_early_return_and_exception_swallowed():
 
 
 def test_handle_eload_early_return_and_exception_swallow():
-    import config
-    from device_comm import DeviceCommandProcessor
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
 
     hw = FakeHardware()
     p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
@@ -915,8 +1033,8 @@ def test_handle_eload_early_return_and_exception_swallow():
 
 
 def test_handle_mrsignal_valid_and_invalid(monkeypatch):
-    import config
-    from device_comm import DeviceCommandProcessor
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
 
     hw = FakeHardware()
     p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
@@ -945,8 +1063,8 @@ def test_handle_mrsignal_valid_and_invalid(monkeypatch):
 
 
 def test_handle_mrsignal_early_returns(monkeypatch):
-    import config
-    from device_comm import DeviceCommandProcessor
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
 
     hw = FakeHardware()
     p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
@@ -960,8 +1078,8 @@ def test_handle_mrsignal_early_returns(monkeypatch):
 
 
 def test_handle_mrsignal_early_returns():
-    import config
-    from device_comm import DeviceCommandProcessor
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
 
     hw = FakeHardware()
     p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
@@ -975,8 +1093,8 @@ def test_handle_mrsignal_early_returns():
 
 
 def test_device_command_loop_coalesces_and_calls_idle(monkeypatch):
-    import config
-    import device_comm
+    import roi.config as config
+    from roi.core import device_comm
 
     q: queue.Queue[tuple[int, bytes]] = queue.Queue()
     hw = FakeHardware()
@@ -1015,8 +1133,8 @@ def test_device_command_loop_coalesces_and_calls_idle(monkeypatch):
 
 
 def test_device_command_loop_more_branches(monkeypatch):
-    import config
-    import device_comm
+    import roi.config as config
+    from roi.core import device_comm
 
     logs: list[str] = []
     marks: list[str] = []
@@ -1059,7 +1177,7 @@ def test_device_command_loop_more_branches(monkeypatch):
 
 
 def test_device_command_loop_queue_get_exceptions(monkeypatch):
-    import device_comm
+    from roi.core import device_comm
 
     stop = threading.Event()
 
@@ -1080,8 +1198,8 @@ def test_device_command_loop_queue_get_exceptions(monkeypatch):
 
 
 def test_device_command_loop_queue_exceptions_and_watchdog_marks(monkeypatch):
-    import config
-    import device_comm
+    import roi.config as config
+    from roi.core import device_comm
 
     # Custom queue that raises queue.Empty once then stops.
     stop = threading.Event()
@@ -1137,7 +1255,7 @@ def test_device_command_loop_queue_exceptions_and_watchdog_marks(monkeypatch):
 
 
 def test_device_command_loop_other_id_and_idle_exception(monkeypatch):
-    import device_comm
+    from roi.core import device_comm
 
     stop = threading.Event()
 
@@ -1175,7 +1293,7 @@ def test_device_command_loop_other_id_and_idle_exception(monkeypatch):
 
 def test_mmeter_set_func_unsupported_function_logs():
     """Cover the early-return branch for unsupported MmeterFunc values."""
-    from device_comm import DeviceCommandProcessor
+    from roi.core.device_comm import DeviceCommandProcessor
 
     hw = FakeHardware()
     logs: list[str] = []
@@ -1189,8 +1307,8 @@ def test_mmeter_set_func_unsupported_function_logs():
 
 def test_mmeter_set_func_style_func_builds_candidates(monkeypatch):
     """Cover the 'func' style candidate-building path (different from auto/conf)."""
-    from device_comm import DeviceCommandProcessor
-    from bk5491b import MmeterFunc
+    from roi.core.device_comm import DeviceCommandProcessor
+    from roi.devices.bk5491b import MmeterFunc
 
     hw = FakeHardware()
     hw.mmeter_scpi_style = "func"
@@ -1200,15 +1318,31 @@ def test_mmeter_set_func_style_func_builds_candidates(monkeypatch):
     p._mmeter_set_func(int(MmeterFunc.VDC))
 
     assert hw.mmeter_func == int(MmeterFunc.VDC)
-    # First candidate in 'func' style is the :FUNCtion ... form.
-    assert hw.mmeter.writes and hw.mmeter.writes[0].startswith(":FUNCtion")
+    # First candidate in 'func' style is the canonical mapped command.
+    assert hw.mmeter.writes and hw.mmeter.writes[0] == ":FUNCtion VOLT:DC"
+
+
+def test_mmeter_set_func_style_func_uses_mapped_idc_command_first():
+    """FUNC-style candidate order should try the mapped IDC command first."""
+    from roi.core.device_comm import DeviceCommandProcessor
+    from roi.devices.bk5491b import MmeterFunc
+
+    hw = FakeHardware()
+    hw.mmeter_scpi_style = "func"
+    hw.mmeter = FakeBKHelper(drain_script=[["0,No error"], ["0,No error"]])
+
+    p = DeviceCommandProcessor(hw, log_fn=lambda s: None)
+    p._mmeter_set_func(int(MmeterFunc.IDC))
+
+    assert hw.mmeter.writes
+    assert hw.mmeter.writes[0] == ":FUNCtion CURR:DC"
 
 
 def test_handle_mmeter_ext_bad_float_unpack_is_swallowed(monkeypatch):
     """Cover the struct.unpack() exception path in MMETER_CTRL_EXT handling."""
-    import config
-    from device_comm import DeviceCommandProcessor
-    from bk5491b import MmeterFunc
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
+    from roi.devices.bk5491b import MmeterFunc
 
     class BadBytes(bytes):
         def __getitem__(self, key):
@@ -1231,8 +1365,8 @@ def test_handle_mmeter_ext_bad_float_unpack_is_swallowed(monkeypatch):
 
 def test_handle_mrsignal_unpack_error_returns_early():
     """Cover the float-unpack failure branch in MrSignal CAN control."""
-    import config
-    from device_comm import DeviceCommandProcessor
+    import roi.config as config
+    from roi.core.device_comm import DeviceCommandProcessor
 
     class BadBytes(bytes):
         def __getitem__(self, key):
@@ -1251,8 +1385,8 @@ def test_handle_mrsignal_unpack_error_returns_early():
 
 
 def test_device_command_loop_watchdog_marks_mmeter_and_mrsignal(monkeypatch):
-    import config
-    import device_comm
+    import roi.config as config
+    from roi.core import device_comm
 
     q: queue.Queue[tuple[int, bytes]] = queue.Queue()
     hw = FakeHardware()

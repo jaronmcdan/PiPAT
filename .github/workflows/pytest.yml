@@ -24,27 +24,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install test dependencies
+      - name: Install
         shell: bash
         run: |
           python -m pip install -U pip
-          python -m pip install -U pytest pytest-cov
+          python -m pip install -e ".[dev]"
 
       - name: Run pytest
         shell: bash
         run: |
-          # Support either repo layouts:
-          # 1) pytest.ini at repo root
-          # 2) code nested under ./PiPAT-auto-can/
-          if [ -f pytest.ini ]; then
-            echo "Found pytest.ini at repo root"
-          elif [ -f PiPAT-auto-can/pytest.ini ]; then
-            echo "Found pytest.ini under PiPAT-auto-can/"
-            cd PiPAT-auto-can
-          else
-            echo "ERROR: Could not find pytest.ini" >&2
-            ls -la
-            exit 1
-          fi
-
           python -m pytest

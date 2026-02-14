@@ -7,9 +7,9 @@ import types
 
 
 def test_setup_can_interface_socketcan_success(monkeypatch):
-    import config
+    import roi.config as config
     import can
-    import can_comm
+    from roi.can import comm as can_comm
 
     calls = []
 
@@ -33,9 +33,9 @@ def test_setup_can_interface_socketcan_success(monkeypatch):
 
 def test_setup_can_interface_socketcan_handles_missing_ip(monkeypatch):
     """If `ip`/`sudo` aren't present, setup continues to bus open."""
-    import config
+    import roi.config as config
     import can
-    import can_comm
+    from roi.can import comm as can_comm
 
     monkeypatch.setattr(config, "CAN_INTERFACE", "socketcan", raising=False)
 
@@ -49,9 +49,9 @@ def test_setup_can_interface_socketcan_handles_missing_ip(monkeypatch):
 
 
 def test_setup_can_interface_rmcanview_failure_logs(monkeypatch):
-    import config
-    import can_comm
-    import rmcanview
+    import roi.config as config
+    from roi.can import comm as can_comm
+    from roi.can import rmcanview
 
     monkeypatch.setattr(config, "CAN_INTERFACE", "rmcanview", raising=False)
 
@@ -66,9 +66,9 @@ def test_setup_can_interface_rmcanview_failure_logs(monkeypatch):
 
 
 def test_setup_can_interface_fallback_failure_logs(monkeypatch):
-    import config
+    import roi.config as config
     import can
-    import can_comm
+    from roi.can import comm as can_comm
 
     monkeypatch.setattr(config, "CAN_INTERFACE", "unknown_iface", raising=False)
     monkeypatch.setattr(can.interface, "Bus", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
@@ -80,9 +80,9 @@ def test_setup_can_interface_fallback_failure_logs(monkeypatch):
 
 
 def test_setup_can_interface_socketcan_failure_logs(monkeypatch):
-    import config
+    import roi.config as config
     import can
-    import can_comm
+    from roi.can import comm as can_comm
 
     monkeypatch.setattr(config, "CAN_INTERFACE", "socketcan", raising=False)
     monkeypatch.setattr(can.interface, "Bus", lambda **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
@@ -94,33 +94,44 @@ def test_setup_can_interface_socketcan_failure_logs(monkeypatch):
 
 
 def test_setup_can_interface_rmcanview(monkeypatch):
-    import config
-    import can_comm
-    import rmcanview
+    import roi.config as config
+    from roi.can import comm as can_comm
+    from roi.can import rmcanview
 
     monkeypatch.setattr(config, "CAN_INTERFACE", "rmcanview", raising=False)
     monkeypatch.setattr(config, "CAN_SERIAL_BAUD", 57600, raising=False)
 
     created = {}
 
-    class FakeBus(rmcanview.RmCanViewBus):
+    class FakeBus:
         def __init__(self, channel, **kwargs):
-            super().__init__(channel, **kwargs)
             created["channel"] = channel
             created["kwargs"] = dict(kwargs)
-
+            self.channel = channel
+            self.kwargs = dict(kwargs)
+            self.did_setup = False
+            self.setup_bitrate = None
+            # Mimic real backend: call do_setup from __init__ when requested.
+            if self.kwargs.get("do_setup"):
+                self.do_setup(can_bitrate=int(self.kwargs.get("can_bitrate") or 0))
+    
+        def do_setup(self, *, can_bitrate: int):
+            self.did_setup = True
+            self.setup_bitrate = can_bitrate
     monkeypatch.setattr(rmcanview, "RmCanViewBus", FakeBus)
 
     bus = can_comm.setup_can_interface("/dev/ttyUSB0", 125000, do_setup=True, log_fn=lambda s: None)
     assert bus is not None
+    assert getattr(bus, "did_setup", False) is True
+    assert getattr(bus, "setup_bitrate", None) == 125000
     assert created["channel"] == "/dev/ttyUSB0"
     assert created["kwargs"]["serial_baud"] == 57600
     assert created["kwargs"]["can_bitrate"] == 125000
 
 
 def test_shutdown_can_interface_handles_missing_ip(monkeypatch):
-    import config
-    import can_comm
+    import roi.config as config
+    from roi.can import comm as can_comm
 
     monkeypatch.setattr(config, "CAN_INTERFACE", "socketcan", raising=False)
 
@@ -133,8 +144,8 @@ def test_shutdown_can_interface_handles_missing_ip(monkeypatch):
 
 
 def test_shutdown_can_interface_noop_cases(monkeypatch):
-    import config
-    import can_comm
+    import roi.config as config
+    from roi.can import comm as can_comm
 
     # do_setup False -> early return
     can_comm.shutdown_can_interface("can0", do_setup=False)
@@ -145,7 +156,7 @@ def test_shutdown_can_interface_noop_cases(monkeypatch):
 
 
 def test_clamps():
-    import can_comm
+    from roi.can import comm as can_comm
 
     assert can_comm._u16_clamp(-1) == 0
     assert can_comm._u16_clamp(0x1FFFF) == 0xFFFF
@@ -154,7 +165,7 @@ def test_clamps():
 
 
 def test_tx_state_clear_meter_current():
-    import can_comm
+    from roi.can import comm as can_comm
 
     s = can_comm.OutgoingTxState()
     s.update_meter_current(123)
@@ -164,7 +175,7 @@ def test_tx_state_clear_meter_current():
 
 
 def test_can_tx_loop_period_disabled_logs():
-    import can_comm
+    from roi.can import comm as can_comm
 
     state = can_comm.OutgoingTxState()
     stop = threading.Event()
@@ -177,7 +188,7 @@ def test_can_tx_loop_period_disabled_logs():
 
 
 def test_can_tx_loop_period_parse_error_defaults(monkeypatch):
-    import can_comm
+    from roi.can import comm as can_comm
 
     stop = threading.Event()
     stop.set()
@@ -191,7 +202,7 @@ def test_can_tx_loop_period_parse_error_defaults(monkeypatch):
 
 
 def test_can_tx_loop_waits_when_ahead_of_schedule(monkeypatch):
-    import can_comm
+    from roi.can import comm as can_comm
 
     # Make monotonic non-monotonic for test: next_t is large, now is small.
     seq = iter([10.0, 0.0])
@@ -221,7 +232,7 @@ def test_can_tx_loop_waits_when_ahead_of_schedule(monkeypatch):
 
 
 def test_can_tx_loop_drift_correction(monkeypatch):
-    import can_comm
+    from roi.can import comm as can_comm
 
     seq = iter([0.0, 100.0])
 
@@ -242,7 +253,7 @@ def test_can_tx_loop_drift_correction(monkeypatch):
 
 
 def test_can_tx_loop_busload_record_tx_exception_in_first_block(monkeypatch):
-    import can_comm
+    from roi.can import comm as can_comm
 
     # Deterministic time so the TX loop never sleeps.
     t = {"x": 0.0}
@@ -265,7 +276,7 @@ def test_can_tx_loop_busload_record_tx_exception_in_first_block(monkeypatch):
 
 
 def test_can_tx_loop_logs_each_send_error_branch(monkeypatch):
-    import can_comm
+    from roi.can import comm as can_comm
 
     # Fixed monotonic that always advances enough to avoid sleeping.
     t = {"x": 0.0}
@@ -335,8 +346,8 @@ class FakeBusLoad:
 
 
 def test_can_tx_loop_sends_all_frames(monkeypatch):
-    import can_comm
-    import config
+    from roi.can import comm as can_comm
+    import roi.config as config
 
     # Deterministic time so the TX loop never sleeps.
     t = {"x": 0.0}
@@ -370,7 +381,7 @@ def test_can_tx_loop_sends_all_frames(monkeypatch):
 
 
 def test_can_tx_loop_send_error_is_logged(monkeypatch):
-    import can_comm
+    from roi.can import comm as can_comm
 
     t = {"x": 0.0}
 
@@ -392,8 +403,8 @@ def test_can_tx_loop_send_error_is_logged(monkeypatch):
 
 
 def test_can_rx_loop_filters_and_drops(monkeypatch):
-    import can_comm
-    import config
+    from roi.can import comm as can_comm
+    import roi.config as config
     import can
 
     # Fake messages from python-can
@@ -469,8 +480,8 @@ def test_can_rx_loop_filters_and_drops(monkeypatch):
 
 
 def test_can_rx_loop_records_busload_and_pat_matrix_errors(monkeypatch):
-    import can_comm
-    import config
+    from roi.can import comm as can_comm
+    import roi.config as config
     import can
 
     class Msg(can.Message):
@@ -517,8 +528,8 @@ def test_can_rx_loop_records_busload_and_pat_matrix_errors(monkeypatch):
 
 
 def test_can_rx_loop_queue_full_drop_oldest_empty_then_second_put_generic(monkeypatch):
-    import can_comm
-    import config
+    from roi.can import comm as can_comm
+    import roi.config as config
     import can
 
     class Msg(can.Message):
@@ -562,8 +573,8 @@ def test_can_rx_loop_queue_full_drop_oldest_empty_then_second_put_generic(monkey
 
 
 def test_can_rx_loop_put_nowait_generic_exception(monkeypatch):
-    import can_comm
-    import config
+    from roi.can import comm as can_comm
+    import roi.config as config
     import can
 
     class Msg(can.Message):
@@ -597,8 +608,8 @@ def test_can_rx_loop_put_nowait_generic_exception(monkeypatch):
 
 def test_shutdown_can_interface_breaks_on_first_success(monkeypatch):
     """Cover the shutdown_can_interface() success + break path."""
-    import config
-    import can_comm
+    import roi.config as config
+    from roi.can import comm as can_comm
 
     monkeypatch.setattr(config, "CAN_INTERFACE", "socketcan", raising=False)
 
@@ -619,7 +630,7 @@ def test_shutdown_can_interface_breaks_on_first_success(monkeypatch):
 
 def test_can_tx_loop_busload_exceptions_in_each_branch(monkeypatch):
     """Exercise the busload.record_tx() exception swallow blocks for every frame type."""
-    import can_comm
+    from roi.can import comm as can_comm
 
     # Deterministic time so the TX loop never sleeps.
     t = {"x": 0.0}

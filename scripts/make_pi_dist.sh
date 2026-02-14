@@ -30,6 +30,9 @@ rsync -a \
   --exclude "*.pyc" \
   --exclude ".pytest_cache" \
   --exclude "dist" \
+  --exclude "build" \
+  --exclude ".mypy_cache" \
+  --exclude ".ruff_cache" \
   "$ROOT/" "$TMP/roi/"
 
 # Ensure we ship install helpers even if user runs this script standalone
